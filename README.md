@@ -1,4 +1,4 @@
-# [WIP] zintl Programming Language
+# [WIP] Zintl Programming Language
 
 ## Why?
 
