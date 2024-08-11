@@ -1,0 +1,6 @@
+[package]
+name = "zintl-parser"
+version = { workspace = true }
+edition = "2021"
+
+[dependencies]
