@@ -167,48 +167,6 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
-    fn lex_element_identifier(&mut self) -> TokenResult {
-        if let Some(&c) = self.itr.peek() {
-            let mut loc = TokenLoc {
-                starts_at: self.current_idx,
-                len: 0,
-            };
-            if c != '@' {
-                return Err(TokenizerErr::InvalidElementIdentifier);
-            }
-
-            let mut identifier = String::new();
-
-            identifier.push(c);
-            self.advance();
-            loc.len += 1;
-
-            while let Some(&c) = self.itr.peek() {
-                if c.is_whitespace() {
-                    break;
-                } else if c.is_alphabetic() {
-                    identifier.push(c);
-                } else {
-                    break;
-                }
-
-                self.advance();
-                loc.len += 1;
-            }
-
-            if identifier.is_empty() {
-                return Err(TokenizerErr::EmptyElementIdentifier);
-            }
-
-            return Ok(Token {
-                loc,
-                con: TokenContent::Element(identifier),
-            });
-        } else {
-            return Err(TokenizerErr::InvalidElementIdentifier);
-        }
-    }
-
     fn advance(&mut self) {
        self.consume_char();
     }
