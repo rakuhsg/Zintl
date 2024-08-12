@@ -1,4 +1,4 @@
-use crate::lang::tokenizer::{Tokenizer, TokenResult};
+use crate::tokenizer::{Tokenizer, TokenResult};
 
 pub struct DefinitionParser<'a> {
     tokenizer: Tokenizer<'a>,

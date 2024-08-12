@@ -1,5 +1,5 @@
 use std::{cell::RefCell, iter::Peekable, str::Chars};
-use crate::lang::ast::*;
+use crate::ast::*;
 
 #[derive(Debug, Clone, Copy)]
 pub enum TokenizerErr {
