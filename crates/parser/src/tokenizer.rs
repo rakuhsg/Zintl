@@ -182,14 +182,45 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    fn set_pending(&mut self, token: Token) -> TokenizationResult {
+        assert!(self.pending.replace(Some(token)).is_none(),
+            "there is an another pending token that has not been returned yet");
+
+        Ok(())
+    }
+
     fn set_pending_or_err(&mut self, res: TokenResult) -> TokenizationResult {
         match res {
             Ok(token) => {
-                assert!(self.pending.replace(Some(token)).is_none(),
-                    "there is an another pending token that has not been returned yet");
-                Ok(())
+                self.set_pending(token)
             }
             Err(err) => Err(err)
+        }
+    }
+
+    #[allow(unused)]
+    fn make_token(&mut self, con: TokenContent, len: u32) -> Token {
+        Token {
+            con,
+            loc: TokenLoc {
+                starts_at: self.current_idx,
+                len
+            },
+        }
+    }
+
+    fn make_token_from_char(&mut self, c: char) -> Token {
+        let con = TokenContent::from_char(c).expect("unexpected character matches");
+        let loc = TokenLoc {
+            starts_at: self.current_idx,
+            len: 1
+        };
+
+        self.advance();
+
+        Token {
+            con,
+            loc
         }
     }
 
@@ -210,6 +241,14 @@ impl<'a> Tokenizer<'a> {
             '"' => {
                 let res = self.lex_string_literal();
                 self.set_pending_or_err(res)
+            }
+            '{' => {
+                let token = self.make_token_from_char('{');
+                self.set_pending(token)
+            }
+            '}' => {
+                let token = self.make_token_from_char('}');
+                self.set_pending(token)
             }
             _ => {
                 Err(TokenizerErr::UnexpectedToken)
@@ -360,42 +399,41 @@ mod test {
     }
 
     #[test]
-    fn lex_queries() {
-        /*
+    fn lex() {
         let mut tester = TokenizerTester::new();
-        tester.add_test(TokenizerTest::new("create query",
+
+        tester.add_test(TokenizerTest::new("main function",
             vec![Token {
                 loc: TokenLoc {
                     starts_at: 0,
-                    len: 5,
+                    len: 2,
                 },
-                con: TokenContent::Element("@root".to_string()),
+                con: TokenContent::FnKeyword,
             },
             Token {
                 loc: TokenLoc {
-                    starts_at: 6,
-                    len: 6,
+                    starts_at: 3,
+                    len: 4,
                 },
-                con: TokenContent::Insert,
+                con: TokenContent::Identifier("main".to_string()),
             },
             Token {
                 loc: TokenLoc {
-                    starts_at: 13,
-                    len: 3,
+                    starts_at: 8,
+                    len: 1,
                 },
-                con: TokenContent::New,
+                con: TokenContent::BraceLeft,
             },
             Token {
                 loc: TokenLoc {
-                    starts_at: 17,
-                    len: 7,
+                    starts_at: 9,
+                    len: 1,
                 },
-                con: TokenContent::Identifier("Element".to_string()),
+                con: TokenContent::BraceRight,
             }],
-            "@root insert new Element",
+            "fn main {}",
         ));
 
         tester.run_all();
-        */
     }
 }
