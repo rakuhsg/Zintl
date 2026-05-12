@@ -1,13 +1,17 @@
-use zintl_native::{MessageHandler, MessageLoop, PlatformMessageLoop};
+use zintl_native::{Context, MessageHandler, PlatformMessageLoop};
 
 enum Message {}
 
 struct Handler {}
 
-impl MessageHandler<Message> for Handler {}
+impl MessageHandler<Message> for Handler {
+    fn on_init(&mut self, _cx: impl Context<Message>) {
+        println!("hello, world!");
+    }
+}
 
 fn main() {
     let handler = Handler {};
-    let mut m = PlatformMessageLoop::new(handler);
+    let m = PlatformMessageLoop::new(handler);
     m.run();
 }
