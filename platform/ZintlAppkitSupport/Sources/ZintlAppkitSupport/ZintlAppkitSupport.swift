@@ -23,6 +23,10 @@ class RAppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem);
         let appMenu = NSMenu();
         appMenuItem.submenu = appMenu;
+        
+        let aboutTitle = "About " + ProcessInfo.processInfo.processName
+        appMenu.addItem(withTitle: aboutTitle, action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "");
+        
         appMenu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q");
 
         NSApp.mainMenu = mainMenu;
