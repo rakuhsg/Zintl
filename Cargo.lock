@@ -1336,6 +1336,7 @@ version = "0.1.0"
 name = "zintl-app"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "wgpu",
  "zintl-native",
 ]
