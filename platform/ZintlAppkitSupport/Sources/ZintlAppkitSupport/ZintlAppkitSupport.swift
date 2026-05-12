@@ -69,8 +69,15 @@ class ZintlUdWrapper {
 func performRustFn(rp: UnsafeMutableRawPointer?) {
     if rp != nil {
         let wrapper = Unmanaged<ZintlUdWrapper>.fromOpaque(rp!)
-            .takeRetainedValue()
+            .takeUnretainedValue()
         wrapper.cb!(wrapper.ud)
+    }
+}
+
+func releaseRustFn(rp: UnsafeRawPointer?) {
+    if rp != nil {
+        _ = Unmanaged<ZintlUdWrapper>.fromOpaque(rp!)
+            .takeRetainedValue()
     }
 }
 
@@ -96,6 +103,7 @@ func zintlAppkitInit(ud: UnsafeRawPointer, appcbPtr: UnsafePointer<AppCallback>)
         ZintlUdWrapper(ud, cb: appcb.perform)
     ).toOpaque()
     source_cx.perform = performRustFn
+    source_cx.release = releaseRustFn
     let source = CFRunLoopSourceCreate(nil, 1, &source_cx)!
     CFRunLoopAddSource(loop, source, .commonModes)
 

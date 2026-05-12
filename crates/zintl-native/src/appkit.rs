@@ -6,7 +6,8 @@ use crossbeam::queue::SegQueue;
 
 use crate::actor::*;
 use crate::messageloop::{
-    Context, MainTask, MessageHandler, Window, WindowBackend, WindowManager, WindowManagerBackend,
+    Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowManager,
+    WindowManagerBackend,
 };
 
 mod ffi;
@@ -15,27 +16,53 @@ pub struct AppkitContext<M, H: MessageHandler<M>> {
     mesloop: Arc<AppkitMessageLoop<M, H>>,
 }
 
+impl<M, H: MessageHandler<M>> Clone for AppkitContext<M, H> {
+    fn clone(&self) -> Self {
+        AppkitContext {
+            mesloop: self.mesloop.clone(),
+        }
+    }
+}
+
 impl<M, H: MessageHandler<M>> AppkitContext<M, H> {
     pub(crate) fn new(mesloop: Arc<AppkitMessageLoop<M, H>>) -> Self {
         AppkitContext { mesloop }
     }
 }
 
-impl<M: 'static, H: MessageHandler<M>> Context<M> for AppkitContext<M, H> {
-    fn perform_main(&self, f: impl FnOnce(MainMarker) -> () + 'static, send_after: Option<M>) {
+impl<M: 'static, H: MessageHandler<M> + 'static> Context<M> for AppkitContext<M, H> {
+    fn perform_main(
+        &self,
+        f: impl FnOnce(MainMarker, Self) -> () + 'static,
+        send_after: Option<M>,
+    ) {
         self.mesloop.queue.push(MainTask {
             f: Box::new(f),
             send_after,
         });
+        self.schedule();
+    }
+
+    fn send_message(&self, message: M) {
+        self.mesloop.queue.push(MainTask {
+            f: Box::new(|_, _| {}),
+            send_after: Some(message),
+        });
+        self.schedule();
+    }
+
+    fn window_manager(&self) -> WindowManager {
+        self.mesloop.window_manager.clone()
+    }
+}
+
+impl<M, H: MessageHandler<M>> AppkitContext<M, H> {
+    fn schedule(&self) {
         // SAFETY: `AppkitMessageLoop::new` initializes the Swift-side run-loop
         // source before any `AppkitContext` can be created.
         unsafe {
             ffi::zintlappkit_schedule();
         }
-    }
-
-    fn window_manager(&self) -> WindowManager {
-        self.mesloop.window_manager.clone()
     }
 }
 
@@ -93,19 +120,24 @@ impl Drop for AppkitWindowBackend {
 pub struct AppkitMessageLoop<M, H: MessageHandler<M>> {
     initialized: bool,
     handler: RwLock<H>,
-    queue: SegQueue<MainTask<M>>,
+    queue: SegQueue<MainTask<AppkitContext<M, H>, M>>,
     window_manager: WindowManager,
     phantom: std::marker::PhantomData<M>,
 }
 
-impl<M: 'static, H: MessageHandler<M>> AppkitMessageLoop<M, H> {
+impl<M: 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop<M, H> {
     extern "C" fn cb_perform(s_ptr: *const c_void) {
         // SAFETY: `s_ptr` is the user-data pointer passed to `zintlappkit_init`,
         // created by `Arc::into_raw` in `new`. `ManuallyDrop` keeps the FFI-owned
         // strong reference alive after this temporary `Arc` borrow.
         let mesloop = ManuallyDrop::new(unsafe { Arc::from_raw(s_ptr.cast::<Self>()) });
-        if let Some(task) = mesloop.queue.pop() {
-            (task.f)(MainMarker::new());
+        while let Some(task) = mesloop.queue.pop() {
+            let cx = Arc::clone(&*mesloop).context();
+            (task.f)(MainMarker::new(), cx);
+
+            if let Some(message) = task.send_after {
+                mesloop.dispatch_message(message);
+            }
         }
     }
 
@@ -120,6 +152,13 @@ impl<M: 'static, H: MessageHandler<M>> AppkitMessageLoop<M, H> {
         handler.on_init(cx);
     }
     extern "C" fn cb_app_will_terminate(_p_ud: *const c_void) {}
+
+    fn dispatch_message(self: &Arc<Self>, message: M) {
+        let cx = self.clone().context();
+        //TODO: unwrap
+        let mut handler = self.handler.write().unwrap();
+        handler.on_event(cx, Event::UserMessage(message));
+    }
 
     pub fn new(handler: H) -> Arc<Self> {
         let queue = SegQueue::new();

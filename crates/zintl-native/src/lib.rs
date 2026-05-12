@@ -4,6 +4,7 @@ mod appkit;
 pub mod actor;
 pub mod messageloop;
 
+pub use actor::*;
 pub use messageloop::*;
 
 #[cfg(target_os = "macos")]
