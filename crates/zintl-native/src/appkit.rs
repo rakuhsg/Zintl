@@ -1,153 +1,252 @@
-use crate::messageloop::{MessageHandler, MessageLoop};
+use std::ffi::c_void;
+use std::mem::ManuallyDrop;
+use std::sync::{Arc, RwLock};
 
-#[deny(unsafe_op_in_unsafe_fn)]
-use std::cell::OnceCell;
+use crossbeam::queue::SegQueue;
 
-use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions,
-    NSBackingStoreType, NSColor, NSFont, NSTextAlignment, NSTextField, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask,
-};
-use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    ns_string,
+use crate::actor::*;
+use crate::messageloop::{
+    Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowManager,
+    WindowManagerBackend,
 };
 
-#[derive(Debug, Default)]
-struct AppDelegateIvars {
-    window: OnceCell<Retained<NSWindow>>,
+#[cfg(feature = "wgpu")]
+use crate::geometry::{PhysicalSize, Rect};
+#[cfg(feature = "wgpu")]
+use crate::messageloop::{WgpuSurface, WgpuSurfaceBackend};
+
+mod ffi;
+
+pub struct AppkitContext<M, H: MessageHandler<M>> {
+    mesloop: Arc<AppkitMessageLoop<M, H>>,
 }
 
-define_class!(
-    // SAFETY:
-    // - The superclass NSObject does not have any subclassing requirements.
-    // - `Delegate` does not implement `Drop`.
-    #[unsafe(super = NSObject)]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = AppDelegateIvars]
-    struct Delegate;
+impl<M, H: MessageHandler<M>> Clone for AppkitContext<M, H> {
+    fn clone(&self) -> Self {
+        AppkitContext {
+            mesloop: self.mesloop.clone(),
+        }
+    }
+}
 
-    // SAFETY: `NSObjectProtocol` has no safety requirements.
-    unsafe impl NSObjectProtocol for Delegate {}
+impl<M, H: MessageHandler<M>> AppkitContext<M, H> {
+    pub(crate) fn new(mesloop: Arc<AppkitMessageLoop<M, H>>) -> Self {
+        AppkitContext { mesloop }
+    }
+}
 
-    // SAFETY: `NSApplicationDelegate` has no safety requirements.
-    unsafe impl NSApplicationDelegate for Delegate {
-        // SAFETY: The signature is correct.
-        #[unsafe(method(applicationDidFinishLaunching:))]
-        fn did_finish_launching(&self, notification: &NSNotification) {
-            let mtm = self.mtm();
+impl<M: 'static, H: MessageHandler<M> + 'static> Context<M> for AppkitContext<M, H> {
+    fn perform_main(
+        &self,
+        f: impl FnOnce(MainMarker, Self) -> () + 'static,
+        send_after: Option<M>,
+    ) {
+        self.mesloop.queue.push(MainTask {
+            f: Box::new(f),
+            send_after,
+        });
+        self.schedule();
+    }
 
-            let app = unsafe { notification.object() }
-                .unwrap()
-                .downcast::<NSApplication>()
-                .unwrap();
+    fn send_message(&self, message: M) {
+        self.mesloop.queue.push(MainTask {
+            f: Box::new(|_, _| {}),
+            send_after: Some(message),
+        });
+        self.schedule();
+    }
 
-            let text_field = unsafe {
-                let text_field = NSTextField::labelWithString(ns_string!("Hello, World!"), mtm);
-                text_field.setFrame(NSRect::new(
-                    NSPoint::new(5.0, 100.0),
-                    NSSize::new(290.0, 100.0),
-                ));
-                text_field.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-                    0.0, 0.5, 0.0, 1.0,
-                )));
-                text_field.setAlignment(NSTextAlignment::Center);
-                text_field.setFont(Some(&NSFont::systemFontOfSize(45.0)));
-                text_field.setAutoresizingMask(
-                    NSAutoresizingMaskOptions::ViewWidthSizable
-                        | NSAutoresizingMaskOptions::ViewHeightSizable,
-                );
-                text_field
-            };
+    fn window_manager(&self) -> WindowManager {
+        self.mesloop.window_manager.clone()
+    }
+}
 
-            // SAFETY: We disable releasing when closed below.
-            let window = unsafe {
-                NSWindow::initWithContentRect_styleMask_backing_defer(
-                    NSWindow::alloc(mtm),
-                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(300.0, 300.0)),
-                    NSWindowStyleMask::Titled
-                        | NSWindowStyleMask::Closable
-                        | NSWindowStyleMask::Miniaturizable
-                        | NSWindowStyleMask::Resizable,
-                    NSBackingStoreType::Buffered,
-                    false,
-                )
-            };
-            // SAFETY: Disable auto-release when closing windows.
-            // This is required when creating `NSWindow` outside a window
-            // controller.
-            unsafe { window.setReleasedWhenClosed(false) };
+impl<M, H: MessageHandler<M>> AppkitContext<M, H> {
+    fn schedule(&self) {
+        // SAFETY: `AppkitMessageLoop::new` initializes the Swift-side run-loop
+        // source before any `AppkitContext` can be created.
+        unsafe {
+            ffi::zintlappkit_schedule();
+        }
+    }
+}
 
-            // Set various window properties.
-            window.setTitle(ns_string!("A window"));
-            let view = window.contentView().expect("window must have content view");
-            unsafe { view.addSubview(&text_field) };
-            window.center();
-            unsafe { window.setContentMinSize(NSSize::new(300.0, 300.0)) };
-            window.setDelegate(Some(ProtocolObject::from_ref(self)));
+struct AppkitWindowManagerBackend {
+    windows: RwLock<Vec<MainActor<Window>>>,
+}
 
-            // Show the window.
-            window.makeKeyAndOrderFront(None);
+impl AppkitWindowManagerBackend {
+    fn new() -> Self {
+        AppkitWindowManagerBackend {
+            windows: RwLock::new(Vec::new()),
+        }
+    }
+}
 
-            // Store the window in the delegate.
-            self.ivars().window.set(window).unwrap();
+impl WindowManagerBackend for AppkitWindowManagerBackend {
+    fn create_window(&self, marker: MainMarker) -> MainActor<Window> {
+        // SAFETY: `marker` witnesses that this code is running on the AppKit
+        // main actor, which is required by `zintlappkit_create_window`.
+        let ptr = unsafe { ffi::zintlappkit_create_window() };
+        let window = MainActor::new(marker, Window::new(Box::new(AppkitWindowBackend { ptr })));
 
-            app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        if let Ok(mut windows) = self.windows.write() {
+            windows.push(window.clone());
+        }
 
-            // Activate the application.
-            // Required when launching unbundled (as is done with Cargo).
-            #[allow(deprecated)]
-            app.activateIgnoringOtherApps(true);
+        window
+    }
+}
+
+struct AppkitWindowBackend {
+    ptr: *const c_void,
+}
+
+impl WindowBackend for AppkitWindowBackend {
+    fn show(&self) {
+        // SAFETY: `Window` is only exposed through `MainActor`, so callers
+        // need a `MainMarker` to read it and call AppKit-backed methods.
+        unsafe {
+            ffi::zintlappkit_show_window(self.ptr);
         }
     }
 
-    // SAFETY: `NSWindowDelegate` has no safety requirements.
-    unsafe impl NSWindowDelegate for Delegate {
-        #[unsafe(method(windowWillClose:))]
-        fn window_will_close(&self, _notification: &NSNotification) {
-            // Quit the application when the window is closed.
-            unsafe { NSApplication::sharedApplication(self.mtm()).terminate(None) };
+    #[cfg(feature = "wgpu")]
+    fn create_wgpu_surface(&self, _marker: MainMarker, rect: Rect) -> WgpuSurface {
+        // SAFETY: `Window` is only exposed through `MainActor`, so callers need
+        // a `MainMarker` to invoke this AppKit-backed method on the main actor.
+        let ptr = unsafe { ffi::zintlappkit_create_wgpu_surface(self.ptr, rect) };
+        WgpuSurface::new(Box::new(AppkitWgpuSurfaceBackend { ptr }))
+    }
+}
+
+impl Drop for AppkitWindowBackend {
+    fn drop(&mut self) {
+        // SAFETY: Windows are retained by `AppkitWindowManager` and dropped when
+        // the AppKit message loop is torn down on the main thread.
+        unsafe {
+            ffi::zintlappkit_destroy_window(self.ptr);
         }
     }
-);
+}
 
-impl Delegate {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(AppDelegateIvars::default());
-        // SAFETY: The signature of `NSObject`'s `init` method is correct.
-        unsafe { msg_send![super(this), init] }
+#[cfg(feature = "wgpu")]
+struct AppkitWgpuSurfaceBackend {
+    ptr: *const c_void,
+}
+
+#[cfg(feature = "wgpu")]
+impl WgpuSurfaceBackend for AppkitWgpuSurfaceBackend {
+    fn surface_target_unsafe(&self) -> wgpu::SurfaceTargetUnsafe {
+        // SAFETY: `self.ptr` is retained by this backend and remains valid until
+        // `Drop`; Swift keeps the CAMetalLayer alive for the same lifetime.
+        let layer = unsafe { ffi::zintlappkit_wgpu_surface_metal_layer(self.ptr) };
+        wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer)
+    }
+
+    fn drawable_size(&self) -> PhysicalSize {
+        // SAFETY: `self.ptr` is retained by this backend and remains valid until
+        // `Drop`.
+        unsafe { ffi::wgpu_surface_drawable_size(self.ptr) }
+    }
+
+    fn set_rect(&self, rect: Rect) {
+        // SAFETY: `self.ptr` is retained by this backend and AppKit mutation is
+        // reached through the main-actor `WgpuSurface` wrapper.
+        unsafe {
+            ffi::zintlappkit_wgpu_surface_set_rect(self.ptr, rect);
+        }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+impl Drop for AppkitWgpuSurfaceBackend {
+    fn drop(&mut self) {
+        // SAFETY: The pointer was returned retained by Swift and is released
+        // exactly once here when the Rust owner is dropped.
+        unsafe {
+            ffi::zintlappkit_destroy_wgpu_surface(self.ptr);
+        }
     }
 }
 
 pub struct AppkitMessageLoop<M, H: MessageHandler<M>> {
-    delegate: Retained<Delegate>,
-    app: Retained<NSApplication>,
-    handler: H,
+    initialized: bool,
+    handler: RwLock<H>,
+    queue: SegQueue<MainTask<AppkitContext<M, H>, M>>,
+    window_manager: WindowManager,
     phantom: std::marker::PhantomData<M>,
 }
 
-impl<M, H: MessageHandler<M>> AppkitMessageLoop<M, H> {
-    pub fn new(handler: H) -> Self {
-        let mtm = MainThreadMarker::new().unwrap();
+impl<M: 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop<M, H> {
+    extern "C" fn cb_perform(s_ptr: *const c_void) {
+        // SAFETY: `s_ptr` is the user-data pointer passed to `zintlappkit_init`,
+        // created by `Arc::into_raw` in `new`. `ManuallyDrop` keeps the FFI-owned
+        // strong reference alive after this temporary `Arc` borrow.
+        let mesloop = ManuallyDrop::new(unsafe { Arc::from_raw(s_ptr.cast::<Self>()) });
+        while let Some(task) = mesloop.queue.pop() {
+            let cx = Arc::clone(&*mesloop).context();
+            (task.f)(MainMarker::new(), cx);
 
-        let app = NSApplication::sharedApplication(mtm);
-        let delegate = Delegate::new(mtm);
-        app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-
-        AppkitMessageLoop {
-            delegate,
-            app,
-            handler,
-            phantom: std::marker::PhantomData,
+            if let Some(message) = task.send_after {
+                mesloop.dispatch_message(message);
+            }
         }
     }
-}
 
-impl<M, H: MessageHandler<M>> MessageLoop<M, H> for AppkitMessageLoop<M, H> {
-    fn run(&mut self) {
-        self.app.run();
+    extern "C" fn cb_app_on_init(p_ud: *const c_void) {
+        // SAFETY: `p_ud` is the same `Arc<AppkitMessageLoop<_, _>>` raw pointer
+        // registered by `new`; Swift stores it unchanged for callback use.
+        // `ManuallyDrop` prevents releasing that retained FFI-owned reference.
+        let mesloop = ManuallyDrop::new(unsafe { Arc::from_raw(p_ud.cast::<Self>()) });
+        let cx = Arc::clone(&*mesloop).context();
+        //TODO: unwrap
+        let mut handler = mesloop.handler.write().unwrap();
+        handler.on_init(cx);
+    }
+    extern "C" fn cb_app_will_terminate(_p_ud: *const c_void) {}
+
+    fn dispatch_message(self: &Arc<Self>, message: M) {
+        let cx = self.clone().context();
+        //TODO: unwrap
+        let mut handler = self.handler.write().unwrap();
+        handler.on_event(cx, Event::UserMessage(message));
+    }
+
+    pub fn new(handler: H) -> Arc<Self> {
+        let queue = SegQueue::new();
+        let mesloop = Arc::new(AppkitMessageLoop {
+            initialized: true,
+            handler: handler.into(),
+            queue,
+            window_manager: WindowManager::new(Arc::new(AppkitWindowManagerBackend::new())),
+            phantom: std::marker::PhantomData,
+        });
+
+        let p_ud = Arc::into_raw(mesloop.clone());
+        let cb = ffi::AppCallback {
+            on_init: Self::cb_app_on_init,
+            perform: Self::cb_perform,
+            will_terminate: Self::cb_app_will_terminate,
+        };
+        // SAFETY: `p_ud` is a stable `Arc::into_raw` pointer for FFI user data.
+        // `cb` is live for this call, and Swift copies it before returning.
+        unsafe { ffi::zintlappkit_init(p_ud as *const c_void, &cb) };
+
+        mesloop
+    }
+
+    fn context(self: Arc<Self>) -> AppkitContext<M, H> {
+        AppkitContext::new(self.clone())
+    }
+
+    pub fn run(&self) {
+        if self.initialized {
+            // SAFETY: `new` called `zintlappkit_init`, installing the AppKit
+            // singleton and run-loop source required by `zintlappkit_run`.
+            unsafe {
+                ffi::zintlappkit_run();
+            }
+        }
     }
 }
