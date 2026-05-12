@@ -1,12 +1,15 @@
 use zintl_native::{
     Context, Event, MainActor, MessageHandler, PlatformMessageLoop, Rect, WgpuSurface, Window,
 };
+use zintl_render::VelloRenderer;
+use zintl_wgpu::RenderState;
 
 enum Message {
     CreateWindow {
         window: MainActor<Window>,
         wgpu_surface: MainActor<WgpuSurface>,
         render_state: RenderState,
+        vello_renderer: VelloRenderer,
     },
 }
 
@@ -15,6 +18,7 @@ struct Handler {
     window: Option<MainActor<Window>>,
     wgpu_surface: Option<MainActor<WgpuSurface>>,
     render_state: Option<RenderState>,
+    vello_renderer: Option<VelloRenderer>,
 }
 
 impl MessageHandler<Message> for Handler {
@@ -34,6 +38,8 @@ impl MessageHandler<Message> for Handler {
                     },
                 );
                 let mut render_state = create_render_state(&wgpu_surface, marker);
+                let vello_renderer = VelloRenderer::new(render_state.device())
+                    .expect("failed to create vello renderer");
                 render_state.clear(wgpu::Color {
                     r: 0.08,
                     g: 0.12,
@@ -44,6 +50,7 @@ impl MessageHandler<Message> for Handler {
                     window,
                     wgpu_surface,
                     render_state,
+                    vello_renderer,
                 });
             },
             None,
@@ -56,56 +63,14 @@ impl MessageHandler<Message> for Handler {
                 window,
                 wgpu_surface,
                 render_state,
+                vello_renderer,
             }) => {
                 self.window = Some(window);
                 self.wgpu_surface = Some(wgpu_surface);
                 self.render_state = Some(render_state);
+                self.vello_renderer = Some(vello_renderer);
             }
         }
-    }
-}
-
-struct RenderState {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-}
-
-impl RenderState {
-    fn clear(&mut self, color: wgpu::Color) {
-        let frame = self
-            .surface
-            .get_current_texture()
-            .expect("failed to acquire surface texture");
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("clear encoder"),
-            });
-
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("clear pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(color),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-        }
-
-        self.queue.submit([encoder.finish()]);
-        frame.present();
     }
 }
 
@@ -115,60 +80,15 @@ fn create_render_state(
 ) -> RenderState {
     let native_surface = wgpu_surface.read(marker).unwrap();
     let drawable_size = native_surface.drawable_size();
-    assert!(drawable_size.width > 0);
-    assert!(drawable_size.height > 0);
 
-    let instance = wgpu::Instance::default();
     // SAFETY: The native `WgpuSurface` owns the CAMetalLayer and is stored in
-    // `Handler` so it outlives this smoke-test `wgpu::Surface`.
-    let surface = unsafe {
-        instance
-            .create_surface_unsafe(native_surface.surface_target_unsafe())
-            .expect("failed to create wgpu surface")
-    };
-
-    let adapter =
-        futures::executor::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }))
-        .expect("failed to find a compatible wgpu adapter");
-
-    let (device, queue) =
-        futures::executor::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("failed to create wgpu device");
-
-    let capabilities = surface.get_capabilities(&adapter);
-    let format = capabilities
-        .formats
-        .iter()
-        .copied()
-        .find(wgpu::TextureFormat::is_srgb)
-        .unwrap_or(capabilities.formats[0]);
-    let present_mode = capabilities
-        .present_modes
-        .iter()
-        .copied()
-        .find(|mode| *mode == wgpu::PresentMode::Fifo)
-        .unwrap_or(capabilities.present_modes[0]);
-    let alpha_mode = capabilities.alpha_modes[0];
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width: drawable_size.width,
-        height: drawable_size.height,
-        present_mode,
-        alpha_mode,
-        view_formats: vec![],
-        desired_maximum_frame_latency: 2,
-    };
-    surface.configure(&device, &config);
-
-    RenderState {
-        surface,
-        device,
-        queue,
+    // `Handler` so it outlives the `wgpu::Surface` owned by `RenderState`.
+    unsafe {
+        RenderState::new_from_surface_target(
+            native_surface.surface_target_unsafe(),
+            drawable_size.width,
+            drawable_size.height,
+        )
     }
 }
 
