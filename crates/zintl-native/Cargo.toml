@@ -5,6 +5,5 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-objc2 = "0.6.4"
-objc2-foundation = "0.3.2"
-objc2-app-kit = "0.3.2"
+futures = "0.3"
+crossbeam = "0.8"

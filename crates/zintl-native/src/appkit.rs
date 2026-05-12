@@ -1,153 +1,82 @@
-use crate::messageloop::{MessageHandler, MessageLoop};
+use std::ffi::c_void;
+use std::sync::{Arc, RwLock};
 
-#[deny(unsafe_op_in_unsafe_fn)]
-use std::cell::OnceCell;
+use crossbeam::queue::SegQueue;
 
-use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions,
-    NSBackingStoreType, NSColor, NSFont, NSTextAlignment, NSTextField, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask,
-};
-use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    ns_string,
-};
+use crate::actor::*;
+use crate::messageloop::{Context, MainTask, MessageHandler};
 
-#[derive(Debug, Default)]
-struct AppDelegateIvars {
-    window: OnceCell<Retained<NSWindow>>,
+mod ffi;
+
+pub struct AppkitContext<M, H: MessageHandler<M>> {
+    mesloop: Arc<AppkitMessageLoop<M, H>>,
 }
 
-define_class!(
-    // SAFETY:
-    // - The superclass NSObject does not have any subclassing requirements.
-    // - `Delegate` does not implement `Drop`.
-    #[unsafe(super = NSObject)]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = AppDelegateIvars]
-    struct Delegate;
-
-    // SAFETY: `NSObjectProtocol` has no safety requirements.
-    unsafe impl NSObjectProtocol for Delegate {}
-
-    // SAFETY: `NSApplicationDelegate` has no safety requirements.
-    unsafe impl NSApplicationDelegate for Delegate {
-        // SAFETY: The signature is correct.
-        #[unsafe(method(applicationDidFinishLaunching:))]
-        fn did_finish_launching(&self, notification: &NSNotification) {
-            let mtm = self.mtm();
-
-            let app = unsafe { notification.object() }
-                .unwrap()
-                .downcast::<NSApplication>()
-                .unwrap();
-
-            let text_field = unsafe {
-                let text_field = NSTextField::labelWithString(ns_string!("Hello, World!"), mtm);
-                text_field.setFrame(NSRect::new(
-                    NSPoint::new(5.0, 100.0),
-                    NSSize::new(290.0, 100.0),
-                ));
-                text_field.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-                    0.0, 0.5, 0.0, 1.0,
-                )));
-                text_field.setAlignment(NSTextAlignment::Center);
-                text_field.setFont(Some(&NSFont::systemFontOfSize(45.0)));
-                text_field.setAutoresizingMask(
-                    NSAutoresizingMaskOptions::ViewWidthSizable
-                        | NSAutoresizingMaskOptions::ViewHeightSizable,
-                );
-                text_field
-            };
-
-            // SAFETY: We disable releasing when closed below.
-            let window = unsafe {
-                NSWindow::initWithContentRect_styleMask_backing_defer(
-                    NSWindow::alloc(mtm),
-                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(300.0, 300.0)),
-                    NSWindowStyleMask::Titled
-                        | NSWindowStyleMask::Closable
-                        | NSWindowStyleMask::Miniaturizable
-                        | NSWindowStyleMask::Resizable,
-                    NSBackingStoreType::Buffered,
-                    false,
-                )
-            };
-            // SAFETY: Disable auto-release when closing windows.
-            // This is required when creating `NSWindow` outside a window
-            // controller.
-            unsafe { window.setReleasedWhenClosed(false) };
-
-            // Set various window properties.
-            window.setTitle(ns_string!("A window"));
-            let view = window.contentView().expect("window must have content view");
-            unsafe { view.addSubview(&text_field) };
-            window.center();
-            unsafe { window.setContentMinSize(NSSize::new(300.0, 300.0)) };
-            window.setDelegate(Some(ProtocolObject::from_ref(self)));
-
-            // Show the window.
-            window.makeKeyAndOrderFront(None);
-
-            // Store the window in the delegate.
-            self.ivars().window.set(window).unwrap();
-
-            app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-
-            // Activate the application.
-            // Required when launching unbundled (as is done with Cargo).
-            #[allow(deprecated)]
-            app.activateIgnoringOtherApps(true);
-        }
+impl<M, H: MessageHandler<M>> AppkitContext<M, H> {
+    pub(crate) fn new(mesloop: Arc<AppkitMessageLoop<M, H>>) -> Self {
+        AppkitContext { mesloop }
     }
+}
 
-    // SAFETY: `NSWindowDelegate` has no safety requirements.
-    unsafe impl NSWindowDelegate for Delegate {
-        #[unsafe(method(windowWillClose:))]
-        fn window_will_close(&self, _notification: &NSNotification) {
-            // Quit the application when the window is closed.
-            unsafe { NSApplication::sharedApplication(self.mtm()).terminate(None) };
-        }
-    }
-);
-
-impl Delegate {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(AppDelegateIvars::default());
-        // SAFETY: The signature of `NSObject`'s `init` method is correct.
-        unsafe { msg_send![super(this), init] }
-    }
+impl<M, H: MessageHandler<M>> Context<M> for AppkitContext<M, H> {
+    fn perform_main(&self, f: impl Fn(MainMarker) -> () + 'static, send_after: Option<M>) {}
 }
 
 pub struct AppkitMessageLoop<M, H: MessageHandler<M>> {
-    delegate: Retained<Delegate>,
-    app: Retained<NSApplication>,
-    handler: H,
+    initialized: bool,
+    handler: RwLock<H>,
+    queue: SegQueue<MainTask<M>>,
     phantom: std::marker::PhantomData<M>,
 }
 
 impl<M, H: MessageHandler<M>> AppkitMessageLoop<M, H> {
-    pub fn new(handler: H) -> Self {
-        let mtm = MainThreadMarker::new().unwrap();
-
-        let app = NSApplication::sharedApplication(mtm);
-        let delegate = Delegate::new(mtm);
-        app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-
-        AppkitMessageLoop {
-            delegate,
-            app,
-            handler,
-            phantom: std::marker::PhantomData,
+    extern "C" fn cb_perform(s_ptr: *const c_void) {
+        let mesloop = unsafe { Arc::from_raw(s_ptr as *mut Self) };
+        if let Some(task) = mesloop.queue.pop() {
+            (task.f)(MainMarker::new());
         }
     }
-}
 
-impl<M, H: MessageHandler<M>> MessageLoop<M, H> for AppkitMessageLoop<M, H> {
-    fn run(&mut self) {
-        self.app.run();
+    extern "C" fn cb_app_on_init(p_ud: *const c_void) {
+        let mesloop = unsafe { Arc::from_raw(p_ud as *mut Self) };
+        let cx = mesloop.clone().context();
+        //TODO: unwrap
+        let mut handler = mesloop.handler.write().unwrap();
+        handler.on_init(cx);
+    }
+    extern "C" fn cb_app_will_terminate(_p_ud: *const c_void) {}
+
+    pub fn new(handler: H) -> Arc<Self> {
+        let queue = SegQueue::new();
+        let mesloop = Arc::new(AppkitMessageLoop {
+            initialized: true,
+            handler: handler.into(),
+            queue,
+            phantom: std::marker::PhantomData,
+        });
+
+        let p_ud = Arc::into_raw(mesloop.clone());
+        let cb = ffi::AppCallback {
+            on_init: Self::cb_app_on_init,
+            perform: Self::cb_perform,
+            will_terminate: Self::cb_app_will_terminate,
+        };
+        // SAFETY:
+        unsafe { ffi::zintlappkit_init(p_ud as *const c_void, &cb) };
+
+        mesloop
+    }
+
+    fn context(self: Arc<Self>) -> AppkitContext<M, H> {
+        AppkitContext::new(self.clone())
+    }
+
+    pub fn run(&self) {
+        if self.initialized {
+            // SAFETY: Appkit app is initialized.
+            unsafe {
+                ffi::zintlappkit_run();
+            }
+        }
     }
 }
