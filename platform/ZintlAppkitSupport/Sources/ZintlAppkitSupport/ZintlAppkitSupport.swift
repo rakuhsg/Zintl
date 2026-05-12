@@ -230,6 +230,7 @@ func zintlAppkitCreateWindow() -> UnsafeMutableRawPointer {
 @_cdecl("zintlappkit_show_window")
 func zintlAppkitShowWindow(ptr: UnsafeMutableRawPointer) {
     let wnd = Unmanaged<RWindow>.fromOpaque(ptr).takeUnretainedValue()
+    NSApp.activate(ignoringOtherApps: true)
     wnd.window.makeKeyAndOrderFront(nil)
 }
 
