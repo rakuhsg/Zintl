@@ -26,7 +26,6 @@ See `DESIGN.md` for the product and architecture direction.
 ## Guidelines
 
 - Keep changes small and aligned with `DESIGN.md`.
-- Prefer GPU-first runtime primitives over browser/DOM/CSS compatibility layers.
-- Do not assume a specific JavaScript UI framework in runtime core code.
-- Keep macOS-specific code under `crates/zintl-native/src/appkit*` or `platform/ZintlAppkitSupport`.
 - Use `cargo fmt` before finishing Rust changes.
+- Keep comments clear and short.
+- Add SAFETY note to unsafe blocks.
