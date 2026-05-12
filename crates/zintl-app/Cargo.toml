@@ -5,4 +5,5 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-zintl-native = { path = "../zintl-native" }
+zintl-native = { path = "../zintl-native", features = ["wgpu"] }
+wgpu = "26"

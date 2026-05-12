@@ -10,6 +10,11 @@ use crate::messageloop::{
     WindowManagerBackend,
 };
 
+#[cfg(feature = "wgpu")]
+use crate::geometry::{PhysicalSize, Rect};
+#[cfg(feature = "wgpu")]
+use crate::messageloop::{WgpuSurface, WgpuSurfaceBackend};
+
 mod ffi;
 
 pub struct AppkitContext<M, H: MessageHandler<M>> {
@@ -105,6 +110,14 @@ impl WindowBackend for AppkitWindowBackend {
             ffi::zintlappkit_show_window(self.ptr);
         }
     }
+
+    #[cfg(feature = "wgpu")]
+    fn create_wgpu_surface(&self, _marker: MainMarker, rect: Rect) -> WgpuSurface {
+        // SAFETY: `Window` is only exposed through `MainActor`, so callers need
+        // a `MainMarker` to invoke this AppKit-backed method on the main actor.
+        let ptr = unsafe { ffi::zintlappkit_create_wgpu_surface(self.ptr, rect) };
+        WgpuSurface::new(Box::new(AppkitWgpuSurfaceBackend { ptr }))
+    }
 }
 
 impl Drop for AppkitWindowBackend {
@@ -113,6 +126,46 @@ impl Drop for AppkitWindowBackend {
         // the AppKit message loop is torn down on the main thread.
         unsafe {
             ffi::zintlappkit_destroy_window(self.ptr);
+        }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+struct AppkitWgpuSurfaceBackend {
+    ptr: *const c_void,
+}
+
+#[cfg(feature = "wgpu")]
+impl WgpuSurfaceBackend for AppkitWgpuSurfaceBackend {
+    fn surface_target_unsafe(&self) -> wgpu::SurfaceTargetUnsafe {
+        // SAFETY: `self.ptr` is retained by this backend and remains valid until
+        // `Drop`; Swift keeps the CAMetalLayer alive for the same lifetime.
+        let layer = unsafe { ffi::zintlappkit_wgpu_surface_metal_layer(self.ptr) };
+        wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer)
+    }
+
+    fn drawable_size(&self) -> PhysicalSize {
+        // SAFETY: `self.ptr` is retained by this backend and remains valid until
+        // `Drop`.
+        unsafe { ffi::wgpu_surface_drawable_size(self.ptr) }
+    }
+
+    fn set_rect(&self, rect: Rect) {
+        // SAFETY: `self.ptr` is retained by this backend and AppKit mutation is
+        // reached through the main-actor `WgpuSurface` wrapper.
+        unsafe {
+            ffi::zintlappkit_wgpu_surface_set_rect(self.ptr, rect);
+        }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+impl Drop for AppkitWgpuSurfaceBackend {
+    fn drop(&mut self) {
+        // SAFETY: The pointer was returned retained by Swift and is released
+        // exactly once here when the Rust owner is dropped.
+        unsafe {
+            ffi::zintlappkit_destroy_wgpu_surface(self.ptr);
         }
     }
 }

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use crate::actor::{MainActor, MainMarker};
+#[cfg(feature = "wgpu")]
+use crate::geometry::{PhysicalSize, Rect};
 
 pub struct MainTask<C, M> {
     pub(crate) f: Box<dyn FnOnce(MainMarker, C) -> ()>,
@@ -44,10 +46,53 @@ impl Window {
     pub fn show(&self) {
         self.backend.show();
     }
+
+    #[cfg(feature = "wgpu")]
+    pub fn create_wgpu_surface(&self, marker: MainMarker, rect: Rect) -> MainActor<WgpuSurface> {
+        MainActor::new(marker, self.backend.create_wgpu_surface(marker, rect))
+    }
 }
 
 pub(crate) trait WindowBackend {
     fn show(&self);
+
+    #[cfg(feature = "wgpu")]
+    fn create_wgpu_surface(&self, marker: MainMarker, rect: Rect) -> WgpuSurface;
+}
+
+#[cfg(feature = "wgpu")]
+/// Native view/layer owner used to create a `wgpu::Surface`.
+///
+/// Keep this value alive until every `wgpu::Surface` created from
+/// `surface_target_unsafe` has been dropped.
+pub struct WgpuSurface {
+    backend: Box<dyn WgpuSurfaceBackend>,
+}
+
+#[cfg(feature = "wgpu")]
+impl WgpuSurface {
+    pub(crate) fn new(backend: Box<dyn WgpuSurfaceBackend>) -> Self {
+        WgpuSurface { backend }
+    }
+
+    pub fn surface_target_unsafe(&self) -> wgpu::SurfaceTargetUnsafe {
+        self.backend.surface_target_unsafe()
+    }
+
+    pub fn drawable_size(&self) -> PhysicalSize {
+        self.backend.drawable_size()
+    }
+
+    pub fn set_rect(&self, rect: Rect) {
+        self.backend.set_rect(rect);
+    }
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) trait WgpuSurfaceBackend {
+    fn surface_target_unsafe(&self) -> wgpu::SurfaceTargetUnsafe;
+    fn drawable_size(&self) -> PhysicalSize;
+    fn set_rect(&self, rect: Rect);
 }
 
 pub enum Event<M> {
