@@ -5,8 +5,15 @@ enum Message {}
 struct Handler {}
 
 impl MessageHandler<Message> for Handler {
-    fn on_init(&mut self, _cx: impl Context<Message>) {
-        println!("hello, world!");
+    fn on_init(&mut self, cx: impl Context<Message>) {
+        let wm = cx.window_manager();
+        cx.perform_main(
+            move |marker| {
+                let window = wm.create_window(marker);
+                window.read(marker).unwrap().show();
+            },
+            None,
+        );
     }
 }
 

@@ -5,7 +5,9 @@ use std::sync::{Arc, RwLock};
 use crossbeam::queue::SegQueue;
 
 use crate::actor::*;
-use crate::messageloop::{Context, MainTask, MessageHandler};
+use crate::messageloop::{
+    Context, MainTask, MessageHandler, Window, WindowBackend, WindowManager, WindowManagerBackend,
+};
 
 mod ffi;
 
@@ -19,18 +21,84 @@ impl<M, H: MessageHandler<M>> AppkitContext<M, H> {
     }
 }
 
-impl<M, H: MessageHandler<M>> Context<M> for AppkitContext<M, H> {
-    fn perform_main(&self, f: impl Fn(MainMarker) -> () + 'static, send_after: Option<M>) {}
+impl<M: 'static, H: MessageHandler<M>> Context<M> for AppkitContext<M, H> {
+    fn perform_main(&self, f: impl FnOnce(MainMarker) -> () + 'static, send_after: Option<M>) {
+        self.mesloop.queue.push(MainTask {
+            f: Box::new(f),
+            send_after,
+        });
+        // SAFETY: `AppkitMessageLoop::new` initializes the Swift-side run-loop
+        // source before any `AppkitContext` can be created.
+        unsafe {
+            ffi::zintlappkit_schedule();
+        }
+    }
+
+    fn window_manager(&self) -> WindowManager {
+        self.mesloop.window_manager.clone()
+    }
+}
+
+struct AppkitWindowManagerBackend {
+    windows: RwLock<Vec<MainActor<Window>>>,
+}
+
+impl AppkitWindowManagerBackend {
+    fn new() -> Self {
+        AppkitWindowManagerBackend {
+            windows: RwLock::new(Vec::new()),
+        }
+    }
+}
+
+impl WindowManagerBackend for AppkitWindowManagerBackend {
+    fn create_window(&self, marker: MainMarker) -> MainActor<Window> {
+        // SAFETY: `marker` witnesses that this code is running on the AppKit
+        // main actor, which is required by `zintlappkit_create_window`.
+        let ptr = unsafe { ffi::zintlappkit_create_window() };
+        let window = MainActor::new(marker, Window::new(Box::new(AppkitWindowBackend { ptr })));
+
+        if let Ok(mut windows) = self.windows.write() {
+            windows.push(window.clone());
+        }
+
+        window
+    }
+}
+
+struct AppkitWindowBackend {
+    ptr: *const c_void,
+}
+
+impl WindowBackend for AppkitWindowBackend {
+    fn show(&self) {
+        // SAFETY: `Window` is only exposed through `MainActor`, so callers
+        // need a `MainMarker` to read it and call AppKit-backed methods.
+        unsafe {
+            ffi::zintlappkit_show_window(self.ptr);
+        }
+    }
+}
+
+impl Drop for AppkitWindowBackend {
+    fn drop(&mut self) {
+        // SAFETY: Windows are retained by `AppkitWindowManager` and dropped when
+        // the AppKit message loop is torn down on the main thread.
+        unsafe {
+            ffi::zintlappkit_destroy_window(self.ptr);
+        }
+    }
 }
 
 pub struct AppkitMessageLoop<M, H: MessageHandler<M>> {
     initialized: bool,
     handler: RwLock<H>,
     queue: SegQueue<MainTask<M>>,
+    window_manager: WindowManager,
     phantom: std::marker::PhantomData<M>,
 }
 
-impl<M, H: MessageHandler<M>> AppkitMessageLoop<M, H> {
+impl<M: 'static, H: MessageHandler<M>> AppkitMessageLoop<M, H> {
     extern "C" fn cb_perform(s_ptr: *const c_void) {
         // SAFETY: `s_ptr` is the user-data pointer passed to `zintlappkit_init`,
         // created by `Arc::into_raw` in `new`. `ManuallyDrop` keeps the FFI-owned
@@ -59,6 +127,7 @@ impl<M, H: MessageHandler<M>> AppkitMessageLoop<M, H> {
             initialized: true,
             handler: handler.into(),
             queue,
+            window_manager: WindowManager::new(Arc::new(AppkitWindowManagerBackend::new())),
             phantom: std::marker::PhantomData,
         });
 

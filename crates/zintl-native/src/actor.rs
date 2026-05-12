@@ -28,6 +28,14 @@ pub struct MainActor<T> {
     inner: Arc<RwLock<T>>,
 }
 
+impl<T> Clone for MainActor<T> {
+    fn clone(&self) -> Self {
+        MainActor {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<T> MainActor<T> {
     pub fn new(_marker: MainMarker, value: T) -> Self {
         MainActor {
