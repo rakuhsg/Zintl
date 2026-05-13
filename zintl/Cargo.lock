@@ -9252,7 +9252,9 @@ dependencies = [
 name = "zintl-deno"
 version = "0.1.0"
 dependencies = [
+ "deno_resolver",
  "deno_runtime",
+ "sys_traits",
 ]
 
 [[package]]
