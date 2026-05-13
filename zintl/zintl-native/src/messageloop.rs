@@ -5,12 +5,16 @@ use crate::actor::{MainActor, MainMarker};
 use crate::geometry::{PhysicalSize, Rect};
 
 pub struct MainTask<C, M> {
-    pub(crate) f: Box<dyn FnOnce(MainMarker, C) -> ()>,
+    pub(crate) f: Box<dyn FnOnce(MainMarker, C) -> () + Send>,
     pub(crate) send_after: Option<M>,
 }
 
-pub trait Context<M>: Clone + 'static {
-    fn perform_main(&self, f: impl FnOnce(MainMarker, Self) -> () + 'static, send_after: Option<M>);
+pub trait Context<M>: Clone + Send + Sync + 'static {
+    fn perform_main(
+        &self,
+        f: impl FnOnce(MainMarker, Self) -> () + Send + 'static,
+        send_after: Option<M>,
+    );
     fn send_message(&self, message: M);
     fn window_manager(&self) -> WindowManager;
 }
@@ -30,7 +34,7 @@ impl WindowManager {
     }
 }
 
-pub(crate) trait WindowManagerBackend {
+pub(crate) trait WindowManagerBackend: Send + Sync {
     fn create_window(&self, marker: MainMarker) -> MainActor<Window>;
 }
 
@@ -53,7 +57,7 @@ impl Window {
     }
 }
 
-pub(crate) trait WindowBackend {
+pub(crate) trait WindowBackend: Send + Sync {
     fn show(&self);
 
     #[cfg(feature = "wgpu")]
@@ -89,7 +93,7 @@ impl WgpuSurface {
 }
 
 #[cfg(feature = "wgpu")]
-pub(crate) trait WgpuSurfaceBackend {
+pub(crate) trait WgpuSurfaceBackend: Send + Sync {
     fn surface_target_unsafe(&self) -> wgpu::SurfaceTargetUnsafe;
     fn drawable_size(&self) -> PhysicalSize;
     fn set_rect(&self, rect: Rect);
@@ -99,7 +103,7 @@ pub enum Event<M> {
     UserMessage(M),
 }
 
-pub trait MessageHandler<M> {
+pub trait MessageHandler<M>: Send + Sync {
     fn on_init(&mut self, _cx: impl Context<M>) {}
     fn on_event(&mut self, _cx: impl Context<M>, _event: Event<M>) {}
     fn will_terminate(&mut self, _cx: impl Context<M>) {}

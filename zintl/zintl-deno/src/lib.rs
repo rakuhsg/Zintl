@@ -20,7 +20,14 @@ use deno_runtime::worker::MainWorker;
 use deno_runtime::worker::WorkerOptions;
 use deno_runtime::worker::WorkerServiceOptions;
 
+pub mod api;
+
 const WEBGPU_FEATURE_NAME: &str = deno_runtime::deno_webgpu::UNSTABLE_FEATURE_NAME;
+
+#[derive(Clone, Default)]
+pub struct DenoRuntimeOptions {
+    pub api: api::ZintlApi,
+}
 
 #[derive(Debug)]
 pub enum DenoRuntimeError {
@@ -74,7 +81,11 @@ pub struct DenoRuntime {
 
 impl DenoRuntime {
     pub fn new(main_module: MainModule) -> Self {
-        let worker = Self::create_main_worker(&main_module);
+        Self::new_with_options(main_module, DenoRuntimeOptions::default())
+    }
+
+    pub fn new_with_options(main_module: MainModule, options: DenoRuntimeOptions) -> Self {
+        let worker = Self::create_main_worker_with_options(&main_module, options);
         Self {
             main_module,
             worker,
@@ -83,6 +94,13 @@ impl DenoRuntime {
 
     pub fn from_file_path(path: impl AsRef<Path>) -> Self {
         Self::new(MainModule::from_file_path(path))
+    }
+
+    pub fn from_file_path_with_options(
+        path: impl AsRef<Path>,
+        options: DenoRuntimeOptions,
+    ) -> Self {
+        Self::new_with_options(MainModule::from_file_path(path), options)
     }
 
     pub async fn run(&mut self) -> Result<(), DenoRuntimeError> {
@@ -99,8 +117,15 @@ impl DenoRuntime {
     }
 
     pub fn run_file_path_current_thread(path: PathBuf) -> Result<(), DenoRuntimeError> {
+        Self::run_file_path_current_thread_with_options(path, DenoRuntimeOptions::default())
+    }
+
+    pub fn run_file_path_current_thread_with_options(
+        path: PathBuf,
+        options: DenoRuntimeOptions,
+    ) -> Result<(), DenoRuntimeError> {
         create_and_run_current_thread(async move {
-            let mut runtime = Self::from_file_path(path);
+            let mut runtime = Self::from_file_path_with_options(path, options);
             runtime.run().await
         })
     }
@@ -110,6 +135,13 @@ impl DenoRuntime {
     }
 
     pub fn create_main_worker(main_module: &MainModule) -> MainWorker {
+        Self::create_main_worker_with_options(main_module, DenoRuntimeOptions::default())
+    }
+
+    pub fn create_main_worker_with_options(
+        main_module: &MainModule,
+        options: DenoRuntimeOptions,
+    ) -> MainWorker {
         let fs = Arc::new(RealFs);
         let feature_checker = Arc::new(Self::feature_checker());
         let permissions = PermissionsContainer::new(
@@ -147,6 +179,7 @@ impl DenoRuntime {
                     unstable_features: Self::unstable_feature_ids(feature_checker.as_ref()),
                     ..Default::default()
                 },
+                extensions: vec![api::extension(options.api)],
                 ..Default::default()
             },
         )

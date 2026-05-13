@@ -5,6 +5,8 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+deno_core = { path = "../../thirdparty/deno/libs/core" }
+deno_error = "=0.7.1"
 deno_runtime = { path = "../../thirdparty/deno/runtime", features = ["hmr"] }
 deno_resolver = { path = "../../thirdparty/deno/libs/resolver" }
 sys_traits = { version = "=0.1.27", features = ["real"] }
