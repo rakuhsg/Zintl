@@ -35,7 +35,7 @@ fn main() {
         println!("cargo:rustc-link-arg={}", "/usr/lib/swift");
 
         println!(
-            "cargo:rustc-link-search=platform/ZintlAppkitSupport/.build/arm64-apple-macosx/release/"
+            "cargo:rustc-link-search=../platform/ZintlAppkitSupport/.build/arm64-apple-macosx/release/"
         );
         println!(
             "cargo:rustc-link-search={}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx",

@@ -5,6 +5,6 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-deno_runtime = { path = "../../thirdparty/deno/runtime", features = ["include_js_files_for_snapshotting"]  }
+deno_runtime = { path = "../../thirdparty/deno/runtime", features = ["hmr"] }
 deno_resolver = { path = "../../thirdparty/deno/libs/resolver" }
 sys_traits = { version = "=0.1.27", features = ["real"] }

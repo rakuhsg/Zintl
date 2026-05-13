@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+use std::thread;
+
 use zintl_native::{
     Context, Event, MainActor, MessageHandler, PlatformMessageLoop, Rect, WgpuSurface, Window,
 };
@@ -13,16 +16,32 @@ enum Message {
     },
 }
 
-#[derive(Default)]
 struct Handler {
+    main_module: PathBuf,
+    js_thread: Option<thread::JoinHandle<()>>,
     window: Option<MainActor<Window>>,
     wgpu_surface: Option<MainActor<WgpuSurface>>,
     render_state: Option<RenderState>,
     vello_renderer: Option<VelloRenderer>,
 }
 
+impl Handler {
+    fn new(main_module: PathBuf) -> Self {
+        Handler {
+            main_module,
+            js_thread: None,
+            window: None,
+            wgpu_surface: None,
+            render_state: None,
+            vello_renderer: None,
+        }
+    }
+}
+
 impl MessageHandler<Message> for Handler {
     fn on_init(&mut self, cx: impl Context<Message>) {
+        self.js_thread = Some(start_js_thread(self.main_module.clone()));
+
         let wm = cx.window_manager();
         cx.perform_main(
             move |marker, cx| {
@@ -74,6 +93,17 @@ impl MessageHandler<Message> for Handler {
     }
 }
 
+fn start_js_thread(main_module: PathBuf) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("zintl-js".to_string())
+        .spawn(move || {
+            if let Err(error) = zintl_deno::run_main_worker(main_module) {
+                eprintln!("zintl-js: {error}");
+            }
+        })
+        .expect("failed to spawn JS thread")
+}
+
 fn create_render_state(
     wgpu_surface: &MainActor<WgpuSurface>,
     marker: zintl_native::MainMarker,
@@ -93,7 +123,27 @@ fn create_render_state(
 }
 
 fn main() {
-    let handler = Handler::default();
+    let main_module = main_module_from_args();
+    let handler = Handler::new(main_module);
     let m = PlatformMessageLoop::new(handler);
     m.run();
+}
+
+fn main_module_from_args() -> PathBuf {
+    let Some(path) = std::env::args_os().nth(1) else {
+        eprintln!("usage: zintl-app <main.js>");
+        std::process::exit(2);
+    };
+
+    let path = PathBuf::from(path);
+    match path.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!(
+                "failed to resolve main module '{}': {error}",
+                path.display()
+            );
+            std::process::exit(2);
+        }
+    }
 }
