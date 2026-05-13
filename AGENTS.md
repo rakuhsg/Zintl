@@ -28,5 +28,6 @@ See `DESIGN.md` for the product and architecture direction.
 - Keep changes small and aligned with `DESIGN.md`.
 - Always run Cargo commands from the workspace directory, e.g. `cd zintl && cargo check`.
 - Use `cd zintl && cargo fmt` before finishing Rust changes.
+- Use `swift format format <file>` before finishing Swift changes.
 - Keep comments clear and short.
 - Add SAFETY note to unsafe blocks.
