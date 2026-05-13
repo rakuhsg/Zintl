@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -96,6 +96,13 @@ impl DenoRuntime {
 
     pub fn run_current_thread(mut self) -> Result<(), DenoRuntimeError> {
         create_and_run_current_thread(async move { self.run().await })
+    }
+
+    pub fn run_file_path_current_thread(path: PathBuf) -> Result<(), DenoRuntimeError> {
+        create_and_run_current_thread(async move {
+            let mut runtime = Self::from_file_path(path);
+            runtime.run().await
+        })
     }
 
     pub fn into_worker(self) -> MainWorker {
