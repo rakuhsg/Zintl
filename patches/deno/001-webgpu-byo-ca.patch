@@ -1,0 +1,80 @@
+diff --git a/cli/tsc/dts/lib.deno.unstable.d.ts b/cli/tsc/dts/lib.deno.unstable.d.ts
+index a6003b6a8..e5e9293e0 100644
+--- a/cli/tsc/dts/lib.deno.unstable.d.ts
++++ b/cli/tsc/dts/lib.deno.unstable.d.ts
+@@ -186,12 +186,13 @@ declare namespace Deno {
+    *
+    *  The parameters correspond to the table below:
+    *
+-   *  | system            | winHandle     | displayHandle   |
+-   *  | ----------------- | ------------- | --------------- |
+-   *  | "cocoa" (macOS)   | -             | `NSView*`       |
+-   *  | "win32" (Windows) | `HWND`        | `HINSTANCE`     |
+-   *  | "x11" (Linux)     | Xlib `Window` | Xlib `Display*` |
+-   *  | "wayland" (Linux) | `wl_surface*` | `wl_display*`   |
++   *  | system                     | winHandle       | displayHandle   |
++   *  | -------------------------- | --------------- | --------------- |
++   *  | "cocoa" (macOS)            | -               | `NSView*`       |
++   *  | "core-animation" (macOS)   | `CAMetalLayer*` | -               |
++   *  | "win32" (Windows)          | `HWND`          | `HINSTANCE`     |
++   *  | "x11" (Linux)              | Xlib `Window`   | Xlib `Display*` |
++   *  | "wayland" (Linux)          | `wl_surface*`   | `wl_display*`   |
+    *
+    * @category GPU
+    * @experimental
+@@ -199,7 +200,7 @@ declare namespace Deno {
+   export class UnsafeWindowSurface {
+     constructor(
+       options: {
+-        system: "cocoa" | "win32" | "x11" | "wayland";
++        system: "cocoa" | "core-animation" | "win32" | "x11" | "wayland";
+         windowHandle: Deno.PointerValue<unknown>;
+         displayHandle: Deno.PointerValue<unknown>;
+         width: number;
+diff --git a/ext/webgpu/byow.rs b/ext/webgpu/byow.rs
+index 1ffcdd6a5..959ae67f7 100644
+--- a/ext/webgpu/byow.rs
++++ b/ext/webgpu/byow.rs
+@@ -131,6 +131,26 @@ impl UnsafeWindowSurface {
+       return Err(ByowError::InvalidParameters);
+     }
+ 
++    #[cfg(target_os = "macos")]
++    if options.system == UnsafeWindowSurfaceSystem::CoreAnimation {
++      // SAFETY: see above comment
++      let id = unsafe {
++        instance
++          .instance_create_surface_metal(
++            options.window_handle as *mut c_void,
++            None,
++          )
++          .map_err(ByowError::CreateSurface)?
++      };
++
++      return Ok(UnsafeWindowSurface {
++        id,
++        width: RefCell::new(options.width),
++        height: RefCell::new(options.height),
++        context: SameObject::new(),
++      });
++    }
++
+     let (win_handle, display_handle) = raw_window(
+       options.system,
+       options.window_handle,
+@@ -203,6 +223,7 @@ struct UnsafeWindowSurfaceOptions {
+ #[derive(Eq, PartialEq)]
+ enum UnsafeWindowSurfaceSystem {
+   Cocoa,
++  CoreAnimation,
+   Win32,
+   X11,
+   Wayland,
+@@ -226,6 +247,7 @@ impl<'a> FromV8<'a> for UnsafeWindowSurfaceOptions {
+     let s = String::from_v8(scope, val).unwrap();
+     let system = match s.as_str() {
+       "cocoa" => UnsafeWindowSurfaceSystem::Cocoa,
++      "core-animation" => UnsafeWindowSurfaceSystem::CoreAnimation,
+       "win32" => UnsafeWindowSurfaceSystem::Win32,
+       "x11" => UnsafeWindowSurfaceSystem::X11,
+       "wayland" => UnsafeWindowSurfaceSystem::Wayland,
