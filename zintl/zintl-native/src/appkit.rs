@@ -35,10 +35,10 @@ impl<M, H: MessageHandler<M>> AppkitContext<M, H> {
     }
 }
 
-impl<M: 'static, H: MessageHandler<M> + 'static> Context<M> for AppkitContext<M, H> {
+impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> Context<M> for AppkitContext<M, H> {
     fn perform_main(
         &self,
-        f: impl FnOnce(MainMarker, Self) -> () + 'static,
+        f: impl FnOnce(MainMarker, Self) -> () + Send + 'static,
         send_after: Option<M>,
     ) {
         self.mesloop.queue.push(MainTask {
@@ -102,6 +102,9 @@ struct AppkitWindowBackend {
     ptr: *const c_void,
 }
 
+unsafe impl Send for AppkitWindowBackend {}
+unsafe impl Sync for AppkitWindowBackend {}
+
 impl WindowBackend for AppkitWindowBackend {
     fn show(&self) {
         // SAFETY: `Window` is only exposed through `MainActor`, so callers
@@ -134,6 +137,11 @@ impl Drop for AppkitWindowBackend {
 struct AppkitWgpuSurfaceBackend {
     ptr: *const c_void,
 }
+
+#[cfg(feature = "wgpu")]
+unsafe impl Send for AppkitWgpuSurfaceBackend {}
+#[cfg(feature = "wgpu")]
+unsafe impl Sync for AppkitWgpuSurfaceBackend {}
 
 #[cfg(feature = "wgpu")]
 impl WgpuSurfaceBackend for AppkitWgpuSurfaceBackend {
@@ -178,7 +186,7 @@ pub struct AppkitMessageLoop<M, H: MessageHandler<M>> {
     phantom: std::marker::PhantomData<M>,
 }
 
-impl<M: 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop<M, H> {
+impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop<M, H> {
     extern "C" fn cb_perform(s_ptr: *const c_void) {
         // SAFETY: `s_ptr` is the user-data pointer passed to `zintlappkit_init`,
         // created by `Arc::into_raw` in `new`. `ManuallyDrop` keeps the FFI-owned

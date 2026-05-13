@@ -1,49 +1,41 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 
-use zintl_native::{
-    Context, Event, MainActor, MessageHandler, PlatformMessageLoop, Rect, WgpuSurface, Window,
-};
-use zintl_render::VelloRenderer;
-use zintl_wgpu::RenderState;
+use zintl_deno::DenoRuntimeOptions;
+use zintl_deno::api::{ZintlApi, ZintlWindow, ZintlWindowError};
+use zintl_native::{Context, Event, MainActor, MessageHandler, PlatformMessageLoop, Window};
 
 enum Message {
-    CreateWindow {
-        window: MainActor<Window>,
-        wgpu_surface: MainActor<WgpuSurface>,
-        render_state: RenderState,
-        vello_renderer: VelloRenderer,
-    },
+    WindowCreated { window: MainActor<Window> },
 }
 
 struct Handler {
+    main_module: PathBuf,
     js_thread: Option<thread::JoinHandle<()>>,
-    window: Option<MainActor<Window>>,
-    wgpu_surface: Option<MainActor<WgpuSurface>>,
-    render_state: Option<RenderState>,
-    vello_renderer: Option<VelloRenderer>,
+    windows: Vec<MainActor<Window>>,
 }
 
 impl Handler {
     fn new(main_module: PathBuf) -> Self {
-        let mut handler = Handler {
+        Handler {
+            main_module,
             js_thread: None,
-            window: None,
-            wgpu_surface: None,
-            render_state: None,
-            vello_renderer: None,
-        };
-        handler.start_js_thread(main_module);
-        handler
+            windows: Vec::new(),
+        }
     }
 
-    fn start_js_thread(&mut self, main_module: PathBuf) {
+    fn start_js_thread(&mut self, options: DenoRuntimeOptions) {
+        let main_module = self.main_module.clone();
         self.js_thread = Some(
             thread::Builder::new()
                 .name("zintl-js".to_string())
                 .spawn(move || {
                     if let Err(error) =
-                        zintl_deno::DenoRuntime::run_file_path_current_thread(main_module)
+                        zintl_deno::DenoRuntime::run_file_path_current_thread_with_options(
+                            main_module,
+                            options,
+                        )
                     {
                         eprintln!("zintl-js: {error}");
                     }
@@ -55,72 +47,41 @@ impl Handler {
 
 impl MessageHandler<Message> for Handler {
     fn on_init(&mut self, cx: impl Context<Message>) {
-        let wm = cx.window_manager();
-        cx.perform_main(
-            move |marker, cx| {
-                let window = wm.create_window(marker);
-                window.read(marker).unwrap().show();
-                let wgpu_surface = window.read(marker).unwrap().create_wgpu_surface(
-                    marker,
-                    Rect {
-                        x: 0.0,
-                        y: 0.0,
-                        width: 480.0,
-                        height: 300.0,
-                    },
-                );
-                let mut render_state = create_render_state(&wgpu_surface, marker);
-                let vello_renderer = VelloRenderer::new(render_state.device())
-                    .expect("failed to create vello renderer");
-                render_state.clear(wgpu::Color {
-                    r: 0.08,
-                    g: 0.12,
-                    b: 1.0,
-                    a: 1.0,
-                });
-                cx.send_message(Message::CreateWindow {
-                    window,
-                    wgpu_surface,
-                    render_state,
-                    vello_renderer,
-                });
+        self.start_js_thread(DenoRuntimeOptions {
+            api: ZintlApi {
+                window: Some(Arc::new(AppWindowHost { cx })),
             },
-            None,
-        );
+        });
     }
 
     fn on_event(&mut self, _cx: impl Context<Message>, event: Event<Message>) {
         match event {
-            Event::UserMessage(Message::CreateWindow {
-                window,
-                wgpu_surface,
-                render_state,
-                vello_renderer,
-            }) => {
-                self.window = Some(window);
-                self.wgpu_surface = Some(wgpu_surface);
-                self.render_state = Some(render_state);
-                self.vello_renderer = Some(vello_renderer);
+            Event::UserMessage(Message::WindowCreated { window }) => {
+                self.windows.push(window);
             }
         }
     }
 }
 
-fn create_render_state(
-    wgpu_surface: &MainActor<WgpuSurface>,
-    marker: zintl_native::MainMarker,
-) -> RenderState {
-    let native_surface = wgpu_surface.read(marker).unwrap();
-    let drawable_size = native_surface.drawable_size();
+struct AppWindowHost<C> {
+    cx: C,
+}
 
-    // SAFETY: The native `WgpuSurface` owns the CAMetalLayer and is stored in
-    // `Handler` so it outlives the `wgpu::Surface` owned by `RenderState`.
-    unsafe {
-        RenderState::new_from_surface_target(
-            native_surface.surface_target_unsafe(),
-            drawable_size.width,
-            drawable_size.height,
-        )
+impl<C> ZintlWindow for AppWindowHost<C>
+where
+    C: Context<Message> + Send + Sync,
+{
+    fn create_window(&self) -> Result<(), ZintlWindowError> {
+        let wm = self.cx.window_manager();
+        self.cx.perform_main(
+            move |marker, cx| {
+                let window = wm.create_window(marker);
+                window.read(marker).unwrap().show();
+                cx.send_message(Message::WindowCreated { window });
+            },
+            None,
+        );
+        Ok(())
     }
 }
 
