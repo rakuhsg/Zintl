@@ -1,0 +1,8 @@
+[package]
+name = "zintl-deno"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+deno_runtime = { path = "../../thirdparty/deno/runtime", features = ["include_js_files_for_snapshotting"]  }
