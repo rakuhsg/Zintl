@@ -4,6 +4,9 @@ use std::sync::Arc;
 
 use deno_resolver::npm::DenoInNpmPackageChecker;
 use deno_resolver::npm::NpmResolver;
+use deno_runtime::BootstrapOptions;
+use deno_runtime::FeatureChecker;
+use deno_runtime::UNSTABLE_FEATURES;
 use deno_runtime::deno_core::FsModuleLoader;
 use deno_runtime::deno_core::ModuleSpecifier;
 use deno_runtime::deno_core::error::CoreError;
@@ -16,6 +19,8 @@ use deno_runtime::tokio_util::create_and_run_current_thread;
 use deno_runtime::worker::MainWorker;
 use deno_runtime::worker::WorkerOptions;
 use deno_runtime::worker::WorkerServiceOptions;
+
+const WEBGPU_FEATURE_NAME: &str = deno_runtime::deno_webgpu::UNSTABLE_FEATURE_NAME;
 
 #[derive(Debug)]
 pub enum RunMainWorkerError {
@@ -67,6 +72,7 @@ pub fn run_main_worker(main_module: impl AsRef<Path>) -> Result<(), RunMainWorke
 
 fn main_worker_from_specifier(main_module: &ModuleSpecifier) -> MainWorker {
     let fs = Arc::new(RealFs);
+    let feature_checker = Arc::new(webgpu_feature_checker());
     let permissions = PermissionsContainer::new(
         Arc::new(RuntimePermissionDescriptorParser::new(
             sys_traits::impls::RealSys,
@@ -87,7 +93,7 @@ fn main_worker_from_specifier(main_module: &ModuleSpecifier) -> MainWorker {
             deno_rt_native_addon_loader: None,
             blob_store: Default::default(),
             broadcast_channel: Default::default(),
-            feature_checker: Default::default(),
+            feature_checker: feature_checker.clone(),
             node_services: None,
             npm_process_state_provider: None,
             root_cert_store_provider: None,
@@ -97,6 +103,26 @@ fn main_worker_from_specifier(main_module: &ModuleSpecifier) -> MainWorker {
             v8_code_cache: None,
             bundle_provider: None,
         },
-        WorkerOptions::default(),
+        WorkerOptions {
+            bootstrap: BootstrapOptions {
+                unstable_features: unstable_feature_ids(feature_checker.as_ref()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
     )
+}
+
+fn webgpu_feature_checker() -> FeatureChecker {
+    let mut checker = FeatureChecker::default();
+    checker.enable_feature(WEBGPU_FEATURE_NAME);
+    checker
+}
+
+fn unstable_feature_ids(feature_checker: &FeatureChecker) -> Vec<i32> {
+    UNSTABLE_FEATURES
+        .iter()
+        .filter(|feature| feature_checker.check(feature.name))
+        .map(|feature| feature.id)
+        .collect()
 }
