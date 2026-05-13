@@ -7,11 +7,11 @@ See `DESIGN.md` for the product and architecture direction.
 
 ## Structure
 
-- `zintl/Cargo.toml`: Rust workspace root.
-- `zintl/crates/zintl`: public/core crate placeholder.
-- `zintl/crates/zintl-app`: native app entry point.
-- `zintl/crates/zintl-native`: platform message loop, main actor, and native bindings.
-- `zintl/crates/zintl-render`: rendering crate placeholder.
+- `runtime/Cargo.toml`: A runtime workspace root.
+- `runtime/crates/zintl`: It's just placeholder for now.
+- `runtime/crates/zintl-app`: native app entry point.
+- `runtime/crates/zintl-native`: platform message loop, main actor, and native bindings.
+- `runtime/crates/zintl-render`: rendering crate placeholder.
 - `platform/ZintlAppkitSupport`: Swift Package used by macOS AppKit FFI.
 
 ## Commands
