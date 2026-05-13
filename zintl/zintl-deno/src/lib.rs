@@ -23,106 +23,139 @@ use deno_runtime::worker::WorkerServiceOptions;
 const WEBGPU_FEATURE_NAME: &str = deno_runtime::deno_webgpu::UNSTABLE_FEATURE_NAME;
 
 #[derive(Debug)]
-pub enum RunMainWorkerError {
+pub enum DenoRuntimeError {
     Core(CoreError),
     LoadEvent(Box<JsError>),
 }
 
-impl std::fmt::Display for RunMainWorkerError {
+impl std::fmt::Display for DenoRuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RunMainWorkerError::Core(error) => write!(f, "{error}"),
-            RunMainWorkerError::LoadEvent(error) => write!(f, "{error}"),
+            DenoRuntimeError::Core(error) => write!(f, "{error}"),
+            DenoRuntimeError::LoadEvent(error) => write!(f, "{error}"),
         }
     }
 }
 
-impl std::error::Error for RunMainWorkerError {}
+impl std::error::Error for DenoRuntimeError {}
 
-impl From<CoreError> for RunMainWorkerError {
+impl From<CoreError> for DenoRuntimeError {
     fn from(error: CoreError) -> Self {
-        RunMainWorkerError::Core(error)
+        DenoRuntimeError::Core(error)
     }
 }
 
-impl From<Box<JsError>> for RunMainWorkerError {
+impl From<Box<JsError>> for DenoRuntimeError {
     fn from(error: Box<JsError>) -> Self {
-        RunMainWorkerError::LoadEvent(error)
+        DenoRuntimeError::LoadEvent(error)
     }
 }
 
-pub fn main_worker(main_module: impl AsRef<Path>) -> MainWorker {
-    let main_module = ModuleSpecifier::from_file_path(main_module)
-        .expect("main module must be an absolute file path");
-    main_worker_from_specifier(&main_module)
+pub struct MainModule {
+    specifier: ModuleSpecifier,
 }
 
-pub fn run_main_worker(main_module: impl AsRef<Path>) -> Result<(), RunMainWorkerError> {
-    let main_module = ModuleSpecifier::from_file_path(main_module)
-        .expect("main module must be an absolute file path");
+impl MainModule {
+    pub fn from_file_path(path: impl AsRef<Path>) -> Self {
+        let specifier = ModuleSpecifier::from_file_path(path)
+            .expect("main module must be an absolute file path");
+        Self { specifier }
+    }
 
-    create_and_run_current_thread(async move {
-        let mut worker = main_worker_from_specifier(&main_module);
-        worker.execute_main_module(&main_module).await?;
-        worker.dispatch_load_event()?;
-        worker.run_event_loop(false).await?;
+    pub fn specifier(&self) -> &ModuleSpecifier {
+        &self.specifier
+    }
+}
+
+pub struct DenoRuntime {
+    main_module: MainModule,
+    worker: MainWorker,
+}
+
+impl DenoRuntime {
+    pub fn new(main_module: MainModule) -> Self {
+        let worker = Self::create_main_worker(&main_module);
+        Self {
+            main_module,
+            worker,
+        }
+    }
+
+    pub fn from_file_path(path: impl AsRef<Path>) -> Self {
+        Self::new(MainModule::from_file_path(path))
+    }
+
+    pub async fn run(&mut self) -> Result<(), DenoRuntimeError> {
+        let main_module = self.main_module.specifier().clone();
+
+        self.worker.execute_main_module(&main_module).await?;
+        self.worker.dispatch_load_event()?;
+        self.worker.run_event_loop(false).await?;
         Ok(())
-    })
-}
+    }
 
-fn main_worker_from_specifier(main_module: &ModuleSpecifier) -> MainWorker {
-    let fs = Arc::new(RealFs);
-    let feature_checker = Arc::new(webgpu_feature_checker());
-    let permissions = PermissionsContainer::new(
-        Arc::new(RuntimePermissionDescriptorParser::new(
+    pub fn run_current_thread(mut self) -> Result<(), DenoRuntimeError> {
+        create_and_run_current_thread(async move { self.run().await })
+    }
+
+    pub fn into_worker(self) -> MainWorker {
+        self.worker
+    }
+
+    pub fn create_main_worker(main_module: &MainModule) -> MainWorker {
+        let fs = Arc::new(RealFs);
+        let feature_checker = Arc::new(Self::feature_checker());
+        let permissions = PermissionsContainer::new(
+            Arc::new(RuntimePermissionDescriptorParser::new(
+                sys_traits::impls::RealSys,
+            )),
+            Permissions::none_without_prompt(),
+        );
+
+        MainWorker::bootstrap_from_options::<
+            DenoInNpmPackageChecker,
+            NpmResolver<sys_traits::impls::RealSys>,
             sys_traits::impls::RealSys,
-        )),
-        Permissions::none_without_prompt(),
-    );
-
-    MainWorker::bootstrap_from_options::<
-        DenoInNpmPackageChecker,
-        NpmResolver<sys_traits::impls::RealSys>,
-        sys_traits::impls::RealSys,
-    >(
-        main_module,
-        WorkerServiceOptions {
-            module_loader: Rc::new(FsModuleLoader),
-            permissions,
-            fs,
-            deno_rt_native_addon_loader: None,
-            blob_store: Default::default(),
-            broadcast_channel: Default::default(),
-            feature_checker: feature_checker.clone(),
-            node_services: None,
-            npm_process_state_provider: None,
-            root_cert_store_provider: None,
-            fetch_dns_resolver: Default::default(),
-            shared_array_buffer_store: None,
-            compiled_wasm_module_store: None,
-            v8_code_cache: None,
-            bundle_provider: None,
-        },
-        WorkerOptions {
-            bootstrap: BootstrapOptions {
-                unstable_features: unstable_feature_ids(feature_checker.as_ref()),
+        >(
+            main_module.specifier(),
+            WorkerServiceOptions {
+                module_loader: Rc::new(FsModuleLoader),
+                permissions,
+                fs,
+                deno_rt_native_addon_loader: None,
+                blob_store: Default::default(),
+                broadcast_channel: Default::default(),
+                feature_checker: feature_checker.clone(),
+                node_services: None,
+                npm_process_state_provider: None,
+                root_cert_store_provider: None,
+                fetch_dns_resolver: Default::default(),
+                shared_array_buffer_store: None,
+                compiled_wasm_module_store: None,
+                v8_code_cache: None,
+                bundle_provider: None,
+            },
+            WorkerOptions {
+                bootstrap: BootstrapOptions {
+                    unstable_features: Self::unstable_feature_ids(feature_checker.as_ref()),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        },
-    )
-}
+        )
+    }
 
-fn webgpu_feature_checker() -> FeatureChecker {
-    let mut checker = FeatureChecker::default();
-    checker.enable_feature(WEBGPU_FEATURE_NAME);
-    checker
-}
+    pub fn feature_checker() -> FeatureChecker {
+        let mut checker = FeatureChecker::default();
+        checker.enable_feature(WEBGPU_FEATURE_NAME);
+        checker
+    }
 
-fn unstable_feature_ids(feature_checker: &FeatureChecker) -> Vec<i32> {
-    UNSTABLE_FEATURES
-        .iter()
-        .filter(|feature| feature_checker.check(feature.name))
-        .map(|feature| feature.id)
-        .collect()
+    fn unstable_feature_ids(feature_checker: &FeatureChecker) -> Vec<i32> {
+        UNSTABLE_FEATURES
+            .iter()
+            .filter(|feature| feature_checker.check(feature.name))
+            .map(|feature| feature.id)
+            .collect()
+    }
 }

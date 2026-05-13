@@ -97,7 +97,8 @@ fn start_js_thread(main_module: PathBuf) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("zintl-js".to_string())
         .spawn(move || {
-            if let Err(error) = zintl_deno::run_main_worker(main_module) {
+            let runtime = zintl_deno::DenoRuntime::from_file_path(main_module);
+            if let Err(error) = runtime.run_current_thread() {
                 eprintln!("zintl-js: {error}");
             }
         })
