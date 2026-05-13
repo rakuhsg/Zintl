@@ -17,7 +17,6 @@ enum Message {
 }
 
 struct Handler {
-    main_module: PathBuf,
     js_thread: Option<thread::JoinHandle<()>>,
     window: Option<MainActor<Window>>,
     wgpu_surface: Option<MainActor<WgpuSurface>>,
@@ -27,21 +26,35 @@ struct Handler {
 
 impl Handler {
     fn new(main_module: PathBuf) -> Self {
-        Handler {
-            main_module,
+        let mut handler = Handler {
             js_thread: None,
             window: None,
             wgpu_surface: None,
             render_state: None,
             vello_renderer: None,
-        }
+        };
+        handler.start_js_thread(main_module);
+        handler
+    }
+
+    fn start_js_thread(&mut self, main_module: PathBuf) {
+        self.js_thread = Some(
+            thread::Builder::new()
+                .name("zintl-js".to_string())
+                .spawn(move || {
+                    if let Err(error) =
+                        zintl_deno::DenoRuntime::run_file_path_current_thread(main_module)
+                    {
+                        eprintln!("zintl-js: {error}");
+                    }
+                })
+                .expect("failed to spawn JS thread"),
+        );
     }
 }
 
 impl MessageHandler<Message> for Handler {
     fn on_init(&mut self, cx: impl Context<Message>) {
-        self.js_thread = Some(start_js_thread(self.main_module.clone()));
-
         let wm = cx.window_manager();
         cx.perform_main(
             move |marker, cx| {
@@ -91,17 +104,6 @@ impl MessageHandler<Message> for Handler {
             }
         }
     }
-}
-
-fn start_js_thread(main_module: PathBuf) -> thread::JoinHandle<()> {
-    thread::Builder::new()
-        .name("zintl-js".to_string())
-        .spawn(move || {
-            if let Err(error) = zintl_deno::run_main_worker(main_module) {
-                eprintln!("zintl-js: {error}");
-            }
-        })
-        .expect("failed to spawn JS thread")
 }
 
 fn create_render_state(
