@@ -55,8 +55,8 @@ fn op_zintl_window_create(state: &mut OpState) -> Result<(), JsErrorBox> {
 deno_runtime::deno_core::extension!(
     zintl,
     ops = [op_zintl_window_create],
-    esm_entry_point = "ext:zintl/window.ts",
-    esm = ["ext:zintl/window.ts" = "../../api/window.ts"],
+    esm_entry_point = "ext:zintl/window.js",
+    esm = ["ext:zintl/window.js" = "../../libs/window.js"],
     options = {
         window: Option<Arc<dyn ZintlWindow>>,
     },
