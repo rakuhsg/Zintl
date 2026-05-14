@@ -27,6 +27,7 @@ See `DESIGN.md` for the product and architecture direction.
 ## Guidelines
 
 - Keep changes small and aligned with `DESIGN.md`.
+- Do not edit files under `thirdparty/`.
 - Always run Cargo commands from the workspace directory, e.g. `cd zintl && cargo check`.
 - Use `cd zintl && cargo fmt` before finishing Rust changes.
 - Use `swift format format <file>` before finishing Swift changes.
