@@ -4,12 +4,12 @@ use crate::actor::{MainActor, MainMarker};
 #[cfg(feature = "wgpu")]
 use crate::geometry::{PhysicalSize, Rect};
 
-pub struct MainTask<C, M> {
+pub struct MainTask<C, M: Send + Sync> {
     pub(crate) f: Box<dyn FnOnce(MainMarker, C) -> () + Send>,
     pub(crate) send_after: Option<M>,
 }
 
-pub trait Context<M>: Clone + Send + Sync + 'static {
+pub trait Context<M: Send + Sync>: Clone + Send + Sync + 'static {
     fn perform_main(
         &self,
         f: impl FnOnce(MainMarker, Self) -> () + Send + 'static,
@@ -99,11 +99,11 @@ pub(crate) trait WgpuSurfaceBackend: Send + Sync {
     fn set_rect(&self, rect: Rect);
 }
 
-pub enum Event<M> {
+pub enum Event<M: Send + Sync> {
     UserMessage(M),
 }
 
-pub trait MessageHandler<M>: Send + Sync {
+pub trait MessageHandler<M: Send + Sync>: Send + Sync {
     fn on_init(&mut self, _cx: impl Context<M>) {}
     fn on_event(&mut self, _cx: impl Context<M>, _event: Event<M>) {}
     fn will_terminate(&mut self, _cx: impl Context<M>) {}

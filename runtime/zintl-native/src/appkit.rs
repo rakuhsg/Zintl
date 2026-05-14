@@ -17,11 +17,11 @@ use crate::messageloop::{WgpuSurface, WgpuSurfaceBackend};
 
 mod ffi;
 
-pub struct AppkitContext<M, H: MessageHandler<M>> {
+pub struct AppkitContext<M: Send + Sync, H: MessageHandler<M>> {
     mesloop: Arc<AppkitMessageLoop<M, H>>,
 }
 
-impl<M, H: MessageHandler<M>> Clone for AppkitContext<M, H> {
+impl<M: Send + Sync, H: MessageHandler<M>> Clone for AppkitContext<M, H> {
     fn clone(&self) -> Self {
         AppkitContext {
             mesloop: self.mesloop.clone(),
@@ -29,7 +29,7 @@ impl<M, H: MessageHandler<M>> Clone for AppkitContext<M, H> {
     }
 }
 
-impl<M, H: MessageHandler<M>> AppkitContext<M, H> {
+impl<M: Send + Sync, H: MessageHandler<M>> AppkitContext<M, H> {
     pub(crate) fn new(mesloop: Arc<AppkitMessageLoop<M, H>>) -> Self {
         AppkitContext { mesloop }
     }
@@ -61,7 +61,7 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> Context<M> for Ap
     }
 }
 
-impl<M, H: MessageHandler<M>> AppkitContext<M, H> {
+impl<M: Send + Sync, H: MessageHandler<M>> AppkitContext<M, H> {
     fn schedule(&self) {
         // SAFETY: `AppkitMessageLoop::new` initializes the Swift-side run-loop
         // source before any `AppkitContext` can be created.
@@ -178,7 +178,7 @@ impl Drop for AppkitWgpuSurfaceBackend {
     }
 }
 
-pub struct AppkitMessageLoop<M, H: MessageHandler<M>> {
+pub struct AppkitMessageLoop<M: Send + Sync, H: MessageHandler<M>> {
     initialized: bool,
     handler: RwLock<H>,
     queue: SegQueue<MainTask<AppkitContext<M, H>, M>>,
