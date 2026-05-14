@@ -13,6 +13,7 @@ See `DESIGN.md` for the product and architecture direction.
 - `runtime/crates/zintl-native`: platform message loop, main actor, and native bindings.
 - `runtime/crates/zintl-render`: rendering crate placeholder.
 - `platform/ZintlAppkitSupport`: Swift Package used by macOS AppKit FFI.
+- `thirdparty/deno`: Deno 2.7.14 with a local patch applied to the WebGPU extension.
 
 ## Commands
 
@@ -26,6 +27,7 @@ See `DESIGN.md` for the product and architecture direction.
 ## Guidelines
 
 - Keep changes small and aligned with `DESIGN.md`.
+- Do not edit files under `thirdparty/`.
 - Always run Cargo commands from the workspace directory, e.g. `cd zintl && cargo check`.
 - Use `cd zintl && cargo fmt` before finishing Rust changes.
 - Use `swift format format <file>` before finishing Swift changes.

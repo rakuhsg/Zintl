@@ -23,6 +23,8 @@ use deno_runtime::worker::WorkerServiceOptions;
 pub mod api;
 
 const WEBGPU_FEATURE_NAME: &str = deno_runtime::deno_webgpu::UNSTABLE_FEATURE_NAME;
+const ZINTL_DENO_SNAPSHOT: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/ZINTL_DENO_SNAPSHOT.bin"));
 
 #[derive(Clone, Default)]
 pub struct DenoRuntimeOptions {
@@ -179,6 +181,7 @@ impl DenoRuntime {
                     unstable_features: Self::unstable_feature_ids(feature_checker.as_ref()),
                     ..Default::default()
                 },
+                startup_snapshot: Some(ZINTL_DENO_SNAPSHOT),
                 extensions: vec![api::extension(options.api)],
                 ..Default::default()
             },
