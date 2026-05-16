@@ -7,7 +7,6 @@ use deno_resolver::npm::NpmResolver;
 use deno_runtime::BootstrapOptions;
 use deno_runtime::FeatureChecker;
 use deno_runtime::UNSTABLE_FEATURES;
-use deno_runtime::deno_core::FsModuleLoader;
 use deno_runtime::deno_fs::RealFs;
 use deno_runtime::deno_permissions::Permissions;
 use deno_runtime::deno_permissions::PermissionsContainer;
@@ -18,7 +17,7 @@ use deno_runtime::worker::WorkerOptions;
 use deno_runtime::worker::WorkerServiceOptions;
 
 use crate::api;
-use crate::module::MainModule;
+use crate::module::{MainModule, ZintlModuleLoader};
 use crate::{DenoRuntimeError, DenoRuntimeOptions, WEBGPU_FEATURE_NAME, ZINTL_DENO_SNAPSHOT};
 
 pub struct DenoRuntime {
@@ -105,7 +104,7 @@ impl DenoRuntime {
         >(
             main_module.specifier(),
             WorkerServiceOptions {
-                module_loader: Rc::new(FsModuleLoader),
+                module_loader: Rc::new(ZintlModuleLoader::new()),
                 permissions,
                 fs,
                 deno_rt_native_addon_loader: None,
