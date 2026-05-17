@@ -4,7 +4,11 @@ import { op_zintl_window_create } from "ext:core/ops";
 const { ObjectDefineProperty } = primordials;
 const Zintl = globalThis.Zintl ?? {};
 
-Zintl.window = {
+export interface ZintlWindowAPI {
+    create(): void;
+}
+
+Zintl.window: ZintlWindowAPI = {
   create() {
     op_zintl_window_create();
   },
