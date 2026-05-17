@@ -18,6 +18,7 @@ use deno_runtime::worker::WorkerServiceOptions;
 
 use crate::api;
 use crate::module::{MainModule, ZintlModuleLoader};
+use crate::sys::ZintlSys;
 use crate::{DenoRuntimeError, DenoRuntimeOptions, WEBGPU_FEATURE_NAME, ZINTL_DENO_SNAPSHOT};
 
 pub struct DenoRuntime {
@@ -91,17 +92,11 @@ impl DenoRuntime {
         let fs = Arc::new(RealFs);
         let feature_checker = Arc::new(Self::feature_checker());
         let permissions = PermissionsContainer::new(
-            Arc::new(RuntimePermissionDescriptorParser::new(
-                sys_traits::impls::RealSys,
-            )),
+            Arc::new(RuntimePermissionDescriptorParser::new(ZintlSys)),
             Permissions::none_without_prompt(),
         );
 
-        MainWorker::bootstrap_from_options::<
-            DenoInNpmPackageChecker,
-            NpmResolver<sys_traits::impls::RealSys>,
-            sys_traits::impls::RealSys,
-        >(
+        MainWorker::bootstrap_from_options::<DenoInNpmPackageChecker, NpmResolver<ZintlSys>, ZintlSys>(
             main_module.specifier(),
             WorkerServiceOptions {
                 module_loader: Rc::new(ZintlModuleLoader::new()),

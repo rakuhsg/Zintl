@@ -4,6 +4,7 @@ use deno_runtime::deno_core::error::JsError;
 pub mod api;
 pub mod module;
 pub mod runtime;
+mod sys;
 
 pub use module::MainModule;
 pub use runtime::DenoRuntime;
