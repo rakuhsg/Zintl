@@ -304,6 +304,7 @@ class RWindow: NSObject, NSWindowDelegate {
       item.target = target
       item.keyEquivalentModifierMask = Self.modifierMask(command.modifiers ?? ["cmd"])
       item.isEnabled = command.enabled ?? true
+      Self.setRoleSymbol(command.role, on: item, title: command.title)
       menu.addItem(item)
     }
   }
@@ -360,6 +361,30 @@ class RWindow: NSObject, NSWindowDelegate {
       }
     }
     return mask
+  }
+
+  static func setRoleSymbol(_ role: String?, on item: NSMenuItem, title: String) {
+    guard #available(macOS 11.0, *),
+      let role,
+      let symbolName = Self.symbolName(forRole: role),
+      let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
+    else {
+      return
+    }
+
+    image.isTemplate = true
+    item.image = image
+  }
+
+  static func symbolName(forRole role: String) -> String? {
+    switch role {
+    case "about":
+      return "info.circle"
+    case "quit":
+      return "xmark.rectangle"
+    default:
+      return nil
+    }
   }
 }
 
