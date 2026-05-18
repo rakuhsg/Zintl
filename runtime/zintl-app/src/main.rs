@@ -5,18 +5,18 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 use zintl_deno::api::{
-    ZintlApi, ZintlWindow, ZintlWindowBounds, ZintlWindowCommandEvent, ZintlWindowCommandItem,
-    ZintlWindowCommandMenu, ZintlWindowCommandModifier, ZintlWindowCommandSet,
-    ZintlWindowCreateOptions, ZintlWindowError, ZintlWindowId, ZintlWindowPosition,
-    ZintlWindowSize,
+    ZintlApi, ZintlWindow, ZintlWindowAppMenu, ZintlWindowBounds, ZintlWindowCommandEvent,
+    ZintlWindowCommandItem, ZintlWindowCommandMenu, ZintlWindowCommandModifier,
+    ZintlWindowCommandRole, ZintlWindowCommandSet, ZintlWindowCreateOptions, ZintlWindowError,
+    ZintlWindowId, ZintlWindowPosition, ZintlWindowSize,
 };
 use zintl_deno::runtime::{DenoRuntime, DenoRuntimeOptions};
 use zintl_native::{
     Context, Event, MainActor, MainMarker, MessageHandler, PlatformMessageLoop, Rect, Window,
-    WindowCommandEvent, WindowCommandItem as NativeWindowCommandItem,
-    WindowCommandMenu as NativeWindowCommandMenu,
+    WindowAppMenu as NativeWindowAppMenu, WindowCommandEvent,
+    WindowCommandItem as NativeWindowCommandItem, WindowCommandMenu as NativeWindowCommandMenu,
     WindowCommandModifier as NativeWindowCommandModifier,
-    WindowCommandSet as NativeWindowCommandSet,
+    WindowCommandRole as NativeWindowCommandRole, WindowCommandSet as NativeWindowCommandSet,
 };
 
 struct Handler {
@@ -278,11 +278,18 @@ fn set_native_commands(
 
 fn native_command_set(commands: ZintlWindowCommandSet) -> NativeWindowCommandSet {
     NativeWindowCommandSet {
+        app_menu: commands.app_menu.map(native_app_menu),
         menus: commands
             .menus
             .into_iter()
             .map(native_command_menu)
             .collect(),
+    }
+}
+
+fn native_app_menu(menu: ZintlWindowAppMenu) -> NativeWindowAppMenu {
+    NativeWindowAppMenu {
+        items: menu.items.into_iter().map(native_command_item).collect(),
     }
 }
 
@@ -297,6 +304,7 @@ fn native_command_item(item: ZintlWindowCommandItem) -> NativeWindowCommandItem 
     NativeWindowCommandItem {
         id: item.id,
         title: item.title,
+        role: item.role.map(native_role),
         key: item.key,
         modifiers: item.modifiers.into_iter().map(native_modifier).collect(),
         enabled: item.enabled,
@@ -309,6 +317,13 @@ fn native_modifier(modifier: ZintlWindowCommandModifier) -> NativeWindowCommandM
         ZintlWindowCommandModifier::Ctrl => NativeWindowCommandModifier::Ctrl,
         ZintlWindowCommandModifier::Alt => NativeWindowCommandModifier::Alt,
         ZintlWindowCommandModifier::Shift => NativeWindowCommandModifier::Shift,
+    }
+}
+
+fn native_role(role: ZintlWindowCommandRole) -> NativeWindowCommandRole {
+    match role {
+        ZintlWindowCommandRole::About => NativeWindowCommandRole::About,
+        ZintlWindowCommandRole::Quit => NativeWindowCommandRole::Quit,
     }
 }
 
@@ -362,21 +377,37 @@ fn validate_position(position: ZintlWindowPosition) -> Result<(), ZintlWindowErr
 }
 
 fn validate_commands(commands: &ZintlWindowCommandSet) -> Result<(), ZintlWindowError> {
+    if let Some(app_menu) = commands.app_menu.as_ref() {
+        validate_command_items(&app_menu.items)?;
+    }
     for menu in &commands.menus {
         if menu.title.is_empty() {
             return Err(ZintlWindowError::new(
                 "window command menu title cannot be empty",
             ));
         }
-        for item in &menu.items {
-            if item.id.is_empty() {
-                return Err(ZintlWindowError::new("window command id cannot be empty"));
-            }
-            if item.title.is_empty() {
-                return Err(ZintlWindowError::new(
-                    "window command title cannot be empty",
-                ));
-            }
+        validate_command_items(&menu.items)?;
+    }
+    Ok(())
+}
+
+fn validate_command_items(items: &[ZintlWindowCommandItem]) -> Result<(), ZintlWindowError> {
+    for item in items {
+        let has_command_id = item.id.as_ref().is_some_and(|id| !id.is_empty());
+        if !has_command_id && item.role.is_none() {
+            return Err(ZintlWindowError::new(
+                "window command id cannot be empty unless role is set",
+            ));
+        }
+        if has_command_id && item.role.is_some() {
+            return Err(ZintlWindowError::new(
+                "window command cannot set both id and role",
+            ));
+        }
+        if item.title.is_empty() {
+            return Err(ZintlWindowError::new(
+                "window command title cannot be empty",
+            ));
         }
     }
     Ok(())

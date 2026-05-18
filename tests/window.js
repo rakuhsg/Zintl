@@ -6,6 +6,20 @@ const window = Zintl.window.create({
     height: 420,
   },
   commands: {
+    appMenu: {
+      items: [
+        {
+          title: "About Zintl",
+          role: "about",
+        },
+        {
+          title: "Quit Zintl",
+          role: "quit",
+          key: "q",
+          modifiers: ["cmd"],
+        },
+      ],
+    },
     menus: [
       {
         title: "File",
@@ -53,6 +67,20 @@ window.setSize({ width: 720, height: 480 });
 window.setPosition({ x: 120, y: 120 });
 window.setBounds({ x: 160, y: 140, width: 760, height: 500 });
 window.setCommands({
+  appMenu: {
+    items: [
+      {
+        title: "About Zintl",
+        role: "about",
+      },
+      {
+        title: "Quit Zintl",
+        role: "quit",
+        key: "q",
+        modifiers: ["cmd"],
+      },
+    ],
+  },
   menus: [
     {
       title: "File",

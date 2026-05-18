@@ -36,13 +36,19 @@ export interface ZintlWindowPosition {
 }
 
 export type ZintlWindowCommandModifier = "cmd" | "ctrl" | "alt" | "shift";
+export type ZintlWindowCommandRole = "about" | "quit";
 
 export interface ZintlWindowCommandItem {
-  id: string;
+  id?: string;
   title: string;
+  role?: ZintlWindowCommandRole;
   key?: string;
   modifiers?: ZintlWindowCommandModifier[];
   enabled?: boolean;
+}
+
+export interface ZintlWindowAppMenu {
+  items: ZintlWindowCommandItem[];
 }
 
 export interface ZintlWindowCommandMenu {
@@ -51,7 +57,8 @@ export interface ZintlWindowCommandMenu {
 }
 
 export interface ZintlWindowCommandSet {
-  menus: ZintlWindowCommandMenu[];
+  appMenu?: ZintlWindowAppMenu;
+  menus?: ZintlWindowCommandMenu[];
 }
 
 export interface ZintlWindowCreateOptions {

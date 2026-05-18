@@ -94,8 +94,16 @@ pub(crate) trait WindowBackend: Send + Sync {
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WindowCommandSet {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_menu: Option<WindowAppMenu>,
     pub menus: Vec<WindowCommandMenu>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct WindowAppMenu {
+    pub items: Vec<WindowCommandItem>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -106,8 +114,11 @@ pub struct WindowCommandMenu {
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct WindowCommandItem {
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<WindowCommandRole>,
     pub key: Option<String>,
     pub modifiers: Vec<WindowCommandModifier>,
     pub enabled: bool,
@@ -120,6 +131,13 @@ pub enum WindowCommandModifier {
     Ctrl,
     Alt,
     Shift,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowCommandRole {
+    About,
+    Quit,
 }
 
 #[derive(Clone, Debug)]

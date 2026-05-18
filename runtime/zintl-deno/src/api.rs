@@ -68,7 +68,15 @@ pub struct ZintlWindowPosition {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ZintlWindowCommandSet {
+    #[serde(default, rename = "appMenu")]
+    pub app_menu: Option<ZintlWindowAppMenu>,
+    #[serde(default)]
     pub menus: Vec<ZintlWindowCommandMenu>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ZintlWindowAppMenu {
+    pub items: Vec<ZintlWindowCommandItem>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -79,8 +87,9 @@ pub struct ZintlWindowCommandMenu {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ZintlWindowCommandItem {
-    pub id: String,
+    pub id: Option<String>,
     pub title: String,
+    pub role: Option<ZintlWindowCommandRole>,
     pub key: Option<String>,
     #[serde(default)]
     pub modifiers: Vec<ZintlWindowCommandModifier>,
@@ -95,6 +104,13 @@ pub enum ZintlWindowCommandModifier {
     Ctrl,
     Alt,
     Shift,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ZintlWindowCommandRole {
+    About,
+    Quit,
 }
 
 #[derive(Clone, Debug, Serialize)]

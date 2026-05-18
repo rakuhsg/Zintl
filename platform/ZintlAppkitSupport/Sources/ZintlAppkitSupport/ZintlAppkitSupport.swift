@@ -18,27 +18,7 @@ class RAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    let mainMenu = NSMenu()
-
-    let appMenuItem = NSMenuItem()
-    mainMenu.addItem(appMenuItem)
-    let appMenu = NSMenu()
-    appMenuItem.submenu = appMenu
-
-    let aboutTitle = "About " + ProcessInfo.processInfo.processName
-    appMenu.addItem(
-      withTitle: aboutTitle,
-      action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-      keyEquivalent: ""
-    )
-
-    appMenu.addItem(
-      withTitle: "Quit",
-      action: #selector(NSApplication.terminate(_:)),
-      keyEquivalent: "q"
-    )
-
-    NSApp.mainMenu = mainMenu
+    NSApp.mainMenu = NSMenu()
 
     self.cb.on_launch(self.ud)
   }
@@ -83,7 +63,12 @@ func releaseRustFn(rp: UnsafeRawPointer?) {
 }
 
 struct ZintlWindowCommandSet: Decodable {
+  var appMenu: ZintlWindowAppMenu?
   var menus: [ZintlWindowCommandMenu]
+}
+
+struct ZintlWindowAppMenu: Decodable {
+  var items: [ZintlWindowCommandItem]
 }
 
 struct ZintlWindowCommandMenu: Decodable {
@@ -92,8 +77,9 @@ struct ZintlWindowCommandMenu: Decodable {
 }
 
 struct ZintlWindowCommandItem: Decodable {
-  var id: String
+  var id: String?
   var title: String
+  var role: String?
   var key: String?
   var modifiers: [String]?
   var enabled: Bool?
@@ -102,15 +88,35 @@ struct ZintlWindowCommandItem: Decodable {
 @MainActor
 class ZintlCommandTarget: NSObject {
   weak var window: RWindow?
-  let commandID: String
+  let commandID: String?
+  let role: String?
 
-  init(window: RWindow, commandID: String) {
+  init(window: RWindow, commandID: String?, role: String?) {
     self.window = window
     self.commandID = commandID
+    self.role = role
   }
 
   @objc func handleMenuCommand(_ sender: Any?) {
-    self.window?.performCommand(self.commandID)
+    if let role {
+      Self.performRole(role)
+      return
+    }
+    guard let commandID else {
+      return
+    }
+    self.window?.performCommand(commandID)
+  }
+
+  static func performRole(_ role: String) {
+    switch role {
+    case "about":
+      NSApp.orderFrontStandardAboutPanel(nil)
+    case "quit":
+      NSApp.terminate(nil)
+    default:
+      break
+    }
   }
 }
 
@@ -179,7 +185,7 @@ func zintlAppkitDestroy() {
 @MainActor
 class RWindow: NSObject, NSWindowDelegate {
   var window: NSWindow
-  var commandSet = ZintlWindowCommandSet(menus: [])
+  var commandSet = ZintlWindowCommandSet(appMenu: nil, menus: [])
   var commandTargets: [ZintlCommandTarget] = []
   var commandUserData: UnsafeRawPointer?
   var commandCallback: ZintlWindowCommandCallback?
@@ -263,8 +269,15 @@ class RWindow: NSObject, NSWindowDelegate {
   @MainActor
   func installCommandsMenu() {
     let mainMenu = NSMenu()
-    mainMenu.addItem(Self.appMenuItem())
     self.commandTargets.removeAll()
+
+    if let appMenu = self.commandSet.appMenu {
+      let appMenuItem = NSMenuItem()
+      let submenu = NSMenu(title: ProcessInfo.processInfo.processName)
+      appMenuItem.submenu = submenu
+      mainMenu.addItem(appMenuItem)
+      self.installCommandItems(appMenu.items, into: submenu)
+    }
 
     for menu in self.commandSet.menus {
       let menuItem = NSMenuItem()
@@ -272,22 +285,27 @@ class RWindow: NSObject, NSWindowDelegate {
       menuItem.submenu = submenu
       mainMenu.addItem(menuItem)
 
-      for command in menu.items {
-        let target = ZintlCommandTarget(window: self, commandID: command.id)
-        self.commandTargets.append(target)
-        let item = NSMenuItem(
-          title: command.title,
-          action: #selector(ZintlCommandTarget.handleMenuCommand(_:)),
-          keyEquivalent: Self.keyEquivalent(command.key)
-        )
-        item.target = target
-        item.keyEquivalentModifierMask = Self.modifierMask(command.modifiers ?? ["cmd"])
-        item.isEnabled = command.enabled ?? true
-        submenu.addItem(item)
-      }
+      self.installCommandItems(menu.items, into: submenu)
     }
 
     NSApp.mainMenu = mainMenu
+  }
+
+  @MainActor
+  func installCommandItems(_ commands: [ZintlWindowCommandItem], into menu: NSMenu) {
+    for command in commands {
+      let target = ZintlCommandTarget(window: self, commandID: command.id, role: command.role)
+      self.commandTargets.append(target)
+      let item = NSMenuItem(
+        title: command.title,
+        action: #selector(ZintlCommandTarget.handleMenuCommand(_:)),
+        keyEquivalent: Self.keyEquivalent(command.key)
+      )
+      item.target = target
+      item.keyEquivalentModifierMask = Self.modifierMask(command.modifiers ?? ["cmd"])
+      item.isEnabled = command.enabled ?? true
+      menu.addItem(item)
+    }
   }
 
   @MainActor
@@ -342,27 +360,6 @@ class RWindow: NSObject, NSWindowDelegate {
       }
     }
     return mask
-  }
-
-  static func appMenuItem() -> NSMenuItem {
-    let appMenuItem = NSMenuItem()
-    let appMenu = NSMenu()
-    appMenuItem.submenu = appMenu
-
-    let aboutTitle = "About " + ProcessInfo.processInfo.processName
-    appMenu.addItem(
-      withTitle: aboutTitle,
-      action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-      keyEquivalent: ""
-    )
-
-    appMenu.addItem(
-      withTitle: "Quit",
-      action: #selector(NSApplication.terminate(_:)),
-      keyEquivalent: "q"
-    )
-
-    return appMenuItem
   }
 }
 
