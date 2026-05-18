@@ -4,7 +4,9 @@ use std::thread;
 
 use zintl_deno::api::{ZintlApi, ZintlWindow, ZintlWindowError};
 use zintl_deno::runtime::{DenoRuntime, DenoRuntimeOptions};
-use zintl_native::{Context, Event, MainActor, MessageHandler, PlatformMessageLoop, Window};
+use zintl_native::{
+    Context, Event, MainActor, MainMarker, MessageHandler, PlatformMessageLoop, Window,
+};
 
 enum Message {
     WindowCreated { window: MainActor<Window> },
@@ -43,7 +45,7 @@ impl Handler {
 }
 
 impl MessageHandler<Message> for Handler {
-    fn on_init(&mut self, cx: impl Context<Message>) {
+    fn on_init(&mut self, _marker: MainMarker, cx: impl Context<Message>) {
         self.start_js_thread(DenoRuntimeOptions {
             api: ZintlApi {
                 window: Some(Arc::new(AppWindowHost { cx })),
@@ -51,7 +53,7 @@ impl MessageHandler<Message> for Handler {
         });
     }
 
-    fn on_event(&mut self, _cx: impl Context<Message>, event: Event<Message>) {
+    fn on_event(&mut self, _marker: MainMarker, _cx: impl Context<Message>, event: Event<Message>) {
         match event {
             Event::UserMessage(Message::WindowCreated { window }) => {
                 self.windows.push(window);
