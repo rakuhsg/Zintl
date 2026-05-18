@@ -104,7 +104,7 @@ pub enum Event<M: Send + Sync> {
 }
 
 pub trait MessageHandler<M: Send + Sync>: Send + Sync {
-    fn on_init(&mut self, _cx: impl Context<M>) {}
-    fn on_event(&mut self, _cx: impl Context<M>, _event: Event<M>) {}
-    fn will_terminate(&mut self, _cx: impl Context<M>) {}
+    fn on_init(&mut self, _marker: MainMarker, _cx: impl Context<M>) {}
+    fn on_event(&mut self, _marker: MainMarker, _cx: impl Context<M>, _event: Event<M>) {}
+    fn will_terminate(&mut self, _marker: MainMarker, _cx: impl Context<M>) {}
 }

@@ -210,15 +210,24 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
         let cx = Arc::clone(&*mesloop).context();
         //TODO: unwrap
         let mut handler = mesloop.handler.write().unwrap();
-        handler.on_init(cx);
+        handler.on_init(MainMarker::new(), cx);
     }
-    extern "C" fn cb_app_will_terminate(_p_ud: *const c_void) {}
+    extern "C" fn cb_app_will_terminate(p_ud: *const c_void) {
+        // SAFETY: `p_ud` is the same `Arc<AppkitMessageLoop<_, _>>` raw pointer
+        // registered by `new`; Swift stores it unchanged for callback use.
+        // `ManuallyDrop` prevents releasing that retained FFI-owned reference.
+        let mesloop = ManuallyDrop::new(unsafe { Arc::from_raw(p_ud.cast::<Self>()) });
+        let cx = Arc::clone(&*mesloop).context();
+        //TODO: unwrap
+        let mut handler = mesloop.handler.write().unwrap();
+        handler.will_terminate(MainMarker::new(), cx);
+    }
 
     fn dispatch_message(self: &Arc<Self>, message: M) {
         let cx = self.clone().context();
         //TODO: unwrap
         let mut handler = self.handler.write().unwrap();
-        handler.on_event(cx, Event::UserMessage(message));
+        handler.on_event(MainMarker::new(), cx, Event::UserMessage(message));
     }
 
     pub fn new(handler: H) -> Arc<Self> {
