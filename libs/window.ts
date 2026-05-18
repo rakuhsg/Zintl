@@ -8,11 +8,13 @@ export interface ZintlWindowAPI {
     create(): void;
 }
 
-Zintl.window: ZintlWindowAPI = {
+const windowApi: ZintlWindowAPI = {
   create() {
     op_zintl_window_create();
   },
 };
+
+Zintl.window = windowApi;
 
 ObjectDefineProperty(globalThis, "Zintl", {
   value: Zintl,
