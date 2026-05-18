@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::actor::{MainActor, MainMarker};
 #[cfg(feature = "wgpu")]
-use crate::geometry::{PhysicalSize, Rect};
+use crate::geometry::PhysicalSize;
+use crate::geometry::Rect;
 
 pub struct MainTask<C, M: Send + Sync> {
     pub(crate) f: Box<dyn FnOnce(MainMarker, C) -> () + Send>,
@@ -29,13 +30,21 @@ impl WindowManager {
         WindowManager { backend }
     }
 
-    pub fn create_window(&self, marker: MainMarker) -> MainActor<Window> {
-        self.backend.create_window(marker)
+    pub fn create_window(
+        &self,
+        marker: MainMarker,
+        on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
+    ) -> MainActor<Window> {
+        self.backend.create_window(marker, on_lifecycle)
     }
 }
 
 pub(crate) trait WindowManagerBackend: Send + Sync {
-    fn create_window(&self, marker: MainMarker) -> MainActor<Window>;
+    fn create_window(
+        &self,
+        marker: MainMarker,
+        on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
+    ) -> MainActor<Window>;
 }
 
 pub struct Window {
@@ -51,6 +60,26 @@ impl Window {
         self.backend.show();
     }
 
+    pub fn set_bounds(&self, bounds: Rect) {
+        self.backend.set_bounds(bounds);
+    }
+
+    pub fn set_size(&self, width: f64, height: f64) {
+        self.backend.set_size(width, height);
+    }
+
+    pub fn set_position(&self, x: f64, y: f64) {
+        self.backend.set_position(x, y);
+    }
+
+    pub fn set_commands(
+        &self,
+        commands: WindowCommandSet,
+        on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
+    ) {
+        self.backend.set_commands(commands, on_command);
+    }
+
     #[cfg(feature = "wgpu")]
     pub fn create_wgpu_surface(&self, marker: MainMarker, rect: Rect) -> MainActor<WgpuSurface> {
         MainActor::new(marker, self.backend.create_wgpu_surface(marker, rect))
@@ -59,9 +88,80 @@ impl Window {
 
 pub(crate) trait WindowBackend: Send + Sync {
     fn show(&self);
+    fn set_bounds(&self, bounds: Rect);
+    fn set_size(&self, width: f64, height: f64);
+    fn set_position(&self, x: f64, y: f64);
+    fn set_commands(
+        &self,
+        commands: WindowCommandSet,
+        on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
+    );
 
     #[cfg(feature = "wgpu")]
     fn create_wgpu_surface(&self, marker: MainMarker, rect: Rect) -> WgpuSurface;
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowCommandSet {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_menu: Option<WindowAppMenu>,
+    pub menus: Vec<WindowCommandMenu>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct WindowAppMenu {
+    pub items: Vec<WindowCommandItem>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct WindowCommandMenu {
+    pub title: String,
+    pub items: Vec<WindowCommandItem>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct WindowCommandItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<WindowCommandRole>,
+    pub key: Option<String>,
+    pub modifiers: Vec<WindowCommandModifier>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowCommandModifier {
+    Cmd,
+    Ctrl,
+    Alt,
+    Shift,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowCommandRole {
+    About,
+    Quit,
+}
+
+#[derive(Clone, Debug)]
+pub struct WindowCommandEvent {
+    pub command_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct WindowLifecycleEvent {
+    pub kind: WindowLifecycleEventKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum WindowLifecycleEventKind {
+    Created,
+    WillClose,
 }
 
 #[cfg(feature = "wgpu")]

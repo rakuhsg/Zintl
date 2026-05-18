@@ -9259,6 +9259,7 @@ dependencies = [
  "deno_error",
  "deno_resolver",
  "deno_runtime",
+ "serde",
  "sys_traits",
 ]
 
@@ -9268,6 +9269,8 @@ version = "0.1.0"
 dependencies = [
  "crossbeam",
  "futures",
+ "serde",
+ "serde_json",
  "wgpu",
 ]
 
