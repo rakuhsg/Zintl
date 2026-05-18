@@ -7,6 +7,8 @@ use deno_resolver::npm::NpmResolver;
 use deno_runtime::BootstrapOptions;
 use deno_runtime::FeatureChecker;
 use deno_runtime::UNSTABLE_FEATURES;
+use deno_runtime::deno_core::error::CoreError;
+use deno_runtime::deno_core::error::JsError;
 use deno_runtime::deno_fs::RealFs;
 use deno_runtime::deno_permissions::Permissions;
 use deno_runtime::deno_permissions::PermissionsContainer;
@@ -18,7 +20,42 @@ use deno_runtime::worker::WorkerServiceOptions;
 
 use crate::api;
 use crate::module::{MainModule, ZintlModuleLoader};
-use crate::{DenoRuntimeError, DenoRuntimeOptions, WEBGPU_FEATURE_NAME, ZINTL_DENO_SNAPSHOT};
+use crate::sys::ZintlSys;
+use crate::{WEBGPU_FEATURE_NAME, ZINTL_DENO_SNAPSHOT};
+
+#[derive(Clone, Default)]
+pub struct DenoRuntimeOptions {
+    pub api: api::ZintlApi,
+}
+
+#[derive(Debug)]
+pub enum DenoRuntimeError {
+    Core(CoreError),
+    LoadEvent(Box<JsError>),
+}
+
+impl std::fmt::Display for DenoRuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DenoRuntimeError::Core(error) => write!(f, "{error}"),
+            DenoRuntimeError::LoadEvent(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for DenoRuntimeError {}
+
+impl From<CoreError> for DenoRuntimeError {
+    fn from(error: CoreError) -> Self {
+        DenoRuntimeError::Core(error)
+    }
+}
+
+impl From<Box<JsError>> for DenoRuntimeError {
+    fn from(error: Box<JsError>) -> Self {
+        DenoRuntimeError::LoadEvent(error)
+    }
+}
 
 pub struct DenoRuntime {
     main_module: MainModule,
@@ -91,17 +128,11 @@ impl DenoRuntime {
         let fs = Arc::new(RealFs);
         let feature_checker = Arc::new(Self::feature_checker());
         let permissions = PermissionsContainer::new(
-            Arc::new(RuntimePermissionDescriptorParser::new(
-                sys_traits::impls::RealSys,
-            )),
+            Arc::new(RuntimePermissionDescriptorParser::new(ZintlSys::default())),
             Permissions::none_without_prompt(),
         );
 
-        MainWorker::bootstrap_from_options::<
-            DenoInNpmPackageChecker,
-            NpmResolver<sys_traits::impls::RealSys>,
-            sys_traits::impls::RealSys,
-        >(
+        MainWorker::bootstrap_from_options::<DenoInNpmPackageChecker, NpmResolver<ZintlSys>, ZintlSys>(
             main_module.specifier(),
             WorkerServiceOptions {
                 module_loader: Rc::new(ZintlModuleLoader::new()),

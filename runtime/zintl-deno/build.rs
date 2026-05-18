@@ -13,8 +13,8 @@ fn op_zintl_window_create() {}
 deno_runtime::deno_core::extension!(
     zintl,
     ops = [op_zintl_window_create],
-    esm_entry_point = "ext:zintl/window.js",
-    esm = ["ext:zintl/window.js" = "../../libs/window.js"],
+    esm_entry_point = "ext:zintl/window.ts",
+    esm = ["ext:zintl/window.ts" = "../../libs/window.ts"],
 );
 
 fn main() {
