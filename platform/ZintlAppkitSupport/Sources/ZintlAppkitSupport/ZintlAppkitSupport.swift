@@ -185,6 +185,8 @@ func zintlAppkitDestroy() {
 @MainActor
 class RWindow: NSObject, NSWindowDelegate {
   var window: NSWindow
+  var lifecycleUserData: UnsafeRawPointer?
+  var lifecycleCallback: WindowCallback?
   var commandSet = ZintlWindowCommandSet(appMenu: nil, menus: [])
   var commandTargets: [ZintlCommandTarget] = []
   var commandUserData: UnsafeRawPointer?
@@ -192,7 +194,9 @@ class RWindow: NSObject, NSWindowDelegate {
   var commandRelease: ZintlWindowCommandRelease?
 
   @MainActor
-  override init() {
+  init(userData: UnsafeRawPointer?, callback: WindowCallback?) {
+    self.lifecycleUserData = userData
+    self.lifecycleCallback = callback
     self.window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 480, height: 300),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -201,6 +205,7 @@ class RWindow: NSObject, NSWindowDelegate {
     )
     super.init()
     self.window.delegate = self
+    self.lifecycleCallback?.did_create(self.lifecycleUserData)
   }
 
   @MainActor
@@ -257,6 +262,13 @@ class RWindow: NSObject, NSWindowDelegate {
   @MainActor
   func windowDidBecomeKey(_ notification: Notification) {
     self.installCommandsMenu()
+  }
+
+  @MainActor
+  func windowWillClose(_ notification: Notification) {
+    let callback = self.lifecycleCallback
+    self.lifecycleCallback = nil
+    callback?.will_close(self.lifecycleUserData)
   }
 
   @MainActor
@@ -443,8 +455,11 @@ class RWgpuSurface {
 
 @MainActor
 @_cdecl("zintlappkit_create_window")
-func zintlAppkitCreateWindow() -> UnsafeMutableRawPointer {
-  let wnd = RWindow()
+func zintlAppkitCreateWindow(
+  userData: UnsafeRawPointer?,
+  callback: UnsafePointer<WindowCallback>?
+) -> UnsafeMutableRawPointer {
+  let wnd = RWindow(userData: userData, callback: callback?.pointee)
   let ptr = Unmanaged.passRetained(wnd).toOpaque()
   return ptr
 }

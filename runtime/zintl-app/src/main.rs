@@ -8,7 +8,8 @@ use zintl_deno::api::{
     ZintlApi, ZintlWindow, ZintlWindowAppMenu, ZintlWindowBounds, ZintlWindowCommandEvent,
     ZintlWindowCommandItem, ZintlWindowCommandMenu, ZintlWindowCommandModifier,
     ZintlWindowCommandRole, ZintlWindowCommandSet, ZintlWindowCreateOptions, ZintlWindowError,
-    ZintlWindowId, ZintlWindowPosition, ZintlWindowSize,
+    ZintlWindowId, ZintlWindowLifecycleEvent, ZintlWindowLifecycleEventKind, ZintlWindowPosition,
+    ZintlWindowSize,
 };
 use zintl_deno::runtime::{DenoRuntime, DenoRuntimeOptions};
 use zintl_native::{
@@ -17,6 +18,7 @@ use zintl_native::{
     WindowCommandItem as NativeWindowCommandItem, WindowCommandMenu as NativeWindowCommandMenu,
     WindowCommandModifier as NativeWindowCommandModifier,
     WindowCommandRole as NativeWindowCommandRole, WindowCommandSet as NativeWindowCommandSet,
+    WindowLifecycleEvent, WindowLifecycleEventKind,
 };
 
 struct Handler {
@@ -79,6 +81,7 @@ struct AppWindowState {
     next_window_id: AtomicU32,
     windows: RwLock<HashMap<ZintlWindowId, MainActor<Window>>>,
     command_events: RwLock<VecDeque<ZintlWindowCommandEvent>>,
+    lifecycle_events: RwLock<VecDeque<ZintlWindowLifecycleEvent>>,
 }
 
 struct AppWindowHost<C> {
@@ -101,7 +104,15 @@ where
         let state = self.state.clone();
         self.cx.perform_main(
             move |marker, _cx| {
-                let window = wm.create_window(marker);
+                let window = wm.create_window(
+                    marker,
+                    Arc::new({
+                        let state = state.clone();
+                        move |event| {
+                            state.push_lifecycle_event(window_id, event);
+                        }
+                    }),
+                );
                 {
                     let native_window = window.read(marker).unwrap();
                     apply_create_options(window_id, &state, &native_window, options);
@@ -211,6 +222,15 @@ where
             .map_err(|_| ZintlWindowError::new("window command event queue is poisoned"))?;
         Ok(command_events.pop_front())
     }
+
+    fn take_lifecycle_event(&self) -> Result<Option<ZintlWindowLifecycleEvent>, ZintlWindowError> {
+        let mut lifecycle_events = self
+            .state
+            .lifecycle_events
+            .write()
+            .map_err(|_| ZintlWindowError::new("window lifecycle event queue is poisoned"))?;
+        Ok(lifecycle_events.pop_front())
+    }
 }
 
 impl AppWindowState {
@@ -224,6 +244,21 @@ impl AppWindowState {
     fn push_command_event(&self, event: ZintlWindowCommandEvent) {
         if let Ok(mut events) = self.command_events.write() {
             events.push_back(event);
+        }
+    }
+
+    fn push_lifecycle_event(&self, window_id: ZintlWindowId, event: WindowLifecycleEvent) {
+        if matches!(&event.kind, WindowLifecycleEventKind::WillClose) {
+            if let Ok(mut windows) = self.windows.write() {
+                windows.remove(&window_id);
+            }
+        }
+
+        if let Ok(mut events) = self.lifecycle_events.write() {
+            events.push_back(ZintlWindowLifecycleEvent {
+                window_id,
+                kind: native_lifecycle_kind(event.kind),
+            });
         }
     }
 }
@@ -324,6 +359,13 @@ fn native_role(role: ZintlWindowCommandRole) -> NativeWindowCommandRole {
     match role {
         ZintlWindowCommandRole::About => NativeWindowCommandRole::About,
         ZintlWindowCommandRole::Quit => NativeWindowCommandRole::Quit,
+    }
+}
+
+fn native_lifecycle_kind(kind: WindowLifecycleEventKind) -> ZintlWindowLifecycleEventKind {
+    match kind {
+        WindowLifecycleEventKind::Created => ZintlWindowLifecycleEventKind::Created,
+        WindowLifecycleEventKind::WillClose => ZintlWindowLifecycleEventKind::WillClose,
     }
 }
 

@@ -6,6 +6,7 @@ import {
   op_zintl_window_set_position,
   op_zintl_window_set_size,
   op_zintl_window_take_command_event,
+  op_zintl_window_take_lifecycle_event,
 } from "ext:core/ops";
 
 const {
@@ -73,7 +74,12 @@ export interface ZintlWindowCommandEvent {
   commandId: string;
 }
 
+export interface ZintlWindowLifecycleEvent {
+  windowId: number;
+}
+
 export type ZintlWindowCommandListener = (event: ZintlWindowCommandEvent) => void;
+export type ZintlWindowLifecycleListener = (event: ZintlWindowLifecycleEvent) => void;
 
 export interface ZintlWindow {
   readonly id: number;
@@ -82,6 +88,8 @@ export interface ZintlWindow {
   setPosition(position: ZintlWindowPosition): void;
   setCommands(commands: ZintlWindowCommandSet): void;
   onCommand(listener: ZintlWindowCommandListener): () => void;
+  onCreated(listener: ZintlWindowLifecycleListener): () => void;
+  onWillClose(listener: ZintlWindowLifecycleListener): () => void;
 }
 
 export interface ZintlWindowAPI {
@@ -90,6 +98,9 @@ export interface ZintlWindowAPI {
 
 const commandListeners = new SafeSet<ZintlWindowCommandListener>();
 let commandPollTimer: number | undefined;
+const createdListeners = new SafeSet<ZintlWindowLifecycleListener>();
+const willCloseListeners = new SafeSet<ZintlWindowLifecycleListener>();
+let lifecyclePollTimer: number | undefined;
 
 class NativeZintlWindow implements ZintlWindow {
   #id: number;
@@ -129,6 +140,24 @@ class NativeZintlWindow implements ZintlWindow {
       }
     };
   }
+
+  onCreated(listener: ZintlWindowLifecycleListener): () => void {
+    const windowId = this.#id;
+    return addLifecycleListener(createdListeners, (event) => {
+      if (event.windowId === windowId) {
+        listener(event);
+      }
+    });
+  }
+
+  onWillClose(listener: ZintlWindowLifecycleListener): () => void {
+    const windowId = this.#id;
+    return addLifecycleListener(willCloseListeners, (event) => {
+      if (event.windowId === windowId) {
+        listener(event);
+      }
+    });
+  }
 }
 
 const windowApi: ZintlWindowAPI = {
@@ -147,6 +176,41 @@ function ensureCommandPolling(): void {
     while ((event = op_zintl_window_take_command_event()) != null) {
       for (const listener of new SafeSetIterator(commandListeners)) {
         listener(event);
+      }
+    }
+  }, 16);
+}
+
+function addLifecycleListener(
+  listeners: SafeSet<ZintlWindowLifecycleListener>,
+  listener: ZintlWindowLifecycleListener,
+): () => void {
+  SetPrototypeAdd(listeners, listener);
+  ensureLifecyclePolling();
+  return () => {
+    SetPrototypeDelete(listeners, listener);
+    if (
+      SetPrototypeGetSize(createdListeners) === 0 &&
+      SetPrototypeGetSize(willCloseListeners) === 0 &&
+      lifecyclePollTimer !== undefined
+    ) {
+      globalThis.clearInterval(lifecyclePollTimer);
+      lifecyclePollTimer = undefined;
+    }
+  };
+}
+
+function ensureLifecyclePolling(): void {
+  if (lifecyclePollTimer !== undefined) {
+    return;
+  }
+
+  lifecyclePollTimer = globalThis.setInterval(() => {
+    let event;
+    while ((event = op_zintl_window_take_lifecycle_event()) != null) {
+      const listeners = event.kind === "created" ? createdListeners : willCloseListeners;
+      for (const listener of new SafeSetIterator(listeners)) {
+        listener({ windowId: event.windowId });
       }
     }
   }, 16);

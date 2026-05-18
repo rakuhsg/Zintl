@@ -63,6 +63,22 @@ if (typeof window.id !== "number" || window.id <= 0) {
   throw new Error("Zintl.window.create() must return a window handle with a positive id");
 }
 
+const offCreated = window.onCreated((event) => {
+  if (event.windowId !== window.id) {
+    throw new Error(`expected created for window ${window.id}, got ${event.windowId}`);
+  }
+
+  console.log(`window created: ${event.windowId}`);
+});
+
+const offWillClose = window.onWillClose((event) => {
+  if (event.windowId !== window.id) {
+    throw new Error(`expected willClose for window ${window.id}, got ${event.windowId}`);
+  }
+
+  console.log(`window will close: ${event.windowId}`);
+});
+
 window.setSize({ width: 720, height: 480 });
 window.setPosition({ x: 120, y: 120 });
 window.setBounds({ x: 160, y: 140, width: 760, height: 500 });
@@ -122,5 +138,7 @@ const offCommand = window.onCommand((event) => {
 });
 
 globalThis.addEventListener("unload", () => {
+  offCreated();
+  offWillClose();
   offCommand();
 });

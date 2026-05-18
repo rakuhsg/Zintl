@@ -33,6 +33,7 @@ pub trait ZintlWindow: Send + Sync + 'static {
         commands: ZintlWindowCommandSet,
     ) -> Result<(), ZintlWindowError>;
     fn take_command_event(&self) -> Result<Option<ZintlWindowCommandEvent>, ZintlWindowError>;
+    fn take_lifecycle_event(&self) -> Result<Option<ZintlWindowLifecycleEvent>, ZintlWindowError>;
 }
 
 pub type ZintlWindowId = u32;
@@ -118,6 +119,20 @@ pub enum ZintlWindowCommandRole {
 pub struct ZintlWindowCommandEvent {
     pub window_id: ZintlWindowId,
     pub command_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZintlWindowLifecycleEvent {
+    pub window_id: ZintlWindowId,
+    pub kind: ZintlWindowLifecycleEventKind,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ZintlWindowLifecycleEventKind {
+    Created,
+    WillClose,
 }
 
 fn default_true() -> bool {
@@ -219,6 +234,16 @@ fn op_zintl_window_take_command_event(
         .map_err(|error| JsErrorBox::generic(error.to_string()))
 }
 
+#[op2]
+#[serde]
+fn op_zintl_window_take_lifecycle_event(
+    state: &mut OpState,
+) -> Result<Option<ZintlWindowLifecycleEvent>, JsErrorBox> {
+    window_host(state)?
+        .take_lifecycle_event()
+        .map_err(|error| JsErrorBox::generic(error.to_string()))
+}
+
 fn window_host(state: &mut OpState) -> Result<Arc<dyn ZintlWindow>, JsErrorBox> {
     let api = state.borrow::<ZintlWindowApi>();
     let Some(host) = api.host.as_ref() else {
@@ -236,6 +261,7 @@ deno_runtime::deno_core::extension!(
         op_zintl_window_set_position,
         op_zintl_window_set_commands,
         op_zintl_window_take_command_event,
+        op_zintl_window_take_lifecycle_event,
     ],
     esm_entry_point = "ext:zintl/window.ts",
     esm = ["ext:zintl/window.ts" = "../../libs/window.ts"],

@@ -7,7 +7,8 @@ use crossbeam::queue::SegQueue;
 use crate::actor::*;
 use crate::messageloop::{
     Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowCommandEvent,
-    WindowCommandSet, WindowManager, WindowManagerBackend,
+    WindowCommandSet, WindowLifecycleEvent, WindowLifecycleEventKind, WindowManager,
+    WindowManagerBackend,
 };
 
 #[cfg(feature = "wgpu")]
@@ -85,11 +86,28 @@ impl AppkitWindowManagerBackend {
 }
 
 impl WindowManagerBackend for AppkitWindowManagerBackend {
-    fn create_window(&self, marker: MainMarker) -> MainActor<Window> {
+    fn create_window(
+        &self,
+        marker: MainMarker,
+        on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
+    ) -> MainActor<Window> {
+        let lifecycle_state = Box::new(AppkitWindowLifecycleState { on_lifecycle });
+        let callback = ffi::WindowCallback {
+            did_create: appkit_window_did_create,
+            will_close: appkit_window_will_close,
+        };
         // SAFETY: `marker` witnesses that this code is running on the AppKit
-        // main actor, which is required by `zintlappkit_create_window`.
-        let ptr = unsafe { ffi::zintlappkit_create_window() };
-        let window = MainActor::new(marker, Window::new(Box::new(AppkitWindowBackend { ptr })));
+        // main actor, and `lifecycle_state` stays alive in the backend until
+        // the AppKit window is destroyed.
+        let user_data = (&*lifecycle_state) as *const AppkitWindowLifecycleState;
+        let ptr = unsafe { ffi::zintlappkit_create_window(user_data.cast(), &callback) };
+        let window = MainActor::new(
+            marker,
+            Window::new(Box::new(AppkitWindowBackend {
+                ptr,
+                _lifecycle_state: lifecycle_state,
+            })),
+        );
 
         if let Ok(mut windows) = self.windows.write() {
             windows.push(window.clone());
@@ -101,6 +119,7 @@ impl WindowManagerBackend for AppkitWindowManagerBackend {
 
 struct AppkitWindowBackend {
     ptr: *const c_void,
+    _lifecycle_state: Box<AppkitWindowLifecycleState>,
 }
 
 unsafe impl Send for AppkitWindowBackend {}
@@ -184,6 +203,10 @@ struct AppkitWindowCommandState {
     on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
 }
 
+struct AppkitWindowLifecycleState {
+    on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
+}
+
 unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id: *const c_char) {
     if user_data.is_null() || command_id.is_null() {
         return;
@@ -198,6 +221,32 @@ unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id:
         .to_string_lossy()
         .into_owned();
     (state.on_command)(WindowCommandEvent { command_id });
+}
+
+unsafe extern "C" fn appkit_window_did_create(user_data: *const c_void) {
+    if user_data.is_null() {
+        return;
+    }
+
+    // SAFETY: Swift passes back the lifecycle user data pointer provided to
+    // `zintlappkit_create_window`; the backend owns it for the window lifetime.
+    let state = unsafe { &*user_data.cast::<AppkitWindowLifecycleState>() };
+    (state.on_lifecycle)(WindowLifecycleEvent {
+        kind: WindowLifecycleEventKind::Created,
+    });
+}
+
+unsafe extern "C" fn appkit_window_will_close(user_data: *const c_void) {
+    if user_data.is_null() {
+        return;
+    }
+
+    // SAFETY: Swift passes back the lifecycle user data pointer provided to
+    // `zintlappkit_create_window`; the backend owns it for the window lifetime.
+    let state = unsafe { &*user_data.cast::<AppkitWindowLifecycleState>() };
+    (state.on_lifecycle)(WindowLifecycleEvent {
+        kind: WindowLifecycleEventKind::WillClose,
+    });
 }
 
 unsafe extern "C" fn appkit_window_command_release(user_data: *const c_void) {

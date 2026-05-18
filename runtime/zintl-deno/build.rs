@@ -26,6 +26,9 @@ struct ZintlWindowCommandSet {}
 #[derive(Serialize)]
 struct ZintlWindowCommandEvent {}
 
+#[derive(Serialize)]
+struct ZintlWindowLifecycleEvent {}
+
 #[op2]
 fn op_zintl_window_create(#[serde] _options: Option<ZintlWindowCreateOptions>) -> u32 {
     0
@@ -49,6 +52,12 @@ fn op_zintl_window_take_command_event() -> Option<ZintlWindowCommandEvent> {
     None
 }
 
+#[op2]
+#[serde]
+fn op_zintl_window_take_lifecycle_event() -> Option<ZintlWindowLifecycleEvent> {
+    None
+}
+
 deno_runtime::deno_core::extension!(
     zintl,
     ops = [
@@ -58,6 +67,7 @@ deno_runtime::deno_core::extension!(
         op_zintl_window_set_position,
         op_zintl_window_set_commands,
         op_zintl_window_take_command_event,
+        op_zintl_window_take_lifecycle_event,
     ],
     esm_entry_point = "ext:zintl/window.ts",
     esm = ["ext:zintl/window.ts" = "../../libs/window.ts"],

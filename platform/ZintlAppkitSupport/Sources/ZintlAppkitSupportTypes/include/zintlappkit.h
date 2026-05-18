@@ -23,7 +23,12 @@ typedef struct {
 typedef void (*ZintlWindowCommandCallback)(const void* user_data, const char* command_id);
 typedef void (*ZintlWindowCommandRelease)(const void* user_data);
 
-void* zintlappkit_create_window(void);
+typedef struct {
+    void (*did_create)(const void* user_data);
+    void (*will_close)(const void* user_data);
+} WindowCallback;
+
+void* zintlappkit_create_window(const void* user_data, const WindowCallback* callback);
 void zintlappkit_show_window(const void* window);
 void zintlappkit_window_set_bounds(const void* window, ZintlRect bounds);
 void zintlappkit_window_set_size(const void* window, double width, double height);

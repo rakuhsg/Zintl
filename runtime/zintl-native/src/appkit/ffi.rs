@@ -12,9 +12,8 @@ pub struct AppCallback {
 }
 
 #[repr(C)]
-#[allow(dead_code)]
 pub struct WindowCallback {
-    pub on_appear: unsafe extern "C" fn(*const c_void),
+    pub did_create: unsafe extern "C" fn(*const c_void),
     pub will_close: unsafe extern "C" fn(*const c_void),
 }
 
@@ -28,7 +27,10 @@ unsafe extern "C" {
     pub fn zintlappkit_run();
     #[allow(dead_code)]
     pub fn zintlappkit_destroy();
-    pub fn zintlappkit_create_window() -> *const c_void;
+    pub fn zintlappkit_create_window(
+        user_data: *const c_void,
+        callback: *const WindowCallback,
+    ) -> *const c_void;
     pub fn zintlappkit_show_window(ptr: *const c_void);
     pub fn zintlappkit_window_set_bounds(ptr: *const c_void, bounds: Rect);
     pub fn zintlappkit_window_set_size(ptr: *const c_void, width: f64, height: f64);

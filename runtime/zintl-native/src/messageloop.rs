@@ -30,13 +30,21 @@ impl WindowManager {
         WindowManager { backend }
     }
 
-    pub fn create_window(&self, marker: MainMarker) -> MainActor<Window> {
-        self.backend.create_window(marker)
+    pub fn create_window(
+        &self,
+        marker: MainMarker,
+        on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
+    ) -> MainActor<Window> {
+        self.backend.create_window(marker, on_lifecycle)
     }
 }
 
 pub(crate) trait WindowManagerBackend: Send + Sync {
-    fn create_window(&self, marker: MainMarker) -> MainActor<Window>;
+    fn create_window(
+        &self,
+        marker: MainMarker,
+        on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
+    ) -> MainActor<Window>;
 }
 
 pub struct Window {
@@ -143,6 +151,17 @@ pub enum WindowCommandRole {
 #[derive(Clone, Debug)]
 pub struct WindowCommandEvent {
     pub command_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct WindowLifecycleEvent {
+    pub kind: WindowLifecycleEventKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum WindowLifecycleEventKind {
+    Created,
+    WillClose,
 }
 
 #[cfg(feature = "wgpu")]
