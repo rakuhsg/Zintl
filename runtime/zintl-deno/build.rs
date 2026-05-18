@@ -6,13 +6,59 @@ use std::path::PathBuf;
 use deno_core::op2;
 use deno_runtime::ops::bootstrap::SnapshotOptions;
 use deno_runtime::snapshot::create_runtime_snapshot;
+use serde::{Deserialize, Serialize};
 
-#[op2(fast)]
-fn op_zintl_window_create() {}
+#[derive(Deserialize)]
+struct ZintlWindowCreateOptions {}
+
+#[derive(Deserialize)]
+struct ZintlWindowBounds {}
+
+#[derive(Deserialize)]
+struct ZintlWindowSize {}
+
+#[derive(Deserialize)]
+struct ZintlWindowPosition {}
+
+#[derive(Deserialize)]
+struct ZintlWindowCommandSet {}
+
+#[derive(Serialize)]
+struct ZintlWindowCommandEvent {}
+
+#[op2]
+fn op_zintl_window_create(#[serde] _options: Option<ZintlWindowCreateOptions>) -> u32 {
+    0
+}
+
+#[op2]
+fn op_zintl_window_set_bounds(_window_id: u32, #[serde] _bounds: ZintlWindowBounds) {}
+
+#[op2]
+fn op_zintl_window_set_size(_window_id: u32, #[serde] _size: ZintlWindowSize) {}
+
+#[op2]
+fn op_zintl_window_set_position(_window_id: u32, #[serde] _position: ZintlWindowPosition) {}
+
+#[op2]
+fn op_zintl_window_set_commands(_window_id: u32, #[serde] _commands: ZintlWindowCommandSet) {}
+
+#[op2]
+#[serde]
+fn op_zintl_window_take_command_event() -> Option<ZintlWindowCommandEvent> {
+    None
+}
 
 deno_runtime::deno_core::extension!(
     zintl,
-    ops = [op_zintl_window_create],
+    ops = [
+        op_zintl_window_create,
+        op_zintl_window_set_bounds,
+        op_zintl_window_set_size,
+        op_zintl_window_set_position,
+        op_zintl_window_set_commands,
+        op_zintl_window_take_command_event,
+    ],
     esm_entry_point = "ext:zintl/window.ts",
     esm = ["ext:zintl/window.ts" = "../../libs/window.ts"],
 );

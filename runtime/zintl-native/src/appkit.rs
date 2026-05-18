@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, RwLock};
 
@@ -6,12 +6,13 @@ use crossbeam::queue::SegQueue;
 
 use crate::actor::*;
 use crate::messageloop::{
-    Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowManager,
-    WindowManagerBackend,
+    Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowCommandEvent,
+    WindowCommandSet, WindowManager, WindowManagerBackend,
 };
 
 #[cfg(feature = "wgpu")]
-use crate::geometry::{PhysicalSize, Rect};
+use crate::geometry::PhysicalSize;
+use crate::geometry::Rect;
 #[cfg(feature = "wgpu")]
 use crate::messageloop::{WgpuSurface, WgpuSurfaceBackend};
 
@@ -114,12 +115,103 @@ impl WindowBackend for AppkitWindowBackend {
         }
     }
 
+    fn set_bounds(&self, bounds: Rect) {
+        // SAFETY: `Window` is only exposed through `MainActor`, so AppKit
+        // mutation happens on the main actor.
+        unsafe {
+            ffi::zintlappkit_window_set_bounds(self.ptr, bounds);
+        }
+    }
+
+    fn set_size(&self, width: f64, height: f64) {
+        // SAFETY: `Window` is only exposed through `MainActor`, so AppKit
+        // mutation happens on the main actor.
+        unsafe {
+            ffi::zintlappkit_window_set_size(self.ptr, width, height);
+        }
+    }
+
+    fn set_position(&self, x: f64, y: f64) {
+        // SAFETY: `Window` is only exposed through `MainActor`, so AppKit
+        // mutation happens on the main actor.
+        unsafe {
+            ffi::zintlappkit_window_set_position(self.ptr, x, y);
+        }
+    }
+
+    fn set_commands(
+        &self,
+        commands: WindowCommandSet,
+        on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
+    ) {
+        let commands_json = match serde_json::to_string(&commands) {
+            Ok(commands_json) => commands_json,
+            Err(error) => {
+                eprintln!("failed to encode window commands: {error}");
+                return;
+            }
+        };
+        let Ok(commands_json) = CString::new(commands_json) else {
+            eprintln!("failed to encode window commands: JSON contains NUL byte");
+            return;
+        };
+        let user_data = Box::into_raw(Box::new(AppkitWindowCommandState { on_command }));
+
+        // SAFETY: `commands_json` is valid for the duration of the call. Swift
+        // copies the JSON string and takes ownership of `user_data`, releasing
+        // it through `appkit_window_command_release`.
+        unsafe {
+            ffi::zintlappkit_window_set_commands(
+                self.ptr,
+                commands_json.as_ptr(),
+                user_data.cast(),
+                appkit_window_command,
+                appkit_window_command_release,
+            );
+        }
+    }
+
     #[cfg(feature = "wgpu")]
     fn create_wgpu_surface(&self, _marker: MainMarker, rect: Rect) -> WgpuSurface {
         // SAFETY: `Window` is only exposed through `MainActor`, so callers need
         // a `MainMarker` to invoke this AppKit-backed method on the main actor.
         let ptr = unsafe { ffi::zintlappkit_create_wgpu_surface(self.ptr, rect) };
         WgpuSurface::new(Box::new(AppkitWgpuSurfaceBackend { ptr }))
+    }
+}
+
+struct AppkitWindowCommandState {
+    on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
+}
+
+unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id: *const c_char) {
+    if user_data.is_null() || command_id.is_null() {
+        return;
+    }
+
+    // SAFETY: Swift passes back the exact user data pointer previously provided
+    // to `zintlappkit_window_set_commands`; it remains alive until the paired
+    // release callback is invoked.
+    let state = unsafe { &*user_data.cast::<AppkitWindowCommandState>() };
+    // SAFETY: Swift provides a NUL-terminated UTF-8 command id for this call.
+    let command_id = unsafe { CStr::from_ptr(command_id) }
+        .to_string_lossy()
+        .into_owned();
+    (state.on_command)(WindowCommandEvent { command_id });
+}
+
+unsafe extern "C" fn appkit_window_command_release(user_data: *const c_void) {
+    if user_data.is_null() {
+        return;
+    }
+
+    // SAFETY: `user_data` was allocated by `Box::into_raw` in
+    // `set_commands`, and Swift calls this release callback exactly once for
+    // each stored callback state.
+    unsafe {
+        drop(Box::from_raw(
+            user_data.cast_mut().cast::<AppkitWindowCommandState>(),
+        ));
     }
 }
 

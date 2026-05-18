@@ -20,6 +20,23 @@ typedef struct {
     double height;
 } ZintlRect;
 
+typedef void (*ZintlWindowCommandCallback)(const void* user_data, const char* command_id);
+typedef void (*ZintlWindowCommandRelease)(const void* user_data);
+
+void* zintlappkit_create_window(void);
+void zintlappkit_show_window(const void* window);
+void zintlappkit_window_set_bounds(const void* window, ZintlRect bounds);
+void zintlappkit_window_set_size(const void* window, double width, double height);
+void zintlappkit_window_set_position(const void* window, double x, double y);
+void zintlappkit_window_set_commands(
+    const void* window,
+    const char* commands_json,
+    const void* user_data,
+    ZintlWindowCommandCallback callback,
+    ZintlWindowCommandRelease release
+);
+void zintlappkit_destroy_window(const void* window);
+
 void* zintlappkit_create_wgpu_surface(const void* window, ZintlRect rect);
 void zintlappkit_destroy_wgpu_surface(const void* surface);
 void zintlappkit_wgpu_surface_set_rect(const void* surface, ZintlRect rect);
