@@ -63,6 +63,53 @@ if (typeof window.id !== "number" || window.id <= 0) {
   throw new Error("Zintl.window.create() must return a window handle with a positive id");
 }
 
+if (
+  typeof app !== "object" ||
+  typeof app.eventBus?.subscribe !== "function" ||
+  typeof app.eventBus?.poll !== "function"
+) {
+  throw new Error("app.eventBus must expose subscribe() and poll()");
+}
+
+const initialEvent = app.eventBus.poll();
+if (initialEvent !== undefined) {
+  assertAppEvent(initialEvent);
+}
+
+const offEventBusCreated = app.eventBus.subscribe("window.created", (event) => {
+  assertAppEvent(event);
+  if (event.type !== "window.created") {
+    throw new Error(`expected window.created app event, got ${event.type}`);
+  }
+  if (event.windowId !== window.id) {
+    throw new Error(`expected app event bus created for window ${window.id}, got ${event.windowId}`);
+  }
+
+  console.log(`app event bus created: ${event.windowId}`);
+});
+
+const offEventBusWillClose = app.eventBus.subscribe("window.willClose", (event) => {
+  assertAppEvent(event);
+  if (event.type !== "window.willClose") {
+    throw new Error(`expected window.willClose app event, got ${event.type}`);
+  }
+  if (event.windowId !== window.id) {
+    throw new Error(
+      `expected app event bus willClose for window ${window.id}, got ${event.windowId}`,
+    );
+  }
+
+  console.log(`app event bus will close: ${event.windowId}`);
+});
+
+const offUnsubscribedCommand = app.eventBus.subscribe("window.command", () => {
+  throw new Error("unsubscribed app.eventBus listener must not be called");
+});
+if (typeof offUnsubscribedCommand !== "function") {
+  throw new Error("app.eventBus.subscribe() must return an unsubscribe function");
+}
+offUnsubscribedCommand();
+
 const offCreated = window.onCreated((event) => {
   if (event.windowId !== window.id) {
     throw new Error(`expected created for window ${window.id}, got ${event.windowId}`);
@@ -137,8 +184,42 @@ const offCommand = window.onCommand((event) => {
   console.log(`window command: ${event.commandId}`);
 });
 
+const offEventBusCommand = app.eventBus.subscribe("window.command", (event) => {
+  assertAppEvent(event);
+  if (event.type !== "window.command") {
+    throw new Error(`expected window.command app event, got ${event.type}`);
+  }
+  if (event.windowId !== window.id) {
+    throw new Error(`expected app event bus command for window ${window.id}, got ${event.windowId}`);
+  }
+  if (typeof event.commandId !== "string" || event.commandId.length === 0) {
+    throw new Error("window.command app event must include a non-empty commandId");
+  }
+
+  console.log(`app event bus command: ${event.commandId}`);
+});
+
+function assertAppEvent(event) {
+  if (event == null || typeof event !== "object") {
+    throw new Error("app event must be an object");
+  }
+  if (
+    event.type !== "window.command" &&
+    event.type !== "window.created" &&
+    event.type !== "window.willClose"
+  ) {
+    throw new Error(`unexpected app event type: ${event.type}`);
+  }
+  if (typeof event.windowId !== "number" || event.windowId <= 0) {
+    throw new Error("app event must include a positive windowId");
+  }
+}
+
 globalThis.addEventListener("unload", () => {
   offCreated();
   offWillClose();
   offCommand();
+  offEventBusCreated();
+  offEventBusWillClose();
+  offEventBusCommand();
 });
