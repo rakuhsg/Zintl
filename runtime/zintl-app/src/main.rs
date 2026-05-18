@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 
-use zintl_deno::DenoRuntimeOptions;
 use zintl_deno::api::{ZintlApi, ZintlWindow, ZintlWindowError};
+use zintl_deno::runtime::{DenoRuntime, DenoRuntimeOptions};
 use zintl_native::{Context, Event, MainActor, MessageHandler, PlatformMessageLoop, Window};
 
 enum Message {
@@ -32,10 +32,7 @@ impl Handler {
                 .name("zintl-js".to_string())
                 .spawn(move || {
                     if let Err(error) =
-                        zintl_deno::DenoRuntime::run_file_path_current_thread_with_options(
-                            main_module,
-                            options,
-                        )
+                        DenoRuntime::run_file_path_current_thread_with_options(main_module, options)
                     {
                         eprintln!("zintl-js: {error}");
                     }
