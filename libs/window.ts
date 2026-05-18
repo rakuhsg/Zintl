@@ -5,18 +5,10 @@ import {
   op_zintl_window_set_commands,
   op_zintl_window_set_position,
   op_zintl_window_set_size,
-  op_zintl_window_take_command_event,
-  op_zintl_window_take_lifecycle_event,
 } from "ext:core/ops";
+import { eventBus } from "ext:zintl/app.ts";
 
-const {
-  ObjectDefineProperty,
-  SafeSet,
-  SafeSetIterator,
-  SetPrototypeAdd,
-  SetPrototypeDelete,
-  SetPrototypeGetSize,
-} = primordials;
+const { ObjectDefineProperty } = primordials;
 const Zintl = globalThis.Zintl ?? {};
 
 export interface ZintlWindowBounds {
@@ -96,12 +88,6 @@ export interface ZintlWindowAPI {
   create(options?: ZintlWindowCreateOptions): ZintlWindow;
 }
 
-const commandListeners = new SafeSet<ZintlWindowCommandListener>();
-let commandPollTimer: number | undefined;
-const createdListeners = new SafeSet<ZintlWindowLifecycleListener>();
-const willCloseListeners = new SafeSet<ZintlWindowLifecycleListener>();
-let lifecyclePollTimer: number | undefined;
-
 class NativeZintlWindow implements ZintlWindow {
   #id: number;
 
@@ -130,31 +116,28 @@ class NativeZintlWindow implements ZintlWindow {
   }
 
   onCommand(listener: ZintlWindowCommandListener): () => void {
-    SetPrototypeAdd(commandListeners, listener);
-    ensureCommandPolling();
-    return () => {
-      SetPrototypeDelete(commandListeners, listener);
-      if (SetPrototypeGetSize(commandListeners) === 0 && commandPollTimer !== undefined) {
-        globalThis.clearInterval(commandPollTimer);
-        commandPollTimer = undefined;
+    const windowId = this.#id;
+    return eventBus.subscribe("window.command", (event) => {
+      if (event.windowId === windowId) {
+        listener({ windowId: event.windowId, commandId: event.commandId });
       }
-    };
+    });
   }
 
   onCreated(listener: ZintlWindowLifecycleListener): () => void {
     const windowId = this.#id;
-    return addLifecycleListener(createdListeners, (event) => {
+    return eventBus.subscribe("window.created", (event) => {
       if (event.windowId === windowId) {
-        listener(event);
+        listener({ windowId: event.windowId });
       }
     });
   }
 
   onWillClose(listener: ZintlWindowLifecycleListener): () => void {
     const windowId = this.#id;
-    return addLifecycleListener(willCloseListeners, (event) => {
+    return eventBus.subscribe("window.willClose", (event) => {
       if (event.windowId === windowId) {
-        listener(event);
+        listener({ windowId: event.windowId });
       }
     });
   }
@@ -165,56 +148,6 @@ const windowApi: ZintlWindowAPI = {
     return new NativeZintlWindow(op_zintl_window_create(options ?? null));
   },
 };
-
-function ensureCommandPolling(): void {
-  if (commandPollTimer !== undefined) {
-    return;
-  }
-
-  commandPollTimer = globalThis.setInterval(() => {
-    let event;
-    while ((event = op_zintl_window_take_command_event()) != null) {
-      for (const listener of new SafeSetIterator(commandListeners)) {
-        listener(event);
-      }
-    }
-  }, 16);
-}
-
-function addLifecycleListener(
-  listeners: SafeSet<ZintlWindowLifecycleListener>,
-  listener: ZintlWindowLifecycleListener,
-): () => void {
-  SetPrototypeAdd(listeners, listener);
-  ensureLifecyclePolling();
-  return () => {
-    SetPrototypeDelete(listeners, listener);
-    if (
-      SetPrototypeGetSize(createdListeners) === 0 &&
-      SetPrototypeGetSize(willCloseListeners) === 0 &&
-      lifecyclePollTimer !== undefined
-    ) {
-      globalThis.clearInterval(lifecyclePollTimer);
-      lifecyclePollTimer = undefined;
-    }
-  };
-}
-
-function ensureLifecyclePolling(): void {
-  if (lifecyclePollTimer !== undefined) {
-    return;
-  }
-
-  lifecyclePollTimer = globalThis.setInterval(() => {
-    let event;
-    while ((event = op_zintl_window_take_lifecycle_event()) != null) {
-      const listeners = event.kind === "created" ? createdListeners : willCloseListeners;
-      for (const listener of new SafeSetIterator(listeners)) {
-        listener({ windowId: event.windowId });
-      }
-    }
-  }, 16);
-}
 
 Zintl.window = windowApi;
 

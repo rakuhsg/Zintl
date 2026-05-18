@@ -5,11 +5,10 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 use zintl_deno::api::{
-    ZintlApi, ZintlWindow, ZintlWindowAppMenu, ZintlWindowBounds, ZintlWindowCommandEvent,
-    ZintlWindowCommandItem, ZintlWindowCommandMenu, ZintlWindowCommandModifier,
+    ZintlApi, ZintlAppApi, ZintlAppError, ZintlAppEvent, ZintlWindowApi, ZintlWindowAppMenu,
+    ZintlWindowBounds, ZintlWindowCommandItem, ZintlWindowCommandMenu, ZintlWindowCommandModifier,
     ZintlWindowCommandRole, ZintlWindowCommandSet, ZintlWindowCreateOptions, ZintlWindowError,
-    ZintlWindowId, ZintlWindowLifecycleEvent, ZintlWindowLifecycleEventKind, ZintlWindowPosition,
-    ZintlWindowSize,
+    ZintlWindowId, ZintlWindowPosition, ZintlWindowSize,
 };
 use zintl_deno::runtime::{DenoRuntime, DenoRuntimeOptions};
 use zintl_native::{
@@ -55,12 +54,16 @@ impl Handler {
 
 impl MessageHandler<Message> for Handler {
     fn on_init(&mut self, _marker: MainMarker, cx: impl Context<Message>) {
+        let host = Arc::new(AppWindowHost {
+            cx,
+            state: self.window_state.clone(),
+        });
+        let app: Arc<dyn ZintlAppApi> = host.clone();
+        let window: Arc<dyn ZintlWindowApi> = host;
         self.start_js_thread(DenoRuntimeOptions {
             api: ZintlApi {
-                window: Some(Arc::new(AppWindowHost {
-                    cx,
-                    state: self.window_state.clone(),
-                })),
+                app: Some(app),
+                window: Some(window),
             },
         });
     }
@@ -80,8 +83,7 @@ enum Message {}
 struct AppWindowState {
     next_window_id: AtomicU32,
     windows: RwLock<HashMap<ZintlWindowId, MainActor<Window>>>,
-    command_events: RwLock<VecDeque<ZintlWindowCommandEvent>>,
-    lifecycle_events: RwLock<VecDeque<ZintlWindowLifecycleEvent>>,
+    app_events: RwLock<VecDeque<ZintlAppEvent>>,
 }
 
 struct AppWindowHost<C> {
@@ -89,7 +91,7 @@ struct AppWindowHost<C> {
     state: Arc<AppWindowState>,
 }
 
-impl<C> ZintlWindow for AppWindowHost<C>
+impl<C> ZintlWindowApi for AppWindowHost<C>
 where
     C: Context<Message> + Send + Sync,
 {
@@ -213,23 +215,19 @@ where
         );
         Ok(())
     }
+}
 
-    fn take_command_event(&self) -> Result<Option<ZintlWindowCommandEvent>, ZintlWindowError> {
-        let mut command_events = self
+impl<C> ZintlAppApi for AppWindowHost<C>
+where
+    C: Context<Message> + Send + Sync,
+{
+    fn take_event(&self) -> Result<Option<ZintlAppEvent>, ZintlAppError> {
+        let mut app_events = self
             .state
-            .command_events
+            .app_events
             .write()
-            .map_err(|_| ZintlWindowError::new("window command event queue is poisoned"))?;
-        Ok(command_events.pop_front())
-    }
-
-    fn take_lifecycle_event(&self) -> Result<Option<ZintlWindowLifecycleEvent>, ZintlWindowError> {
-        let mut lifecycle_events = self
-            .state
-            .lifecycle_events
-            .write()
-            .map_err(|_| ZintlWindowError::new("window lifecycle event queue is poisoned"))?;
-        Ok(lifecycle_events.pop_front())
+            .map_err(|_| ZintlAppError::new("app event queue is poisoned"))?;
+        Ok(app_events.pop_front())
     }
 }
 
@@ -241,9 +239,12 @@ impl AppWindowState {
             .and_then(|windows| windows.get(&window_id).cloned())
     }
 
-    fn push_command_event(&self, event: ZintlWindowCommandEvent) {
-        if let Ok(mut events) = self.command_events.write() {
-            events.push_back(event);
+    fn push_command_event(&self, window_id: ZintlWindowId, event: WindowCommandEvent) {
+        if let Ok(mut events) = self.app_events.write() {
+            events.push_back(ZintlAppEvent::WindowCommand {
+                window_id,
+                command_id: event.command_id,
+            });
         }
     }
 
@@ -254,11 +255,8 @@ impl AppWindowState {
             }
         }
 
-        if let Ok(mut events) = self.lifecycle_events.write() {
-            events.push_back(ZintlWindowLifecycleEvent {
-                window_id,
-                kind: native_lifecycle_kind(event.kind),
-            });
+        if let Ok(mut events) = self.app_events.write() {
+            events.push_back(native_lifecycle_event(window_id, event.kind));
         }
     }
 }
@@ -303,10 +301,7 @@ fn set_native_commands(
     window.set_commands(
         native_command_set(commands),
         Arc::new(move |event: WindowCommandEvent| {
-            state.push_command_event(ZintlWindowCommandEvent {
-                window_id,
-                command_id: event.command_id,
-            });
+            state.push_command_event(window_id, event);
         }),
     );
 }
@@ -362,10 +357,13 @@ fn native_role(role: ZintlWindowCommandRole) -> NativeWindowCommandRole {
     }
 }
 
-fn native_lifecycle_kind(kind: WindowLifecycleEventKind) -> ZintlWindowLifecycleEventKind {
+fn native_lifecycle_event(
+    window_id: ZintlWindowId,
+    kind: WindowLifecycleEventKind,
+) -> ZintlAppEvent {
     match kind {
-        WindowLifecycleEventKind::Created => ZintlWindowLifecycleEventKind::Created,
-        WindowLifecycleEventKind::WillClose => ZintlWindowLifecycleEventKind::WillClose,
+        WindowLifecycleEventKind::Created => ZintlAppEvent::WindowCreated { window_id },
+        WindowLifecycleEventKind::WillClose => ZintlAppEvent::WindowWillClose { window_id },
     }
 }
 

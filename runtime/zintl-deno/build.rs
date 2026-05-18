@@ -24,10 +24,7 @@ struct ZintlWindowPosition {}
 struct ZintlWindowCommandSet {}
 
 #[derive(Serialize)]
-struct ZintlWindowCommandEvent {}
-
-#[derive(Serialize)]
-struct ZintlWindowLifecycleEvent {}
+struct ZintlAppEvent {}
 
 #[op2]
 fn op_zintl_window_create(#[serde] _options: Option<ZintlWindowCreateOptions>) -> u32 {
@@ -48,13 +45,7 @@ fn op_zintl_window_set_commands(_window_id: u32, #[serde] _commands: ZintlWindow
 
 #[op2]
 #[serde]
-fn op_zintl_window_take_command_event() -> Option<ZintlWindowCommandEvent> {
-    None
-}
-
-#[op2]
-#[serde]
-fn op_zintl_window_take_lifecycle_event() -> Option<ZintlWindowLifecycleEvent> {
+fn op_zintl_app_event_bus_poll() -> Option<ZintlAppEvent> {
     None
 }
 
@@ -66,11 +57,13 @@ deno_runtime::deno_core::extension!(
         op_zintl_window_set_size,
         op_zintl_window_set_position,
         op_zintl_window_set_commands,
-        op_zintl_window_take_command_event,
-        op_zintl_window_take_lifecycle_event,
+        op_zintl_app_event_bus_poll,
     ],
     esm_entry_point = "ext:zintl/window.ts",
-    esm = ["ext:zintl/window.ts" = "../../libs/window.ts"],
+    esm = [
+        "ext:zintl/app.ts" = "../../libs/app.ts",
+        "ext:zintl/window.ts" = "../../libs/window.ts",
+    ],
 );
 
 fn main() {
@@ -93,7 +86,10 @@ fn watch_libs(path: &Path) {
         let path = entry.expect("failed to read libs directory entry").path();
         if path.is_dir() {
             watch_libs(&path);
-        } else if path.extension().is_some_and(|extension| extension == "js") {
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "js" || extension == "ts")
+        {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
