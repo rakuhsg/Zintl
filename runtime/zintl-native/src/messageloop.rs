@@ -208,6 +208,7 @@ pub struct WindowCommandEvent {
 pub enum WindowEvent {
     Created,
     WillClose,
+    /// NOTE: Don't fire [[WindowEvent::DidClose]] after free a window
     DidClose,
 }
 
