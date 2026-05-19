@@ -75,17 +75,17 @@ export type ZintlWindowLifecycleListener = (event: ZintlWindowLifecycleEvent) =>
 
 export interface ZintlWindow {
   readonly id: number;
-  setBounds(bounds: ZintlWindowBounds): void;
-  setSize(size: ZintlWindowSize): void;
-  setPosition(position: ZintlWindowPosition): void;
-  setCommands(commands: ZintlWindowCommandSet): void;
+  setBounds(bounds: ZintlWindowBounds): Promise<void>;
+  setSize(size: ZintlWindowSize): Promise<void>;
+  setPosition(position: ZintlWindowPosition): Promise<void>;
+  setCommands(commands: ZintlWindowCommandSet): Promise<void>;
   onCommand(listener: ZintlWindowCommandListener): () => void;
   onCreated(listener: ZintlWindowLifecycleListener): () => void;
   onWillClose(listener: ZintlWindowLifecycleListener): () => void;
 }
 
 export interface ZintlWindowAPI {
-  create(options?: ZintlWindowCreateOptions): ZintlWindow;
+  create(options?: ZintlWindowCreateOptions): Promise<ZintlWindow>;
 }
 
 class NativeZintlWindow implements ZintlWindow {
@@ -99,20 +99,20 @@ class NativeZintlWindow implements ZintlWindow {
     return this.#id;
   }
 
-  setBounds(bounds: ZintlWindowBounds): void {
-    op_zintl_window_set_bounds(this.#id, bounds);
+  async setBounds(bounds: ZintlWindowBounds): Promise<void> {
+    await op_zintl_window_set_bounds(this.#id, bounds);
   }
 
-  setSize(size: ZintlWindowSize): void {
-    op_zintl_window_set_size(this.#id, size);
+  async setSize(size: ZintlWindowSize): Promise<void> {
+    await op_zintl_window_set_size(this.#id, size);
   }
 
-  setPosition(position: ZintlWindowPosition): void {
-    op_zintl_window_set_position(this.#id, position);
+  async setPosition(position: ZintlWindowPosition): Promise<void> {
+    await op_zintl_window_set_position(this.#id, position);
   }
 
-  setCommands(commands: ZintlWindowCommandSet): void {
-    op_zintl_window_set_commands(this.#id, commands);
+  async setCommands(commands: ZintlWindowCommandSet): Promise<void> {
+    await op_zintl_window_set_commands(this.#id, commands);
   }
 
   onCommand(listener: ZintlWindowCommandListener): () => void {
@@ -144,8 +144,8 @@ class NativeZintlWindow implements ZintlWindow {
 }
 
 const windowApi: ZintlWindowAPI = {
-  create(options?: ZintlWindowCreateOptions): ZintlWindow {
-    return new NativeZintlWindow(op_zintl_window_create(options ?? null));
+  async create(options?: ZintlWindowCreateOptions): Promise<ZintlWindow> {
+    return new NativeZintlWindow(await op_zintl_window_create(options ?? null));
   },
 };
 

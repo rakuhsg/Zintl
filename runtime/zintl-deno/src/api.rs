@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use deno_error::JsErrorBox;
@@ -11,31 +15,30 @@ mod app;
 
 pub use app::ZintlAppEvent;
 
+pub type ZintlWindowFuture<T> = Pin<Box<dyn Future<Output = Result<T, ZintlWindowError>> + Send>>;
+
 pub trait ZintlWindowApi: Send + Sync + 'static {
-    fn create_window(
-        &self,
-        options: ZintlWindowCreateOptions,
-    ) -> Result<ZintlWindowId, ZintlWindowError>;
+    fn create_window(&self, options: ZintlWindowCreateOptions) -> ZintlWindowFuture<ZintlWindowId>;
     fn set_window_bounds(
         &self,
         window_id: ZintlWindowId,
         bounds: ZintlWindowBounds,
-    ) -> Result<(), ZintlWindowError>;
+    ) -> ZintlWindowFuture<()>;
     fn set_window_size(
         &self,
         window_id: ZintlWindowId,
         size: ZintlWindowSize,
-    ) -> Result<(), ZintlWindowError>;
+    ) -> ZintlWindowFuture<()>;
     fn set_window_position(
         &self,
         window_id: ZintlWindowId,
         position: ZintlWindowPosition,
-    ) -> Result<(), ZintlWindowError>;
+    ) -> ZintlWindowFuture<()>;
     fn set_window_commands(
         &self,
         window_id: ZintlWindowId,
         commands: ZintlWindowCommandSet,
-    ) -> Result<(), ZintlWindowError>;
+    ) -> ZintlWindowFuture<()>;
 }
 
 pub trait ZintlAppApi: Send + Sync + 'static {
@@ -179,56 +182,61 @@ struct ZintlApiState {
 }
 
 #[op2]
-fn op_zintl_window_create(
-    state: &mut OpState,
+async fn op_zintl_window_create(
+    state: Rc<RefCell<OpState>>,
     #[serde] options: Option<ZintlWindowCreateOptions>,
 ) -> Result<ZintlWindowId, JsErrorBox> {
-    window_host(state)?
+    window_host(&state)?
         .create_window(options.unwrap_or_default())
+        .await
         .map_err(|error| JsErrorBox::generic(error.to_string()))
 }
 
 #[op2]
-fn op_zintl_window_set_bounds(
-    state: &mut OpState,
+async fn op_zintl_window_set_bounds(
+    state: Rc<RefCell<OpState>>,
     window_id: ZintlWindowId,
     #[serde] bounds: ZintlWindowBounds,
 ) -> Result<(), JsErrorBox> {
-    window_host(state)?
+    window_host(&state)?
         .set_window_bounds(window_id, bounds)
+        .await
         .map_err(|error| JsErrorBox::generic(error.to_string()))
 }
 
 #[op2]
-fn op_zintl_window_set_size(
-    state: &mut OpState,
+async fn op_zintl_window_set_size(
+    state: Rc<RefCell<OpState>>,
     window_id: ZintlWindowId,
     #[serde] size: ZintlWindowSize,
 ) -> Result<(), JsErrorBox> {
-    window_host(state)?
+    window_host(&state)?
         .set_window_size(window_id, size)
+        .await
         .map_err(|error| JsErrorBox::generic(error.to_string()))
 }
 
 #[op2]
-fn op_zintl_window_set_position(
-    state: &mut OpState,
+async fn op_zintl_window_set_position(
+    state: Rc<RefCell<OpState>>,
     window_id: ZintlWindowId,
     #[serde] position: ZintlWindowPosition,
 ) -> Result<(), JsErrorBox> {
-    window_host(state)?
+    window_host(&state)?
         .set_window_position(window_id, position)
+        .await
         .map_err(|error| JsErrorBox::generic(error.to_string()))
 }
 
 #[op2]
-fn op_zintl_window_set_commands(
-    state: &mut OpState,
+async fn op_zintl_window_set_commands(
+    state: Rc<RefCell<OpState>>,
     window_id: ZintlWindowId,
     #[serde] commands: ZintlWindowCommandSet,
 ) -> Result<(), JsErrorBox> {
-    window_host(state)?
+    window_host(&state)?
         .set_window_commands(window_id, commands)
+        .await
         .map_err(|error| JsErrorBox::generic(error.to_string()))
 }
 
@@ -240,7 +248,8 @@ pub(super) fn app_host(state: &mut OpState) -> Result<Arc<dyn ZintlAppApi>, JsEr
     Ok(host.clone())
 }
 
-fn window_host(state: &mut OpState) -> Result<Arc<dyn ZintlWindowApi>, JsErrorBox> {
+fn window_host(state: &Rc<RefCell<OpState>>) -> Result<Arc<dyn ZintlWindowApi>, JsErrorBox> {
+    let state = state.borrow();
     let api = state.borrow::<ZintlApiState>();
     let Some(host) = api.window.as_ref() else {
         return Err(JsErrorBox::generic("Zintl.window API is not registered"));
@@ -268,6 +277,7 @@ deno_runtime::deno_core::extension!(
         window: Option<Arc<dyn ZintlWindowApi>>,
     },
     state = |state, options| {
+        // Initialize a global app state
         state.put(ZintlApiState {
             app: options.app,
             window: options.window,
