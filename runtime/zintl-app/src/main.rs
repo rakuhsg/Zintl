@@ -18,7 +18,7 @@ use zintl_native::{
     WindowCommandItem as NativeWindowCommandItem, WindowCommandMenu as NativeWindowCommandMenu,
     WindowCommandModifier as NativeWindowCommandModifier,
     WindowCommandRole as NativeWindowCommandRole, WindowCommandSet as NativeWindowCommandSet,
-    WindowLifecycleEvent, WindowLifecycleEventKind,
+    WindowEvent, WindowManager,
 };
 
 struct Handler {
@@ -55,6 +55,7 @@ impl Handler {
 
 impl MessageHandler<Message> for Handler {
     fn on_init(&mut self, _marker: MainMarker, cx: impl Context<Message>) {
+        self.window_state.set_window_manager(cx.window_manager());
         let host = Arc::new(AppWindowHost {
             cx,
             state: self.window_state.clone(),
@@ -75,15 +76,17 @@ impl MessageHandler<Message> for Handler {
                 operation_id,
                 result,
             }) => {
-                if let WindowOperationResult::Create(Ok(window_id)) = &result {
-                    self.window_state
-                        .push_app_event(ZintlAppEvent::WindowCreated {
-                            window_id: *window_id,
-                        });
-                }
                 self.window_state
                     .complete_window_operation(operation_id, result);
             }
+            Event::WindowEvent { window_id, event } => match event {
+                WindowEvent::Created => self
+                    .window_state
+                    .push_app_event(ZintlAppEvent::WindowCreated { window_id }),
+                WindowEvent::WillClose => self
+                    .window_state
+                    .push_app_event(ZintlAppEvent::WindowWillClose { window_id }),
+            },
         }
     }
 }
@@ -109,9 +112,8 @@ enum WindowOperationResult {
 
 #[derive(Default)]
 struct AppWindowState {
-    next_window_id: AtomicU32,
     next_operation_id: AtomicU32,
-    windows: RwLock<HashMap<ZintlWindowId, MainActor<Window>>>,
+    window_manager: RwLock<Option<WindowManager>>,
     app_events: RwLock<VecDeque<ZintlAppEvent>>,
     pending_window_operations: RwLock<HashMap<WindowOperationId, PendingWindowOperation>>,
 }
@@ -138,38 +140,29 @@ where
             return create_window_future(receiver);
         }
 
-        let window_id = self.state.next_window_id.fetch_add(1, Ordering::Relaxed) + 1;
-        let wm = self.cx.window_manager();
         let state = self.state.clone();
         self.cx.perform_main(
             move |marker, cx| {
-                let window = wm.create_window(
-                    marker,
-                    Arc::new({
-                        let state = state.clone();
-                        move |event| {
-                            if !matches!(&event.kind, WindowLifecycleEventKind::Created) {
-                                state.push_lifecycle_event(window_id, event);
-                            }
-                        }
-                    }),
-                );
+                let wm = match state.window_manager() {
+                    Ok(wm) => wm,
+                    Err(error) => {
+                        cx.send_message(Message::WindowOperationCompleted {
+                            operation_id,
+                            result: WindowOperationResult::Create(Err(error)),
+                        });
+                        return;
+                    }
+                };
+                let (window_id, window) = wm.create_window(marker);
                 {
                     let native_window = window.read(marker).unwrap();
                     apply_create_options(window_id, &state, &native_window, options);
                     native_window.show();
                 }
 
-                let result = match state.windows.write() {
-                    Ok(mut windows) => {
-                        windows.insert(window_id, window);
-                        Ok(window_id)
-                    }
-                    Err(_) => Err(ZintlWindowError::new("window registry is poisoned")),
-                };
                 cx.send_message(Message::WindowOperationCompleted {
                     operation_id,
-                    result: WindowOperationResult::Create(result),
+                    result: WindowOperationResult::Create(Ok(window_id)),
                 });
             },
             None,
@@ -351,6 +344,22 @@ where
 }
 
 impl AppWindowState {
+    fn set_window_manager(&self, window_manager: WindowManager) {
+        if let Ok(mut current) = self.window_manager.write() {
+            if current.is_none() {
+                *current = Some(window_manager);
+            }
+        }
+    }
+
+    fn window_manager(&self) -> Result<WindowManager, ZintlWindowError> {
+        self.window_manager
+            .read()
+            .map_err(|_| ZintlWindowError::new("window manager registry is poisoned"))?
+            .clone()
+            .ok_or_else(|| ZintlWindowError::new("window manager is not initialized"))
+    }
+
     fn begin_create_window_operation(
         &self,
     ) -> Result<
@@ -415,10 +424,10 @@ impl AppWindowState {
     }
 
     fn window(&self, window_id: ZintlWindowId) -> Option<MainActor<Window>> {
-        self.windows
+        self.window_manager
             .read()
             .ok()
-            .and_then(|windows| windows.get(&window_id).cloned())
+            .and_then(|window_manager| window_manager.as_ref().and_then(|wm| wm.window(window_id)))
     }
 
     fn push_app_event(&self, event: ZintlAppEvent) {
@@ -433,18 +442,6 @@ impl AppWindowState {
                 window_id,
                 command_id: event.command_id,
             });
-        }
-    }
-
-    fn push_lifecycle_event(&self, window_id: ZintlWindowId, event: WindowLifecycleEvent) {
-        if matches!(&event.kind, WindowLifecycleEventKind::WillClose) {
-            if let Ok(mut windows) = self.windows.write() {
-                windows.remove(&window_id);
-            }
-        }
-
-        if let Ok(mut events) = self.app_events.write() {
-            events.push_back(native_lifecycle_event(window_id, event.kind));
         }
     }
 }
@@ -574,16 +571,6 @@ fn native_role(role: ZintlWindowCommandRole) -> NativeWindowCommandRole {
     match role {
         ZintlWindowCommandRole::About => NativeWindowCommandRole::About,
         ZintlWindowCommandRole::Quit => NativeWindowCommandRole::Quit,
-    }
-}
-
-fn native_lifecycle_event(
-    window_id: ZintlWindowId,
-    kind: WindowLifecycleEventKind,
-) -> ZintlAppEvent {
-    match kind {
-        WindowLifecycleEventKind::Created => ZintlAppEvent::WindowCreated { window_id },
-        WindowLifecycleEventKind::WillClose => ZintlAppEvent::WindowWillClose { window_id },
     }
 }
 

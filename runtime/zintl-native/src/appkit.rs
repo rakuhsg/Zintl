@@ -7,8 +7,7 @@ use crossbeam::queue::SegQueue;
 use crate::actor::*;
 use crate::messageloop::{
     Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowCommandEvent,
-    WindowCommandSet, WindowLifecycleEvent, WindowLifecycleEventKind, WindowManager,
-    WindowManagerBackend,
+    WindowCommandSet, WindowEvent, WindowId, WindowManager, WindowManagerBackend,
 };
 
 #[cfg(feature = "wgpu")]
@@ -65,61 +64,59 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> Context<M> for Ap
 
 impl<M: Send + Sync, H: MessageHandler<M>> AppkitContext<M, H> {
     fn schedule(&self) {
-        // SAFETY: `AppkitMessageLoop::new` initializes the Swift-side run-loop
-        // source before any `AppkitContext` can be created.
-        unsafe {
-            ffi::zintlappkit_schedule();
-        }
+        schedule();
+    }
+}
+
+fn schedule() {
+    // SAFETY: `AppkitMessageLoop::new` initializes the Swift-side run-loop
+    // source before any `AppkitContext` can be created.
+    unsafe {
+        ffi::zintlappkit_schedule();
     }
 }
 
 struct AppkitWindowManagerBackend {
-    windows: RwLock<Vec<MainActor<Window>>>,
+    window_events: Arc<SegQueue<(WindowId, WindowEvent)>>,
 }
 
 impl AppkitWindowManagerBackend {
-    fn new() -> Self {
-        AppkitWindowManagerBackend {
-            windows: RwLock::new(Vec::new()),
-        }
+    fn new(window_events: Arc<SegQueue<(WindowId, WindowEvent)>>) -> Self {
+        AppkitWindowManagerBackend { window_events }
     }
 }
 
 impl WindowManagerBackend for AppkitWindowManagerBackend {
-    fn create_window(
-        &self,
-        marker: MainMarker,
-        on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
-    ) -> MainActor<Window> {
-        let lifecycle_state = Box::new(AppkitWindowLifecycleState { on_lifecycle });
+    fn create_window(&self, marker: MainMarker, window_id: WindowId) -> MainActor<Window> {
+        let event_state = Box::new(AppkitWindowEventState {
+            window_id,
+            window_events: self.window_events.clone(),
+        });
         let callback = ffi::WindowCallback {
             did_create: appkit_window_did_create,
             will_close: appkit_window_will_close,
         };
         // SAFETY: `marker` witnesses that this code is running on the AppKit
-        // main actor, and `lifecycle_state` stays alive in the backend until
+        // main actor, and `event_state` stays alive in the backend until
         // the AppKit window is destroyed.
-        let user_data = (&*lifecycle_state) as *const AppkitWindowLifecycleState;
+        let user_data = (&*event_state) as *const AppkitWindowEventState;
         let ptr = unsafe { ffi::zintlappkit_create_window(user_data.cast(), &callback) };
         let window = MainActor::new(
             marker,
             Window::new(Box::new(AppkitWindowBackend {
                 ptr,
-                _lifecycle_state: lifecycle_state,
+                _event_state: event_state,
             })),
         );
-
-        if let Ok(mut windows) = self.windows.write() {
-            windows.push(window.clone());
-        }
-
+        self.window_events.push((window_id, WindowEvent::Created));
+        schedule();
         window
     }
 }
 
 struct AppkitWindowBackend {
     ptr: *const c_void,
-    _lifecycle_state: Box<AppkitWindowLifecycleState>,
+    _event_state: Box<AppkitWindowEventState>,
 }
 
 unsafe impl Send for AppkitWindowBackend {}
@@ -203,8 +200,9 @@ struct AppkitWindowCommandState {
     on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
 }
 
-struct AppkitWindowLifecycleState {
-    on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
+struct AppkitWindowEventState {
+    window_id: WindowId,
+    window_events: Arc<SegQueue<(WindowId, WindowEvent)>>,
 }
 
 unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id: *const c_char) {
@@ -224,16 +222,7 @@ unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id:
 }
 
 unsafe extern "C" fn appkit_window_did_create(user_data: *const c_void) {
-    if user_data.is_null() {
-        return;
-    }
-
-    // SAFETY: Swift passes back the lifecycle user data pointer provided to
-    // `zintlappkit_create_window`; the backend owns it for the window lifetime.
-    let state = unsafe { &*user_data.cast::<AppkitWindowLifecycleState>() };
-    (state.on_lifecycle)(WindowLifecycleEvent {
-        kind: WindowLifecycleEventKind::Created,
-    });
+    let _ = user_data;
 }
 
 unsafe extern "C" fn appkit_window_will_close(user_data: *const c_void) {
@@ -241,12 +230,13 @@ unsafe extern "C" fn appkit_window_will_close(user_data: *const c_void) {
         return;
     }
 
-    // SAFETY: Swift passes back the lifecycle user data pointer provided to
+    // SAFETY: Swift passes back the event user data pointer provided to
     // `zintlappkit_create_window`; the backend owns it for the window lifetime.
-    let state = unsafe { &*user_data.cast::<AppkitWindowLifecycleState>() };
-    (state.on_lifecycle)(WindowLifecycleEvent {
-        kind: WindowLifecycleEventKind::WillClose,
-    });
+    let state = unsafe { &*user_data.cast::<AppkitWindowEventState>() };
+    state
+        .window_events
+        .push((state.window_id, WindowEvent::WillClose));
+    schedule();
 }
 
 unsafe extern "C" fn appkit_window_command_release(user_data: *const c_void) {
@@ -323,6 +313,7 @@ pub struct AppkitMessageLoop<M: Send + Sync, H: MessageHandler<M>> {
     initialized: bool,
     handler: RwLock<H>,
     queue: SegQueue<MainTask<AppkitContext<M, H>, M>>,
+    window_events: Arc<SegQueue<(WindowId, WindowEvent)>>,
     window_manager: WindowManager,
     phantom: std::marker::PhantomData<M>,
 }
@@ -340,7 +331,11 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
             if let Some(message) = task.send_after {
                 mesloop.dispatch_message(message);
             }
+
+            mesloop.dispatch_pending_window_events();
         }
+
+        mesloop.dispatch_pending_window_events();
     }
 
     extern "C" fn cb_app_on_init(p_ud: *const c_void) {
@@ -373,11 +368,16 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
 
     pub fn new(handler: H) -> Arc<Self> {
         let queue = SegQueue::new();
+        let window_events = Arc::new(SegQueue::new());
+        let window_manager = WindowManager::new(Arc::new(AppkitWindowManagerBackend::new(
+            window_events.clone(),
+        )));
         let mesloop = Arc::new(AppkitMessageLoop {
             initialized: true,
             handler: handler.into(),
             queue,
-            window_manager: WindowManager::new(Arc::new(AppkitWindowManagerBackend::new())),
+            window_events,
+            window_manager,
             phantom: std::marker::PhantomData,
         });
 
@@ -396,6 +396,27 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
 
     fn context(self: Arc<Self>) -> AppkitContext<M, H> {
         AppkitContext::new(self.clone())
+    }
+
+    fn dispatch_window_event(self: &Arc<Self>, window_id: WindowId, event: WindowEvent) {
+        if matches!(event, WindowEvent::WillClose) {
+            self.window_manager.remove_window(window_id);
+        }
+
+        let cx = self.clone().context();
+        //TODO: unwrap
+        let mut handler = self.handler.write().unwrap();
+        handler.on_event(
+            MainMarker::new(),
+            cx,
+            Event::WindowEvent { window_id, event },
+        );
+    }
+
+    fn dispatch_pending_window_events(self: &Arc<Self>) {
+        while let Some((window_id, event)) = self.window_events.pop() {
+            self.dispatch_window_event(window_id, event);
+        }
     }
 
     pub fn run(&self) {

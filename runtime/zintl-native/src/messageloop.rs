@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, RwLock};
 
 use crate::actor::{MainActor, MainMarker};
 #[cfg(feature = "wgpu")]
@@ -23,29 +25,47 @@ pub trait Context<M: Send + Sync>: Clone + Send + Sync + 'static {
 #[derive(Clone)]
 pub struct WindowManager {
     backend: Arc<dyn WindowManagerBackend>,
+    next_window_id: Arc<AtomicU32>,
+    windows: Arc<RwLock<HashMap<WindowId, MainActor<Window>>>>,
 }
 
 impl WindowManager {
     pub(crate) fn new(backend: Arc<dyn WindowManagerBackend>) -> Self {
-        WindowManager { backend }
+        WindowManager {
+            backend,
+            next_window_id: Arc::new(AtomicU32::new(0)),
+            windows: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
-    pub fn create_window(
-        &self,
-        marker: MainMarker,
-        on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
-    ) -> MainActor<Window> {
-        self.backend.create_window(marker, on_lifecycle)
+    pub fn create_window(&self, marker: MainMarker) -> (WindowId, MainActor<Window>) {
+        let window_id = self.next_window_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let window = self.backend.create_window(marker, window_id);
+        if let Ok(mut windows) = self.windows.write() {
+            windows.insert(window_id, window.clone());
+        }
+        (window_id, window)
+    }
+
+    pub fn window(&self, window_id: WindowId) -> Option<MainActor<Window>> {
+        self.windows
+            .read()
+            .ok()
+            .and_then(|windows| windows.get(&window_id).cloned())
+    }
+
+    pub(crate) fn remove_window(&self, window_id: WindowId) {
+        if let Ok(mut windows) = self.windows.write() {
+            windows.remove(&window_id);
+        }
     }
 }
 
 pub(crate) trait WindowManagerBackend: Send + Sync {
-    fn create_window(
-        &self,
-        marker: MainMarker,
-        on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
-    ) -> MainActor<Window>;
+    fn create_window(&self, marker: MainMarker, window_id: WindowId) -> MainActor<Window>;
 }
+
+pub type WindowId = u32;
 
 pub struct Window {
     backend: Box<dyn WindowBackend>,
@@ -154,12 +174,7 @@ pub struct WindowCommandEvent {
 }
 
 #[derive(Clone, Debug)]
-pub struct WindowLifecycleEvent {
-    pub kind: WindowLifecycleEventKind,
-}
-
-#[derive(Clone, Debug)]
-pub enum WindowLifecycleEventKind {
+pub enum WindowEvent {
     Created,
     WillClose,
 }
@@ -201,6 +216,10 @@ pub(crate) trait WgpuSurfaceBackend: Send + Sync {
 
 pub enum Event<M: Send + Sync> {
     UserMessage(M),
+    WindowEvent {
+        window_id: WindowId,
+        event: WindowEvent,
+    },
 }
 
 pub trait MessageHandler<M: Send + Sync>: Send + Sync {
