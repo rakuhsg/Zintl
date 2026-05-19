@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::actor::{MainActor, MainMarker};
+use crate::actor::{MainActor, MainActorRef, MainMarker};
 #[cfg(feature = "wgpu")]
 use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
@@ -38,20 +38,21 @@ impl WindowManager {
         }
     }
 
-    pub fn create_window(&self, marker: MainMarker) -> (WindowId, MainActor<Window>) {
+    pub fn create_window(&self, marker: MainMarker) -> (WindowId, MainActorRef<Window>) {
         let window_id = self.next_window_id.fetch_add(1, Ordering::Relaxed) + 1;
         let window = self.backend.create_window(marker, window_id);
+        let window_ref = window.downgrade();
         if let Ok(mut windows) = self.windows.write() {
-            windows.insert(window_id, window.clone());
+            windows.insert(window_id, window);
         }
-        (window_id, window)
+        (window_id, window_ref)
     }
 
-    pub fn window(&self, window_id: WindowId) -> Option<MainActor<Window>> {
+    pub fn window(&self, window_id: WindowId) -> Option<MainActorRef<Window>> {
         self.windows
             .read()
             .ok()
-            .and_then(|windows| windows.get(&window_id).cloned())
+            .and_then(|windows| windows.get(&window_id).map(MainActor::downgrade))
     }
 
     pub(crate) fn remove_window(&self, window_id: WindowId) {
@@ -67,6 +68,30 @@ pub(crate) trait WindowManagerBackend: Send + Sync {
 
 pub type WindowId = u32;
 
+pub type WindowResult<T> = Result<T, WindowError>;
+
+#[derive(Clone, Debug)]
+pub enum WindowError {
+    Closed,
+    Backend(String),
+}
+
+impl std::fmt::Display for WindowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WindowError::Closed => write!(f, "window is closed"),
+            WindowError::Backend(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for WindowError {}
+
+/// Native window owner.
+///
+/// A `Window` has the same lifetime as its backend window. Dropping it releases
+/// the backend-owned native window handle. External users should hold
+/// `MainActorRef<Window>` weak references rather than owning `Window` directly.
 pub struct Window {
     backend: Box<dyn WindowBackend>,
 }
@@ -76,49 +101,55 @@ impl Window {
         Window { backend }
     }
 
-    pub fn show(&self) {
-        self.backend.show();
+    pub fn show(&self) -> WindowResult<()> {
+        self.backend.show()
     }
 
-    pub fn set_bounds(&self, bounds: Rect) {
-        self.backend.set_bounds(bounds);
+    pub fn set_bounds(&self, bounds: Rect) -> WindowResult<()> {
+        self.backend.set_bounds(bounds)
     }
 
-    pub fn set_size(&self, width: f64, height: f64) {
-        self.backend.set_size(width, height);
+    pub fn set_size(&self, width: f64, height: f64) -> WindowResult<()> {
+        self.backend.set_size(width, height)
     }
 
-    pub fn set_position(&self, x: f64, y: f64) {
-        self.backend.set_position(x, y);
+    pub fn set_position(&self, x: f64, y: f64) -> WindowResult<()> {
+        self.backend.set_position(x, y)
     }
 
     pub fn set_commands(
         &self,
         commands: WindowCommandSet,
         on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
-    ) {
-        self.backend.set_commands(commands, on_command);
+    ) -> WindowResult<()> {
+        self.backend.set_commands(commands, on_command)
     }
 
     #[cfg(feature = "wgpu")]
-    pub fn create_wgpu_surface(&self, marker: MainMarker, rect: Rect) -> MainActor<WgpuSurface> {
-        MainActor::new(marker, self.backend.create_wgpu_surface(marker, rect))
+    pub fn create_wgpu_surface(
+        &self,
+        marker: MainMarker,
+        rect: Rect,
+    ) -> WindowResult<MainActor<WgpuSurface>> {
+        self.backend
+            .create_wgpu_surface(marker, rect)
+            .map(|surface| MainActor::new(marker, surface))
     }
 }
 
 pub(crate) trait WindowBackend: Send + Sync {
-    fn show(&self);
-    fn set_bounds(&self, bounds: Rect);
-    fn set_size(&self, width: f64, height: f64);
-    fn set_position(&self, x: f64, y: f64);
+    fn show(&self) -> WindowResult<()>;
+    fn set_bounds(&self, bounds: Rect) -> WindowResult<()>;
+    fn set_size(&self, width: f64, height: f64) -> WindowResult<()>;
+    fn set_position(&self, x: f64, y: f64) -> WindowResult<()>;
     fn set_commands(
         &self,
         commands: WindowCommandSet,
         on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
-    );
+    ) -> WindowResult<()>;
 
     #[cfg(feature = "wgpu")]
-    fn create_wgpu_surface(&self, marker: MainMarker, rect: Rect) -> WgpuSurface;
+    fn create_wgpu_surface(&self, marker: MainMarker, rect: Rect) -> WindowResult<WgpuSurface>;
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -177,6 +208,7 @@ pub struct WindowCommandEvent {
 pub enum WindowEvent {
     Created,
     WillClose,
+    DidClose,
 }
 
 #[cfg(feature = "wgpu")]

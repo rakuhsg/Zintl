@@ -13,12 +13,12 @@ use zintl_deno::api::{
 };
 use zintl_deno::runtime::{DenoRuntime, DenoRuntimeOptions};
 use zintl_native::{
-    Context, Event, MainActor, MainMarker, MessageHandler, PlatformMessageLoop, Rect, Window,
-    WindowAppMenu as NativeWindowAppMenu, WindowCommandEvent,
+    Context, Event, MainActorError, MainActorRef, MainMarker, MessageHandler, PlatformMessageLoop,
+    Rect, Window, WindowAppMenu as NativeWindowAppMenu, WindowCommandEvent,
     WindowCommandItem as NativeWindowCommandItem, WindowCommandMenu as NativeWindowCommandMenu,
     WindowCommandModifier as NativeWindowCommandModifier,
     WindowCommandRole as NativeWindowCommandRole, WindowCommandSet as NativeWindowCommandSet,
-    WindowEvent, WindowManager,
+    WindowError, WindowEvent, WindowManager,
 };
 
 struct Handler {
@@ -86,6 +86,7 @@ impl MessageHandler<Message> for Handler {
                 WindowEvent::WillClose => self
                     .window_state
                     .push_app_event(ZintlAppEvent::WindowWillClose { window_id }),
+                WindowEvent::DidClose => {}
             },
         }
     }
@@ -154,15 +155,23 @@ where
                     }
                 };
                 let (window_id, window) = wm.create_window(marker);
-                {
-                    let native_window = window.read(marker).unwrap();
-                    apply_create_options(window_id, &state, &native_window, options);
-                    native_window.show();
-                }
+                let result = window
+                    .upgrade()
+                    .map_err(|error| window_actor_error(window_id, error))
+                    .and_then(|window| {
+                        let native_window = window
+                            .read(marker)
+                            .map_err(|error| window_actor_error(window_id, error))?;
+                        apply_create_options(window_id, &state, &native_window, options)?;
+                        native_window
+                            .show()
+                            .map_err(|error| window_backend_error(window_id, error))
+                    })
+                    .map(|()| window_id);
 
                 cx.send_message(Message::WindowOperationCompleted {
                     operation_id,
-                    result: WindowOperationResult::Create(Ok(window_id)),
+                    result: WindowOperationResult::Create(result),
                 });
             },
             None,
@@ -190,15 +199,11 @@ where
         let state = self.state.clone();
         self.cx.perform_main(
             move |marker, cx| {
-                let result = if let Some(window) = state.window(window_id) {
+                let result = state.with_window(window_id, marker, |window| {
                     window
-                        .read(marker)
-                        .unwrap()
-                        .set_bounds(rect_from_bounds(bounds));
-                    Ok(())
-                } else {
-                    Err(window_not_found_error(window_id))
-                };
+                        .set_bounds(rect_from_bounds(bounds))
+                        .map_err(|error| window_backend_error(window_id, error))
+                });
                 cx.send_message(Message::WindowOperationCompleted {
                     operation_id,
                     result: WindowOperationResult::Unit(result),
@@ -229,15 +234,11 @@ where
         let state = self.state.clone();
         self.cx.perform_main(
             move |marker, cx| {
-                let result = if let Some(window) = state.window(window_id) {
+                let result = state.with_window(window_id, marker, |window| {
                     window
-                        .read(marker)
-                        .unwrap()
-                        .set_size(size.width, size.height);
-                    Ok(())
-                } else {
-                    Err(window_not_found_error(window_id))
-                };
+                        .set_size(size.width, size.height)
+                        .map_err(|error| window_backend_error(window_id, error))
+                });
                 cx.send_message(Message::WindowOperationCompleted {
                     operation_id,
                     result: WindowOperationResult::Unit(result),
@@ -268,15 +269,11 @@ where
         let state = self.state.clone();
         self.cx.perform_main(
             move |marker, cx| {
-                let result = if let Some(window) = state.window(window_id) {
+                let result = state.with_window(window_id, marker, |window| {
                     window
-                        .read(marker)
-                        .unwrap()
-                        .set_position(position.x, position.y);
-                    Ok(())
-                } else {
-                    Err(window_not_found_error(window_id))
-                };
+                        .set_position(position.x, position.y)
+                        .map_err(|error| window_backend_error(window_id, error))
+                });
                 cx.send_message(Message::WindowOperationCompleted {
                     operation_id,
                     result: WindowOperationResult::Unit(result),
@@ -307,17 +304,9 @@ where
         let state = self.state.clone();
         self.cx.perform_main(
             move |marker, cx| {
-                let result = if let Some(window) = state.window(window_id) {
-                    set_native_commands(
-                        window_id,
-                        state.clone(),
-                        &window.read(marker).unwrap(),
-                        commands,
-                    );
-                    Ok(())
-                } else {
-                    Err(window_not_found_error(window_id))
-                };
+                let result = state.with_window(window_id, marker, |window| {
+                    set_native_commands(window_id, state.clone(), window, commands)
+                });
                 cx.send_message(Message::WindowOperationCompleted {
                     operation_id,
                     result: WindowOperationResult::Unit(result),
@@ -423,11 +412,28 @@ impl AppWindowState {
         }
     }
 
-    fn window(&self, window_id: ZintlWindowId) -> Option<MainActor<Window>> {
+    fn window(&self, window_id: ZintlWindowId) -> Option<MainActorRef<Window>> {
         self.window_manager
             .read()
             .ok()
             .and_then(|window_manager| window_manager.as_ref().and_then(|wm| wm.window(window_id)))
+    }
+
+    fn with_window<T>(
+        &self,
+        window_id: ZintlWindowId,
+        marker: MainMarker,
+        f: impl FnOnce(&Window) -> Result<T, ZintlWindowError>,
+    ) -> Result<T, ZintlWindowError> {
+        let window = self
+            .window(window_id)
+            .ok_or_else(|| window_not_found_error(window_id))?
+            .upgrade()
+            .map_err(|error| window_actor_error(window_id, error))?;
+        let window = window
+            .read(marker)
+            .map_err(|error| window_actor_error(window_id, error))?;
+        f(&window)
     }
 
     fn push_app_event(&self, event: ZintlAppEvent) {
@@ -478,26 +484,50 @@ fn window_not_found_error(window_id: ZintlWindowId) -> ZintlWindowError {
     ZintlWindowError::new(format!("window {window_id} does not exist"))
 }
 
+fn window_actor_error(window_id: ZintlWindowId, error: MainActorError) -> ZintlWindowError {
+    match error {
+        MainActorError::Dropped => window_not_found_error(window_id),
+        MainActorError::LockError => ZintlWindowError::new("window registry is poisoned"),
+        MainActorError::NotInMainThread => {
+            ZintlWindowError::new("window operation must run on the main thread")
+        }
+    }
+}
+
+fn window_backend_error(window_id: ZintlWindowId, error: WindowError) -> ZintlWindowError {
+    match error {
+        WindowError::Closed => window_not_found_error(window_id),
+        WindowError::Backend(message) => ZintlWindowError::new(message),
+    }
+}
+
 fn apply_create_options(
     window_id: ZintlWindowId,
     state: &Arc<AppWindowState>,
     window: &Window,
     options: ZintlWindowCreateOptions,
-) {
+) -> Result<(), ZintlWindowError> {
     if let Some(bounds) = options.bounds {
-        window.set_bounds(rect_from_bounds(bounds));
+        window
+            .set_bounds(rect_from_bounds(bounds))
+            .map_err(|error| window_backend_error(window_id, error))?;
     } else {
         if let Some(size) = options.size {
-            window.set_size(size.width, size.height);
+            window
+                .set_size(size.width, size.height)
+                .map_err(|error| window_backend_error(window_id, error))?;
         }
         if let Some(position) = options.position {
-            window.set_position(position.x, position.y);
+            window
+                .set_position(position.x, position.y)
+                .map_err(|error| window_backend_error(window_id, error))?;
         }
     }
 
     if let Some(commands) = options.commands {
-        set_native_commands(window_id, state.clone(), window, commands);
+        set_native_commands(window_id, state.clone(), window, commands)?;
     }
+    Ok(())
 }
 
 fn rect_from_bounds(bounds: ZintlWindowBounds) -> Rect {
@@ -514,13 +544,15 @@ fn set_native_commands(
     state: Arc<AppWindowState>,
     window: &Window,
     commands: ZintlWindowCommandSet,
-) {
-    window.set_commands(
-        native_command_set(commands),
-        Arc::new(move |event: WindowCommandEvent| {
-            state.push_command_event(window_id, event);
-        }),
-    );
+) -> Result<(), ZintlWindowError> {
+    window
+        .set_commands(
+            native_command_set(commands),
+            Arc::new(move |event: WindowCommandEvent| {
+                state.push_command_event(window_id, event);
+            }),
+        )
+        .map_err(|error| window_backend_error(window_id, error))
 }
 
 fn native_command_set(commands: ZintlWindowCommandSet) -> NativeWindowCommandSet {
