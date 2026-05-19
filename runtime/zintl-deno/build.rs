@@ -27,21 +27,21 @@ struct ZintlWindowCommandSet {}
 struct ZintlAppEvent {}
 
 #[op2]
-fn op_zintl_window_create(#[serde] _options: Option<ZintlWindowCreateOptions>) -> u32 {
+async fn op_zintl_window_create(#[serde] _options: Option<ZintlWindowCreateOptions>) -> u32 {
     0
 }
 
 #[op2]
-fn op_zintl_window_set_bounds(_window_id: u32, #[serde] _bounds: ZintlWindowBounds) {}
+async fn op_zintl_window_set_bounds(_window_id: u32, #[serde] _bounds: ZintlWindowBounds) {}
 
 #[op2]
-fn op_zintl_window_set_size(_window_id: u32, #[serde] _size: ZintlWindowSize) {}
+async fn op_zintl_window_set_size(_window_id: u32, #[serde] _size: ZintlWindowSize) {}
 
 #[op2]
-fn op_zintl_window_set_position(_window_id: u32, #[serde] _position: ZintlWindowPosition) {}
+async fn op_zintl_window_set_position(_window_id: u32, #[serde] _position: ZintlWindowPosition) {}
 
 #[op2]
-fn op_zintl_window_set_commands(_window_id: u32, #[serde] _commands: ZintlWindowCommandSet) {}
+async fn op_zintl_window_set_commands(_window_id: u32, #[serde] _commands: ZintlWindowCommandSet) {}
 
 #[op2]
 #[serde]

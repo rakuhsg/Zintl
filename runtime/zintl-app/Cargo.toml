@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+futures = "0.3"
 zintl-deno = { path = "../zintl-deno" }
 zintl-native = { path = "../zintl-native", features = ["wgpu"] }
 zintl-render = { path = "../zintl-render" }

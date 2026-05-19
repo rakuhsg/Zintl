@@ -4,11 +4,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 
+use futures::channel::oneshot;
 use zintl_deno::api::{
     ZintlApi, ZintlAppApi, ZintlAppError, ZintlAppEvent, ZintlWindowApi, ZintlWindowAppMenu,
     ZintlWindowBounds, ZintlWindowCommandItem, ZintlWindowCommandMenu, ZintlWindowCommandModifier,
     ZintlWindowCommandRole, ZintlWindowCommandSet, ZintlWindowCreateOptions, ZintlWindowError,
-    ZintlWindowId, ZintlWindowPosition, ZintlWindowSize,
+    ZintlWindowFuture, ZintlWindowId, ZintlWindowPosition, ZintlWindowSize,
 };
 use zintl_deno::runtime::{DenoRuntime, DenoRuntimeOptions};
 use zintl_native::{
@@ -68,22 +69,51 @@ impl MessageHandler<Message> for Handler {
         });
     }
 
-    fn on_event(
-        &mut self,
-        _marker: MainMarker,
-        _cx: impl Context<Message>,
-        _event: Event<Message>,
-    ) {
+    fn on_event(&mut self, _marker: MainMarker, _cx: impl Context<Message>, event: Event<Message>) {
+        match event {
+            Event::UserMessage(Message::WindowOperationCompleted {
+                operation_id,
+                result,
+            }) => {
+                if let WindowOperationResult::Create(Ok(window_id)) = &result {
+                    self.window_state
+                        .push_app_event(ZintlAppEvent::WindowCreated {
+                            window_id: *window_id,
+                        });
+                }
+                self.window_state
+                    .complete_window_operation(operation_id, result);
+            }
+        }
     }
 }
 
-enum Message {}
+enum Message {
+    WindowOperationCompleted {
+        operation_id: WindowOperationId,
+        result: WindowOperationResult,
+    },
+}
+
+type WindowOperationId = u32;
+
+enum PendingWindowOperation {
+    Create(oneshot::Sender<Result<ZintlWindowId, ZintlWindowError>>),
+    Unit(oneshot::Sender<Result<(), ZintlWindowError>>),
+}
+
+enum WindowOperationResult {
+    Create(Result<ZintlWindowId, ZintlWindowError>),
+    Unit(Result<(), ZintlWindowError>),
+}
 
 #[derive(Default)]
 struct AppWindowState {
     next_window_id: AtomicU32,
+    next_operation_id: AtomicU32,
     windows: RwLock<HashMap<ZintlWindowId, MainActor<Window>>>,
     app_events: RwLock<VecDeque<ZintlAppEvent>>,
+    pending_window_operations: RwLock<HashMap<WindowOperationId, PendingWindowOperation>>,
 }
 
 struct AppWindowHost<C> {
@@ -95,23 +125,32 @@ impl<C> ZintlWindowApi for AppWindowHost<C>
 where
     C: Context<Message> + Send + Sync,
 {
-    fn create_window(
-        &self,
-        options: ZintlWindowCreateOptions,
-    ) -> Result<ZintlWindowId, ZintlWindowError> {
-        validate_create_options(&options)?;
+    fn create_window(&self, options: ZintlWindowCreateOptions) -> ZintlWindowFuture<ZintlWindowId> {
+        let (operation_id, receiver) = match self.state.begin_create_window_operation() {
+            Ok(operation) => operation,
+            Err(error) => return failed_window_future(error),
+        };
+        if let Err(error) = validate_create_options(&options) {
+            self.cx.send_message(Message::WindowOperationCompleted {
+                operation_id,
+                result: WindowOperationResult::Create(Err(error)),
+            });
+            return create_window_future(receiver);
+        }
 
         let window_id = self.state.next_window_id.fetch_add(1, Ordering::Relaxed) + 1;
         let wm = self.cx.window_manager();
         let state = self.state.clone();
         self.cx.perform_main(
-            move |marker, _cx| {
+            move |marker, cx| {
                 let window = wm.create_window(
                     marker,
                     Arc::new({
                         let state = state.clone();
                         move |event| {
-                            state.push_lifecycle_event(window_id, event);
+                            if !matches!(&event.kind, WindowLifecycleEventKind::Created) {
+                                state.push_lifecycle_event(window_id, event);
+                            }
                         }
                     }),
                 );
@@ -121,99 +160,179 @@ where
                     native_window.show();
                 }
 
-                if let Ok(mut windows) = state.windows.write() {
-                    windows.insert(window_id, window);
-                }
+                let result = match state.windows.write() {
+                    Ok(mut windows) => {
+                        windows.insert(window_id, window);
+                        Ok(window_id)
+                    }
+                    Err(_) => Err(ZintlWindowError::new("window registry is poisoned")),
+                };
+                cx.send_message(Message::WindowOperationCompleted {
+                    operation_id,
+                    result: WindowOperationResult::Create(result),
+                });
             },
             None,
         );
-        Ok(window_id)
+        create_window_future(receiver)
     }
 
     fn set_window_bounds(
         &self,
         window_id: ZintlWindowId,
         bounds: ZintlWindowBounds,
-    ) -> Result<(), ZintlWindowError> {
-        validate_bounds(bounds)?;
+    ) -> ZintlWindowFuture<()> {
+        let (operation_id, receiver) = match self.state.begin_unit_window_operation() {
+            Ok(operation) => operation,
+            Err(error) => return failed_window_future(error),
+        };
+        if let Err(error) = validate_bounds(bounds) {
+            self.cx.send_message(Message::WindowOperationCompleted {
+                operation_id,
+                result: WindowOperationResult::Unit(Err(error)),
+            });
+            return unit_window_future(receiver);
+        }
+
         let state = self.state.clone();
         self.cx.perform_main(
-            move |marker, _cx| {
-                if let Some(window) = state.window(window_id) {
+            move |marker, cx| {
+                let result = if let Some(window) = state.window(window_id) {
                     window
                         .read(marker)
                         .unwrap()
                         .set_bounds(rect_from_bounds(bounds));
-                }
+                    Ok(())
+                } else {
+                    Err(window_not_found_error(window_id))
+                };
+                cx.send_message(Message::WindowOperationCompleted {
+                    operation_id,
+                    result: WindowOperationResult::Unit(result),
+                });
             },
             None,
         );
-        Ok(())
+        unit_window_future(receiver)
     }
 
     fn set_window_size(
         &self,
         window_id: ZintlWindowId,
         size: ZintlWindowSize,
-    ) -> Result<(), ZintlWindowError> {
-        validate_size(size)?;
+    ) -> ZintlWindowFuture<()> {
+        let (operation_id, receiver) = match self.state.begin_unit_window_operation() {
+            Ok(operation) => operation,
+            Err(error) => return failed_window_future(error),
+        };
+        if let Err(error) = validate_size(size) {
+            self.cx.send_message(Message::WindowOperationCompleted {
+                operation_id,
+                result: WindowOperationResult::Unit(Err(error)),
+            });
+            return unit_window_future(receiver);
+        }
+
         let state = self.state.clone();
         self.cx.perform_main(
-            move |marker, _cx| {
-                if let Some(window) = state.window(window_id) {
+            move |marker, cx| {
+                let result = if let Some(window) = state.window(window_id) {
                     window
                         .read(marker)
                         .unwrap()
                         .set_size(size.width, size.height);
-                }
+                    Ok(())
+                } else {
+                    Err(window_not_found_error(window_id))
+                };
+                cx.send_message(Message::WindowOperationCompleted {
+                    operation_id,
+                    result: WindowOperationResult::Unit(result),
+                });
             },
             None,
         );
-        Ok(())
+        unit_window_future(receiver)
     }
 
     fn set_window_position(
         &self,
         window_id: ZintlWindowId,
         position: ZintlWindowPosition,
-    ) -> Result<(), ZintlWindowError> {
-        validate_position(position)?;
+    ) -> ZintlWindowFuture<()> {
+        let (operation_id, receiver) = match self.state.begin_unit_window_operation() {
+            Ok(operation) => operation,
+            Err(error) => return failed_window_future(error),
+        };
+        if let Err(error) = validate_position(position) {
+            self.cx.send_message(Message::WindowOperationCompleted {
+                operation_id,
+                result: WindowOperationResult::Unit(Err(error)),
+            });
+            return unit_window_future(receiver);
+        }
+
         let state = self.state.clone();
         self.cx.perform_main(
-            move |marker, _cx| {
-                if let Some(window) = state.window(window_id) {
+            move |marker, cx| {
+                let result = if let Some(window) = state.window(window_id) {
                     window
                         .read(marker)
                         .unwrap()
                         .set_position(position.x, position.y);
-                }
+                    Ok(())
+                } else {
+                    Err(window_not_found_error(window_id))
+                };
+                cx.send_message(Message::WindowOperationCompleted {
+                    operation_id,
+                    result: WindowOperationResult::Unit(result),
+                });
             },
             None,
         );
-        Ok(())
+        unit_window_future(receiver)
     }
 
     fn set_window_commands(
         &self,
         window_id: ZintlWindowId,
         commands: ZintlWindowCommandSet,
-    ) -> Result<(), ZintlWindowError> {
-        validate_commands(&commands)?;
+    ) -> ZintlWindowFuture<()> {
+        let (operation_id, receiver) = match self.state.begin_unit_window_operation() {
+            Ok(operation) => operation,
+            Err(error) => return failed_window_future(error),
+        };
+        if let Err(error) = validate_commands(&commands) {
+            self.cx.send_message(Message::WindowOperationCompleted {
+                operation_id,
+                result: WindowOperationResult::Unit(Err(error)),
+            });
+            return unit_window_future(receiver);
+        }
+
         let state = self.state.clone();
         self.cx.perform_main(
-            move |marker, _cx| {
-                if let Some(window) = state.window(window_id) {
+            move |marker, cx| {
+                let result = if let Some(window) = state.window(window_id) {
                     set_native_commands(
                         window_id,
                         state.clone(),
                         &window.read(marker).unwrap(),
                         commands,
                     );
-                }
+                    Ok(())
+                } else {
+                    Err(window_not_found_error(window_id))
+                };
+                cx.send_message(Message::WindowOperationCompleted {
+                    operation_id,
+                    result: WindowOperationResult::Unit(result),
+                });
             },
             None,
         );
-        Ok(())
+        unit_window_future(receiver)
     }
 }
 
@@ -232,11 +351,80 @@ where
 }
 
 impl AppWindowState {
+    fn begin_create_window_operation(
+        &self,
+    ) -> Result<
+        (
+            WindowOperationId,
+            oneshot::Receiver<Result<ZintlWindowId, ZintlWindowError>>,
+        ),
+        ZintlWindowError,
+    > {
+        let operation_id = self.next_operation_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let (sender, receiver) = oneshot::channel();
+        let mut operations = self
+            .pending_window_operations
+            .write()
+            .map_err(|_| ZintlWindowError::new("window operation registry is poisoned"))?;
+        operations.insert(operation_id, PendingWindowOperation::Create(sender));
+        Ok((operation_id, receiver))
+    }
+
+    fn begin_unit_window_operation(
+        &self,
+    ) -> Result<
+        (
+            WindowOperationId,
+            oneshot::Receiver<Result<(), ZintlWindowError>>,
+        ),
+        ZintlWindowError,
+    > {
+        let operation_id = self.next_operation_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let (sender, receiver) = oneshot::channel();
+        let mut operations = self
+            .pending_window_operations
+            .write()
+            .map_err(|_| ZintlWindowError::new("window operation registry is poisoned"))?;
+        operations.insert(operation_id, PendingWindowOperation::Unit(sender));
+        Ok((operation_id, receiver))
+    }
+
+    fn complete_window_operation(
+        &self,
+        operation_id: WindowOperationId,
+        result: WindowOperationResult,
+    ) {
+        let operation = self
+            .pending_window_operations
+            .write()
+            .ok()
+            .and_then(|mut operations| operations.remove(&operation_id));
+
+        match (operation, result) {
+            (
+                Some(PendingWindowOperation::Create(sender)),
+                WindowOperationResult::Create(result),
+            ) => {
+                let _ = sender.send(result);
+            }
+            (Some(PendingWindowOperation::Unit(sender)), WindowOperationResult::Unit(result)) => {
+                let _ = sender.send(result);
+            }
+            _ => {}
+        }
+    }
+
     fn window(&self, window_id: ZintlWindowId) -> Option<MainActor<Window>> {
         self.windows
             .read()
             .ok()
             .and_then(|windows| windows.get(&window_id).cloned())
+    }
+
+    fn push_app_event(&self, event: ZintlAppEvent) {
+        if let Ok(mut events) = self.app_events.write() {
+            events.push_back(event);
+        }
     }
 
     fn push_command_event(&self, window_id: ZintlWindowId, event: WindowCommandEvent) {
@@ -259,6 +447,38 @@ impl AppWindowState {
             events.push_back(native_lifecycle_event(window_id, event.kind));
         }
     }
+}
+
+fn failed_window_future<T: Send + 'static>(error: ZintlWindowError) -> ZintlWindowFuture<T> {
+    Box::pin(async move { Err(error) })
+}
+
+fn create_window_future(
+    receiver: oneshot::Receiver<Result<ZintlWindowId, ZintlWindowError>>,
+) -> ZintlWindowFuture<ZintlWindowId> {
+    Box::pin(async move {
+        receiver.await.unwrap_or_else(|_| {
+            Err(ZintlWindowError::new(
+                "window create operation was canceled",
+            ))
+        })
+    })
+}
+
+fn unit_window_future(
+    receiver: oneshot::Receiver<Result<(), ZintlWindowError>>,
+) -> ZintlWindowFuture<()> {
+    Box::pin(async move {
+        receiver.await.unwrap_or_else(|_| {
+            Err(ZintlWindowError::new(
+                "window operation completion was canceled",
+            ))
+        })
+    })
+}
+
+fn window_not_found_error(window_id: ZintlWindowId) -> ZintlWindowError {
+    ZintlWindowError::new(format!("window {window_id} does not exist"))
 }
 
 fn apply_create_options(
