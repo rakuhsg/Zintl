@@ -8,7 +8,7 @@ use crossbeam::queue::SegQueue;
 use crate::actor::*;
 use crate::messageloop::{
     Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowCommandEvent,
-    WindowCommandSet, WindowError, WindowEvent, WindowId, WindowManager, WindowManagerBackend,
+    WindowCommandSet, WindowError, WindowEventKind, WindowId, WindowManager, WindowManagerBackend,
     WindowResult,
 };
 
@@ -79,11 +79,11 @@ fn schedule() {
 }
 
 struct AppkitWindowManagerBackend {
-    window_events: Arc<SegQueue<(WindowId, WindowEvent)>>,
+    window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
 }
 
 impl AppkitWindowManagerBackend {
-    fn new(window_events: Arc<SegQueue<(WindowId, WindowEvent)>>) -> Self {
+    fn new(window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>) -> Self {
         AppkitWindowManagerBackend { window_events }
     }
 }
@@ -109,7 +109,8 @@ impl WindowManagerBackend for AppkitWindowManagerBackend {
             marker,
             Window::new(Box::new(AppkitWindowBackend { ptr, event_state })),
         );
-        self.window_events.push((window_id, WindowEvent::Created));
+        self.window_events
+            .push((window_id, WindowEventKind::Created));
         schedule();
         window
     }
@@ -226,7 +227,7 @@ struct AppkitWindowCommandState {
 
 struct AppkitWindowEventState {
     window_id: WindowId,
-    window_events: Arc<SegQueue<(WindowId, WindowEvent)>>,
+    window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
     closed: AtomicBool,
 }
 
@@ -260,7 +261,7 @@ unsafe extern "C" fn appkit_window_will_close(user_data: *const c_void) {
     let state = unsafe { &*user_data.cast::<AppkitWindowEventState>() };
     state
         .window_events
-        .push((state.window_id, WindowEvent::WillClose));
+        .push((state.window_id, WindowEventKind::WillClose));
     schedule();
 }
 
@@ -275,7 +276,7 @@ unsafe extern "C" fn appkit_window_did_close(user_data: *const c_void) {
     state.closed.store(true, Ordering::Release);
     state
         .window_events
-        .push((state.window_id, WindowEvent::DidClose));
+        .push((state.window_id, WindowEventKind::DidClose));
     schedule();
 }
 
@@ -353,7 +354,7 @@ pub struct AppkitMessageLoop<M: Send + Sync, H: MessageHandler<M>> {
     initialized: bool,
     handler: RwLock<H>,
     queue: SegQueue<MainTask<AppkitContext<M, H>, M>>,
-    window_events: Arc<SegQueue<(WindowId, WindowEvent)>>,
+    window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
     window_manager: WindowManager,
     phantom: std::marker::PhantomData<M>,
 }
@@ -439,8 +440,8 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
         AppkitContext::new(self.clone())
     }
 
-    fn dispatch_window_event(self: &Arc<Self>, window_id: WindowId, event: WindowEvent) {
-        if matches!(event, WindowEvent::DidClose) {
+    fn dispatch_window_event(self: &Arc<Self>, window_id: WindowId, kind: WindowEventKind) {
+        if matches!(kind, WindowEventKind::DidClose) {
             self.window_manager.remove_window(window_id);
         }
 
@@ -454,14 +455,14 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
             cx,
             Event::WindowEvent {
                 window_id,
-                event: event.clone(),
+                kind: kind.clone(),
             },
         );
     }
 
     fn dispatch_pending_window_events(self: &Arc<Self>) {
-        while let Some((window_id, event)) = self.window_events.pop() {
-            self.dispatch_window_event(window_id, event);
+        while let Some((window_id, kind)) = self.window_events.pop() {
+            self.dispatch_window_event(window_id, kind);
         }
     }
 

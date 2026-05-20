@@ -205,10 +205,10 @@ pub struct WindowCommandEvent {
 }
 
 #[derive(Clone, Debug)]
-pub enum WindowEvent {
+pub enum WindowEventKind {
     Created,
     WillClose,
-    /// NOTE: Don't fire [[WindowEvent::DidClose]] after free a window
+    /// NOTE: Don't fire [[WindowEventKind::DidClose]] after free a window
     DidClose,
 }
 
@@ -251,7 +251,7 @@ pub enum Event<M: Send + Sync> {
     UserMessage(M),
     WindowEvent {
         window_id: WindowId,
-        event: WindowEvent,
+        kind: WindowEventKind,
     },
 }
 

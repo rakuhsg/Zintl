@@ -18,7 +18,7 @@ use zintl_native::{
     WindowCommandItem as NativeWindowCommandItem, WindowCommandMenu as NativeWindowCommandMenu,
     WindowCommandModifier as NativeWindowCommandModifier,
     WindowCommandRole as NativeWindowCommandRole, WindowCommandSet as NativeWindowCommandSet,
-    WindowError, WindowEvent, WindowManager,
+    WindowError, WindowEventKind, WindowManager,
 };
 
 struct Handler {
@@ -79,14 +79,14 @@ impl MessageHandler<Message> for Handler {
                 self.window_state
                     .complete_window_operation(operation_id, result);
             }
-            Event::WindowEvent { window_id, event } => match event {
-                WindowEvent::Created => self
+            Event::WindowEvent { window_id, kind } => match kind {
+                WindowEventKind::Created => self
                     .window_state
                     .push_app_event(ZintlAppEvent::WindowCreated { window_id }),
-                WindowEvent::WillClose => self
+                WindowEventKind::WillClose => self
                     .window_state
                     .push_app_event(ZintlAppEvent::WindowWillClose { window_id }),
-                WindowEvent::DidClose => {}
+                WindowEventKind::DidClose => {}
             },
         }
     }
