@@ -244,6 +244,7 @@ class RWindow: NSObject, NSWindowDelegate {
     callback: ZintlWindowCommandCallback?,
     release: ZintlWindowCommandRelease?
   ) {
+    // Release the Rust-owned callback state before replacing the active command set.
     self.clearCommandCallback()
     self.commandSet = commands
     self.commandUserData = userData

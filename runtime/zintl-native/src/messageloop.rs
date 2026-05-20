@@ -117,12 +117,8 @@ impl Window {
         self.backend.set_position(x, y)
     }
 
-    pub fn set_commands(
-        &self,
-        commands: WindowCommandSet,
-        on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
-    ) -> WindowResult<()> {
-        self.backend.set_commands(commands, on_command)
+    pub fn set_commands(&self, commands: WindowCommandSet) -> WindowResult<()> {
+        self.backend.set_commands(commands)
     }
 
     #[cfg(feature = "wgpu")]
@@ -142,11 +138,7 @@ pub(crate) trait WindowBackend: Send + Sync {
     fn set_bounds(&self, bounds: Rect) -> WindowResult<()>;
     fn set_size(&self, width: f64, height: f64) -> WindowResult<()>;
     fn set_position(&self, x: f64, y: f64) -> WindowResult<()>;
-    fn set_commands(
-        &self,
-        commands: WindowCommandSet,
-        on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
-    ) -> WindowResult<()>;
+    fn set_commands(&self, commands: WindowCommandSet) -> WindowResult<()>;
 
     #[cfg(feature = "wgpu")]
     fn create_wgpu_surface(&self, marker: MainMarker, rect: Rect) -> WindowResult<WgpuSurface>;
@@ -200,11 +192,6 @@ pub enum WindowCommandRole {
 }
 
 #[derive(Clone, Debug)]
-pub struct WindowCommandEvent {
-    pub command_id: String,
-}
-
-#[derive(Clone, Debug)]
 pub enum WindowEventKind {
     Created,
     WillClose,
@@ -252,6 +239,10 @@ pub enum Event<M: Send + Sync> {
     WindowEvent {
         window_id: WindowId,
         kind: WindowEventKind,
+    },
+    WindowCommand {
+        window_id: WindowId,
+        command_id: String,
     },
 }
 

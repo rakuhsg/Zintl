@@ -14,7 +14,7 @@ use zintl_deno::api::{
 use zintl_deno::runtime::{DenoRuntime, DenoRuntimeOptions};
 use zintl_native::{
     Context, Event, MainActorError, MainActorRef, MainMarker, MessageHandler, PlatformMessageLoop,
-    Rect, Window, WindowAppMenu as NativeWindowAppMenu, WindowCommandEvent,
+    Rect, Window, WindowAppMenu as NativeWindowAppMenu,
     WindowCommandItem as NativeWindowCommandItem, WindowCommandMenu as NativeWindowCommandMenu,
     WindowCommandModifier as NativeWindowCommandModifier,
     WindowCommandRole as NativeWindowCommandRole, WindowCommandSet as NativeWindowCommandSet,
@@ -88,6 +88,15 @@ impl MessageHandler<Message> for Handler {
                     .push_app_event(ZintlAppEvent::WindowWillClose { window_id }),
                 WindowEventKind::DidClose => {}
             },
+            Event::WindowCommand {
+                window_id,
+                command_id,
+            } => self
+                .window_state
+                .push_app_event(ZintlAppEvent::WindowCommand {
+                    window_id,
+                    command_id,
+                }),
         }
     }
 }
@@ -162,7 +171,7 @@ where
                         let native_window = window
                             .read(marker)
                             .map_err(|error| window_actor_error(window_id, error))?;
-                        apply_create_options(window_id, &state, &native_window, options)?;
+                        apply_create_options(window_id, &native_window, options)?;
                         native_window
                             .show()
                             .map_err(|error| window_backend_error(window_id, error))
@@ -305,7 +314,7 @@ where
         self.cx.perform_main(
             move |marker, cx| {
                 let result = state.with_window(window_id, marker, |window| {
-                    set_native_commands(window_id, state.clone(), window, commands)
+                    set_native_commands(window_id, window, commands)
                 });
                 cx.send_message(Message::WindowOperationCompleted {
                     operation_id,
@@ -441,15 +450,6 @@ impl AppWindowState {
             events.push_back(event);
         }
     }
-
-    fn push_command_event(&self, window_id: ZintlWindowId, event: WindowCommandEvent) {
-        if let Ok(mut events) = self.app_events.write() {
-            events.push_back(ZintlAppEvent::WindowCommand {
-                window_id,
-                command_id: event.command_id,
-            });
-        }
-    }
 }
 
 fn failed_window_future<T: Send + 'static>(error: ZintlWindowError) -> ZintlWindowFuture<T> {
@@ -503,7 +503,6 @@ fn window_backend_error(window_id: ZintlWindowId, error: WindowError) -> ZintlWi
 
 fn apply_create_options(
     window_id: ZintlWindowId,
-    state: &Arc<AppWindowState>,
     window: &Window,
     options: ZintlWindowCreateOptions,
 ) -> Result<(), ZintlWindowError> {
@@ -525,7 +524,7 @@ fn apply_create_options(
     }
 
     if let Some(commands) = options.commands {
-        set_native_commands(window_id, state.clone(), window, commands)?;
+        set_native_commands(window_id, window, commands)?;
     }
     Ok(())
 }
@@ -541,17 +540,11 @@ fn rect_from_bounds(bounds: ZintlWindowBounds) -> Rect {
 
 fn set_native_commands(
     window_id: ZintlWindowId,
-    state: Arc<AppWindowState>,
     window: &Window,
     commands: ZintlWindowCommandSet,
 ) -> Result<(), ZintlWindowError> {
     window
-        .set_commands(
-            native_command_set(commands),
-            Arc::new(move |event: WindowCommandEvent| {
-                state.push_command_event(window_id, event);
-            }),
-        )
+        .set_commands(native_command_set(commands))
         .map_err(|error| window_backend_error(window_id, error))
 }
 

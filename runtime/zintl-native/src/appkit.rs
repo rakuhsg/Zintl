@@ -7,9 +7,8 @@ use crossbeam::queue::SegQueue;
 
 use crate::actor::*;
 use crate::messageloop::{
-    Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowCommandEvent,
-    WindowCommandSet, WindowError, WindowEventKind, WindowId, WindowManager, WindowManagerBackend,
-    WindowResult,
+    Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowCommandSet, WindowError,
+    WindowEventKind, WindowId, WindowManager, WindowManagerBackend, WindowResult,
 };
 
 #[cfg(feature = "wgpu")]
@@ -80,11 +79,18 @@ fn schedule() {
 
 struct AppkitWindowManagerBackend {
     window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
+    command_events: Arc<SegQueue<(WindowId, String)>>,
 }
 
 impl AppkitWindowManagerBackend {
-    fn new(window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>) -> Self {
-        AppkitWindowManagerBackend { window_events }
+    fn new(
+        window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
+        command_events: Arc<SegQueue<(WindowId, String)>>,
+    ) -> Self {
+        AppkitWindowManagerBackend {
+            window_events,
+            command_events,
+        }
     }
 }
 
@@ -93,6 +99,7 @@ impl WindowManagerBackend for AppkitWindowManagerBackend {
         let event_state = Box::new(AppkitWindowEventState {
             window_id,
             window_events: self.window_events.clone(),
+            command_events: self.command_events.clone(),
             closed: AtomicBool::new(false),
         });
         let callback = ffi::WindowCallback {
@@ -175,11 +182,7 @@ impl WindowBackend for AppkitWindowBackend {
         Ok(())
     }
 
-    fn set_commands(
-        &self,
-        commands: WindowCommandSet,
-        on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
-    ) -> WindowResult<()> {
+    fn set_commands(&self, commands: WindowCommandSet) -> WindowResult<()> {
         self.ensure_open()?;
         let commands_json = match serde_json::to_string(&commands) {
             Ok(commands_json) => commands_json,
@@ -194,7 +197,10 @@ impl WindowBackend for AppkitWindowBackend {
                 "failed to encode window commands: JSON contains NUL byte".to_string(),
             ));
         };
-        let user_data = Box::into_raw(Box::new(AppkitWindowCommandState { on_command }));
+        let user_data = Box::into_raw(Box::new(AppkitWindowCommandState {
+            window_id: self.event_state.window_id,
+            command_events: self.event_state.command_events.clone(),
+        }));
 
         // SAFETY: `commands_json` is valid for the duration of the call. Swift
         // copies the JSON string and takes ownership of `user_data`, releasing
@@ -221,30 +227,22 @@ impl WindowBackend for AppkitWindowBackend {
     }
 }
 
+/// Command callback state owned by Swift while commands are installed.
+///
+/// Rust allocates this state in `set_commands`, Swift stores it with the
+/// active menu callback, and Swift releases it through
+/// `appkit_window_command_release` when commands are replaced or the window is
+/// destroyed.
 struct AppkitWindowCommandState {
-    on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
+    window_id: WindowId,
+    command_events: Arc<SegQueue<(WindowId, String)>>,
 }
 
 struct AppkitWindowEventState {
     window_id: WindowId,
     window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
+    command_events: Arc<SegQueue<(WindowId, String)>>,
     closed: AtomicBool,
-}
-
-unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id: *const c_char) {
-    if user_data.is_null() || command_id.is_null() {
-        return;
-    }
-
-    // SAFETY: Swift passes back the exact user data pointer previously provided
-    // to `zintlappkit_window_set_commands`; it remains alive until the paired
-    // release callback is invoked.
-    let state = unsafe { &*user_data.cast::<AppkitWindowCommandState>() };
-    // SAFETY: Swift provides a NUL-terminated UTF-8 command id for this call.
-    let command_id = unsafe { CStr::from_ptr(command_id) }
-        .to_string_lossy()
-        .into_owned();
-    (state.on_command)(WindowCommandEvent { command_id });
 }
 
 unsafe extern "C" fn appkit_window_did_create(user_data: *const c_void) {
@@ -277,6 +275,23 @@ unsafe extern "C" fn appkit_window_did_close(user_data: *const c_void) {
     state
         .window_events
         .push((state.window_id, WindowEventKind::DidClose));
+    schedule();
+}
+
+unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id: *const c_char) {
+    if user_data.is_null() || command_id.is_null() {
+        return;
+    }
+
+    // SAFETY: Swift passes back the exact user data pointer previously provided
+    // to `zintlappkit_window_set_commands`; it remains alive until the paired
+    // release callback is invoked.
+    let state = unsafe { &*user_data.cast::<AppkitWindowCommandState>() };
+    // SAFETY: Swift provides a NUL-terminated UTF-8 command id for this call.
+    let command_id = unsafe { CStr::from_ptr(command_id) }
+        .to_string_lossy()
+        .into_owned();
+    state.command_events.push((state.window_id, command_id));
     schedule();
 }
 
@@ -355,6 +370,7 @@ pub struct AppkitMessageLoop<M: Send + Sync, H: MessageHandler<M>> {
     handler: RwLock<H>,
     queue: SegQueue<MainTask<AppkitContext<M, H>, M>>,
     window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
+    command_events: Arc<SegQueue<(WindowId, String)>>,
     window_manager: WindowManager,
     phantom: std::marker::PhantomData<M>,
 }
@@ -373,11 +389,12 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
                 mesloop.dispatch_message(message);
             }
 
-            // processes window events
             mesloop.dispatch_pending_window_events();
+            mesloop.dispatch_pending_command_events();
         }
 
         mesloop.dispatch_pending_window_events();
+        mesloop.dispatch_pending_command_events();
     }
 
     extern "C" fn cb_app_on_init(p_ud: *const c_void) {
@@ -411,14 +428,17 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
     pub fn new(handler: H) -> Arc<Self> {
         let queue = SegQueue::new();
         let window_events = Arc::new(SegQueue::new());
+        let command_events = Arc::new(SegQueue::new());
         let window_manager = WindowManager::new(Arc::new(AppkitWindowManagerBackend::new(
             window_events.clone(),
+            command_events.clone(),
         )));
         let mesloop = Arc::new(AppkitMessageLoop {
             initialized: true,
             handler: handler.into(),
             queue,
             window_events,
+            command_events,
             window_manager,
             phantom: std::marker::PhantomData,
         });
@@ -463,6 +483,26 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
     fn dispatch_pending_window_events(self: &Arc<Self>) {
         while let Some((window_id, kind)) = self.window_events.pop() {
             self.dispatch_window_event(window_id, kind);
+        }
+    }
+
+    fn dispatch_command_event(self: &Arc<Self>, window_id: WindowId, command_id: String) {
+        let cx = self.clone().context();
+        //TODO: unwrap
+        let mut handler = self.handler.write().unwrap();
+        handler.on_event(
+            MainMarker::new(),
+            cx,
+            Event::WindowCommand {
+                window_id,
+                command_id,
+            },
+        );
+    }
+
+    fn dispatch_pending_command_events(self: &Arc<Self>) {
+        while let Some((window_id, command_id)) = self.command_events.pop() {
+            self.dispatch_command_event(window_id, command_id);
         }
     }
 
