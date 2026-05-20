@@ -1,4 +1,4 @@
-const window = Zintl.window.create({
+const window = await Zintl.window.create({
   bounds: {
     x: 80,
     y: 80,
