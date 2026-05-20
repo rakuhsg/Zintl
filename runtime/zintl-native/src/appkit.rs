@@ -227,17 +227,6 @@ impl WindowBackend for AppkitWindowBackend {
     }
 }
 
-/// Command callback state owned by Swift while commands are installed.
-///
-/// Rust allocates this state in `set_commands`, Swift stores it with the
-/// active menu callback, and Swift releases it through
-/// `appkit_window_command_release` when commands are replaced or the window is
-/// destroyed.
-struct AppkitWindowCommandState {
-    window_id: WindowId,
-    command_events: Arc<SegQueue<(WindowId, String)>>,
-}
-
 struct AppkitWindowEventState {
     window_id: WindowId,
     window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
@@ -276,6 +265,17 @@ unsafe extern "C" fn appkit_window_did_close(user_data: *const c_void) {
         .window_events
         .push((state.window_id, WindowEventKind::DidClose));
     schedule();
+}
+
+/// Command callback state owned by Swift while commands are installed.
+///
+/// Rust allocates this state in `set_commands`, Swift stores it with the
+/// active menu callback, and Swift releases it through
+/// `appkit_window_command_release` when commands are replaced or the window is
+/// destroyed.
+struct AppkitWindowCommandState {
+    window_id: WindowId,
+    command_events: Arc<SegQueue<(WindowId, String)>>,
 }
 
 unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id: *const c_char) {
