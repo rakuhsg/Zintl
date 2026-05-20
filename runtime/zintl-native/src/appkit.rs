@@ -1,14 +1,14 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crossbeam::queue::SegQueue;
 
 use crate::actor::*;
 use crate::messageloop::{
-    Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowCommandEvent,
-    WindowCommandSet, WindowLifecycleEvent, WindowLifecycleEventKind, WindowManager,
-    WindowManagerBackend,
+    Context, Event, MainTask, MessageHandler, Window, WindowBackend, WindowCommandSet, WindowError,
+    WindowEventKind, WindowId, WindowManager, WindowManagerBackend, WindowResult,
 };
 
 #[cfg(feature = "wgpu")]
@@ -65,116 +65,142 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> Context<M> for Ap
 
 impl<M: Send + Sync, H: MessageHandler<M>> AppkitContext<M, H> {
     fn schedule(&self) {
-        // SAFETY: `AppkitMessageLoop::new` initializes the Swift-side run-loop
-        // source before any `AppkitContext` can be created.
-        unsafe {
-            ffi::zintlappkit_schedule();
-        }
+        schedule();
+    }
+}
+
+fn schedule() {
+    // SAFETY: `AppkitMessageLoop::new` initializes the Swift-side run-loop
+    // source before any `AppkitContext` can be created.
+    unsafe {
+        ffi::zintlappkit_schedule();
     }
 }
 
 struct AppkitWindowManagerBackend {
-    windows: RwLock<Vec<MainActor<Window>>>,
+    window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
+    command_events: Arc<SegQueue<(WindowId, String)>>,
 }
 
 impl AppkitWindowManagerBackend {
-    fn new() -> Self {
+    fn new(
+        window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
+        command_events: Arc<SegQueue<(WindowId, String)>>,
+    ) -> Self {
         AppkitWindowManagerBackend {
-            windows: RwLock::new(Vec::new()),
+            window_events,
+            command_events,
         }
     }
 }
 
 impl WindowManagerBackend for AppkitWindowManagerBackend {
-    fn create_window(
-        &self,
-        marker: MainMarker,
-        on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
-    ) -> MainActor<Window> {
-        let lifecycle_state = Box::new(AppkitWindowLifecycleState { on_lifecycle });
+    fn create_window(&self, marker: MainMarker, window_id: WindowId) -> MainActor<Window> {
+        let event_state = Box::new(AppkitWindowEventState {
+            window_id,
+            window_events: self.window_events.clone(),
+            command_events: self.command_events.clone(),
+            closed: AtomicBool::new(false),
+        });
         let callback = ffi::WindowCallback {
             did_create: appkit_window_did_create,
             will_close: appkit_window_will_close,
+            did_close: appkit_window_did_close,
         };
         // SAFETY: `marker` witnesses that this code is running on the AppKit
-        // main actor, and `lifecycle_state` stays alive in the backend until
+        // main actor, and `event_state` stays alive in the backend until
         // the AppKit window is destroyed.
-        let user_data = (&*lifecycle_state) as *const AppkitWindowLifecycleState;
+        let user_data = (&*event_state) as *const AppkitWindowEventState;
         let ptr = unsafe { ffi::zintlappkit_create_window(user_data.cast(), &callback) };
         let window = MainActor::new(
             marker,
-            Window::new(Box::new(AppkitWindowBackend {
-                ptr,
-                _lifecycle_state: lifecycle_state,
-            })),
+            Window::new(Box::new(AppkitWindowBackend { ptr, event_state })),
         );
-
-        if let Ok(mut windows) = self.windows.write() {
-            windows.push(window.clone());
-        }
-
+        self.window_events
+            .push((window_id, WindowEventKind::Created));
+        schedule();
         window
     }
 }
 
 struct AppkitWindowBackend {
     ptr: *const c_void,
-    _lifecycle_state: Box<AppkitWindowLifecycleState>,
+    event_state: Box<AppkitWindowEventState>,
 }
 
 unsafe impl Send for AppkitWindowBackend {}
 unsafe impl Sync for AppkitWindowBackend {}
 
+impl AppkitWindowBackend {
+    fn ensure_open(&self) -> WindowResult<()> {
+        if self.event_state.closed.load(Ordering::Acquire) {
+            Err(WindowError::Closed)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl WindowBackend for AppkitWindowBackend {
-    fn show(&self) {
+    fn show(&self) -> WindowResult<()> {
+        self.ensure_open()?;
         // SAFETY: `Window` is only exposed through `MainActor`, so callers
         // need a `MainMarker` to read it and call AppKit-backed methods.
         unsafe {
             ffi::zintlappkit_show_window(self.ptr);
         }
+        Ok(())
     }
 
-    fn set_bounds(&self, bounds: Rect) {
+    fn set_bounds(&self, bounds: Rect) -> WindowResult<()> {
+        self.ensure_open()?;
         // SAFETY: `Window` is only exposed through `MainActor`, so AppKit
         // mutation happens on the main actor.
         unsafe {
             ffi::zintlappkit_window_set_bounds(self.ptr, bounds);
         }
+        Ok(())
     }
 
-    fn set_size(&self, width: f64, height: f64) {
+    fn set_size(&self, width: f64, height: f64) -> WindowResult<()> {
+        self.ensure_open()?;
         // SAFETY: `Window` is only exposed through `MainActor`, so AppKit
         // mutation happens on the main actor.
         unsafe {
             ffi::zintlappkit_window_set_size(self.ptr, width, height);
         }
+        Ok(())
     }
 
-    fn set_position(&self, x: f64, y: f64) {
+    fn set_position(&self, x: f64, y: f64) -> WindowResult<()> {
+        self.ensure_open()?;
         // SAFETY: `Window` is only exposed through `MainActor`, so AppKit
         // mutation happens on the main actor.
         unsafe {
             ffi::zintlappkit_window_set_position(self.ptr, x, y);
         }
+        Ok(())
     }
 
-    fn set_commands(
-        &self,
-        commands: WindowCommandSet,
-        on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
-    ) {
+    fn set_commands(&self, commands: WindowCommandSet) -> WindowResult<()> {
+        self.ensure_open()?;
         let commands_json = match serde_json::to_string(&commands) {
             Ok(commands_json) => commands_json,
             Err(error) => {
-                eprintln!("failed to encode window commands: {error}");
-                return;
+                return Err(WindowError::Backend(format!(
+                    "failed to encode window commands: {error}"
+                )));
             }
         };
         let Ok(commands_json) = CString::new(commands_json) else {
-            eprintln!("failed to encode window commands: JSON contains NUL byte");
-            return;
+            return Err(WindowError::Backend(
+                "failed to encode window commands: JSON contains NUL byte".to_string(),
+            ));
         };
-        let user_data = Box::into_raw(Box::new(AppkitWindowCommandState { on_command }));
+        let user_data = Box::into_raw(Box::new(AppkitWindowCommandState {
+            window_id: self.event_state.window_id,
+            command_events: self.event_state.command_events.clone(),
+        }));
 
         // SAFETY: `commands_json` is valid for the duration of the call. Swift
         // copies the JSON string and takes ownership of `user_data`, releasing
@@ -188,23 +214,68 @@ impl WindowBackend for AppkitWindowBackend {
                 appkit_window_command_release,
             );
         }
+        Ok(())
     }
 
     #[cfg(feature = "wgpu")]
-    fn create_wgpu_surface(&self, _marker: MainMarker, rect: Rect) -> WgpuSurface {
+    fn create_wgpu_surface(&self, _marker: MainMarker, rect: Rect) -> WindowResult<WgpuSurface> {
+        self.ensure_open()?;
         // SAFETY: `Window` is only exposed through `MainActor`, so callers need
         // a `MainMarker` to invoke this AppKit-backed method on the main actor.
         let ptr = unsafe { ffi::zintlappkit_create_wgpu_surface(self.ptr, rect) };
-        WgpuSurface::new(Box::new(AppkitWgpuSurfaceBackend { ptr }))
+        Ok(WgpuSurface::new(Box::new(AppkitWgpuSurfaceBackend { ptr })))
     }
 }
 
-struct AppkitWindowCommandState {
-    on_command: Arc<dyn Fn(WindowCommandEvent) + Send + Sync>,
+struct AppkitWindowEventState {
+    window_id: WindowId,
+    window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
+    command_events: Arc<SegQueue<(WindowId, String)>>,
+    closed: AtomicBool,
 }
 
-struct AppkitWindowLifecycleState {
-    on_lifecycle: Arc<dyn Fn(WindowLifecycleEvent) + Send + Sync>,
+unsafe extern "C" fn appkit_window_did_create(user_data: *const c_void) {
+    let _ = user_data;
+}
+
+unsafe extern "C" fn appkit_window_will_close(user_data: *const c_void) {
+    if user_data.is_null() {
+        return;
+    }
+
+    // SAFETY: Swift passes back the event user data pointer provided to
+    // `zintlappkit_create_window`; the backend owns it for the window lifetime.
+    let state = unsafe { &*user_data.cast::<AppkitWindowEventState>() };
+    state
+        .window_events
+        .push((state.window_id, WindowEventKind::WillClose));
+    schedule();
+}
+
+unsafe extern "C" fn appkit_window_did_close(user_data: *const c_void) {
+    if user_data.is_null() {
+        return;
+    }
+
+    // SAFETY: Swift passes back the event user data pointer provided to
+    // `zintlappkit_create_window`; the backend owns it for the window lifetime.
+    let state = unsafe { &*user_data.cast::<AppkitWindowEventState>() };
+    state.closed.store(true, Ordering::Release);
+    state
+        .window_events
+        .push((state.window_id, WindowEventKind::DidClose));
+    schedule();
+}
+
+/// Command callback state owned by Swift while commands are installed.
+///
+/// Rust allocates this state in `set_commands`, Swift stores it with the
+/// active menu callback, and Swift releases it through
+/// `appkit_window_command_release` when commands are replaced or the window is
+/// destroyed.
+struct AppkitWindowCommandState {
+    window_id: WindowId,
+    command_events: Arc<SegQueue<(WindowId, String)>>,
 }
 
 unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id: *const c_char) {
@@ -220,33 +291,8 @@ unsafe extern "C" fn appkit_window_command(user_data: *const c_void, command_id:
     let command_id = unsafe { CStr::from_ptr(command_id) }
         .to_string_lossy()
         .into_owned();
-    (state.on_command)(WindowCommandEvent { command_id });
-}
-
-unsafe extern "C" fn appkit_window_did_create(user_data: *const c_void) {
-    if user_data.is_null() {
-        return;
-    }
-
-    // SAFETY: Swift passes back the lifecycle user data pointer provided to
-    // `zintlappkit_create_window`; the backend owns it for the window lifetime.
-    let state = unsafe { &*user_data.cast::<AppkitWindowLifecycleState>() };
-    (state.on_lifecycle)(WindowLifecycleEvent {
-        kind: WindowLifecycleEventKind::Created,
-    });
-}
-
-unsafe extern "C" fn appkit_window_will_close(user_data: *const c_void) {
-    if user_data.is_null() {
-        return;
-    }
-
-    // SAFETY: Swift passes back the lifecycle user data pointer provided to
-    // `zintlappkit_create_window`; the backend owns it for the window lifetime.
-    let state = unsafe { &*user_data.cast::<AppkitWindowLifecycleState>() };
-    (state.on_lifecycle)(WindowLifecycleEvent {
-        kind: WindowLifecycleEventKind::WillClose,
-    });
+    state.command_events.push((state.window_id, command_id));
+    schedule();
 }
 
 unsafe extern "C" fn appkit_window_command_release(user_data: *const c_void) {
@@ -323,6 +369,8 @@ pub struct AppkitMessageLoop<M: Send + Sync, H: MessageHandler<M>> {
     initialized: bool,
     handler: RwLock<H>,
     queue: SegQueue<MainTask<AppkitContext<M, H>, M>>,
+    window_events: Arc<SegQueue<(WindowId, WindowEventKind)>>,
+    command_events: Arc<SegQueue<(WindowId, String)>>,
     window_manager: WindowManager,
     phantom: std::marker::PhantomData<M>,
 }
@@ -340,7 +388,13 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
             if let Some(message) = task.send_after {
                 mesloop.dispatch_message(message);
             }
+
+            mesloop.dispatch_pending_window_events();
+            mesloop.dispatch_pending_command_events();
         }
+
+        mesloop.dispatch_pending_window_events();
+        mesloop.dispatch_pending_command_events();
     }
 
     extern "C" fn cb_app_on_init(p_ud: *const c_void) {
@@ -373,11 +427,19 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
 
     pub fn new(handler: H) -> Arc<Self> {
         let queue = SegQueue::new();
+        let window_events = Arc::new(SegQueue::new());
+        let command_events = Arc::new(SegQueue::new());
+        let window_manager = WindowManager::new(Arc::new(AppkitWindowManagerBackend::new(
+            window_events.clone(),
+            command_events.clone(),
+        )));
         let mesloop = Arc::new(AppkitMessageLoop {
             initialized: true,
             handler: handler.into(),
             queue,
-            window_manager: WindowManager::new(Arc::new(AppkitWindowManagerBackend::new())),
+            window_events,
+            command_events,
+            window_manager,
             phantom: std::marker::PhantomData,
         });
 
@@ -396,6 +458,52 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
 
     fn context(self: Arc<Self>) -> AppkitContext<M, H> {
         AppkitContext::new(self.clone())
+    }
+
+    fn dispatch_window_event(self: &Arc<Self>, window_id: WindowId, kind: WindowEventKind) {
+        if matches!(kind, WindowEventKind::DidClose) {
+            self.window_manager.remove_window(window_id);
+        }
+
+        let cx = self.clone().context();
+        //TODO: unwrap
+        let mut handler = self.handler.write().unwrap();
+
+        // call event handler
+        handler.on_event(
+            MainMarker::new(),
+            cx,
+            Event::WindowEvent {
+                window_id,
+                kind: kind.clone(),
+            },
+        );
+    }
+
+    fn dispatch_pending_window_events(self: &Arc<Self>) {
+        while let Some((window_id, kind)) = self.window_events.pop() {
+            self.dispatch_window_event(window_id, kind);
+        }
+    }
+
+    fn dispatch_command_event(self: &Arc<Self>, window_id: WindowId, command_id: String) {
+        let cx = self.clone().context();
+        //TODO: unwrap
+        let mut handler = self.handler.write().unwrap();
+        handler.on_event(
+            MainMarker::new(),
+            cx,
+            Event::WindowCommand {
+                window_id,
+                command_id,
+            },
+        );
+    }
+
+    fn dispatch_pending_command_events(self: &Arc<Self>) {
+        while let Some((window_id, command_id)) = self.command_events.pop() {
+            self.dispatch_command_event(window_id, command_id);
+        }
     }
 
     pub fn run(&self) {
