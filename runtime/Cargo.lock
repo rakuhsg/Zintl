@@ -9261,7 +9261,6 @@ dependencies = [
  "deno_resolver",
  "deno_runtime",
  "serde",
- "serde_json",
  "sys_traits",
 ]
 
