@@ -17,3 +17,6 @@ sys_traits = { version = "=0.1.27", features = ["real"] }
 deno_core = { path = "../../thirdparty/deno/libs/core" }
 deno_runtime = { path = "../../thirdparty/deno/runtime", features = ["include_js_files_for_snapshotting", "snapshot"] }
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

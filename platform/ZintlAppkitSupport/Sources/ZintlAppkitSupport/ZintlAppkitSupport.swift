@@ -185,18 +185,19 @@ func zintlAppkitDestroy() {
 @MainActor
 class RWindow: NSObject, NSWindowDelegate {
   var window: NSWindow
-  var lifecycleUserData: UnsafeRawPointer?
-  var lifecycleCallback: WindowCallback?
+  var userData: UnsafeRawPointer?
+  var callback: WindowCallback?
   var commandSet = ZintlWindowCommandSet(appMenu: nil, menus: [])
   var commandTargets: [ZintlCommandTarget] = []
   var commandUserData: UnsafeRawPointer?
   var commandCallback: ZintlWindowCommandCallback?
   var commandRelease: ZintlWindowCommandRelease?
+  var isClosed = false
 
   @MainActor
   init(userData: UnsafeRawPointer?, callback: WindowCallback?) {
-    self.lifecycleUserData = userData
-    self.lifecycleCallback = callback
+    self.userData = userData
+    self.callback = callback
     self.window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 480, height: 300),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -205,13 +206,15 @@ class RWindow: NSObject, NSWindowDelegate {
     )
     super.init()
     self.window.delegate = self
-    self.lifecycleCallback?.did_create(self.lifecycleUserData)
+    self.callback?.did_create(self.userData)
   }
 
   @MainActor
   deinit {
     self.clearCommandCallback()
-    self.window.close()
+    if !self.isClosed {
+      self.window.close()
+    }
   }
 
   @MainActor
@@ -241,6 +244,7 @@ class RWindow: NSObject, NSWindowDelegate {
     callback: ZintlWindowCommandCallback?,
     release: ZintlWindowCommandRelease?
   ) {
+    // Release the Rust-owned callback state before replacing the active command set.
     self.clearCommandCallback()
     self.commandSet = commands
     self.commandUserData = userData
@@ -266,9 +270,15 @@ class RWindow: NSObject, NSWindowDelegate {
 
   @MainActor
   func windowWillClose(_ notification: Notification) {
-    let callback = self.lifecycleCallback
-    self.lifecycleCallback = nil
-    callback?.will_close(self.lifecycleUserData)
+    callback?.will_close(self.userData)
+  }
+
+  @MainActor
+  func windowDidClose(_ notification: Notification) {
+    self.isClosed = true
+    callback?.did_close(self.userData)
+    self.callback = nil
+    self.userData = nil
   }
 
   @MainActor

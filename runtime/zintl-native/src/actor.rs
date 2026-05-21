@@ -1,9 +1,10 @@
-use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 #[derive(Debug, Clone)]
 pub enum MainActorError {
     NotInMainThread,
     LockError,
+    Dropped,
 }
 
 pub type MainActorResult<T> = Result<T, MainActorError>;
@@ -28,6 +29,18 @@ pub struct MainActor<T> {
     inner: Arc<RwLock<T>>,
 }
 
+pub struct MainActorRef<T> {
+    inner: Weak<RwLock<T>>,
+}
+
+impl<T> Clone for MainActorRef<T> {
+    fn clone(&self) -> Self {
+        MainActorRef {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<T> Clone for MainActor<T> {
     fn clone(&self) -> Self {
         MainActor {
@@ -49,5 +62,20 @@ impl<T> MainActor<T> {
 
     pub fn write(&self, _marker: MainMarker) -> MainActorResult<RwLockWriteGuard<'_, T>> {
         lock_result(self.inner.write())
+    }
+
+    pub fn downgrade(&self) -> MainActorRef<T> {
+        MainActorRef {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+}
+
+impl<T> MainActorRef<T> {
+    pub fn upgrade(&self) -> MainActorResult<MainActor<T>> {
+        self.inner
+            .upgrade()
+            .map(|inner| MainActor { inner })
+            .ok_or(MainActorError::Dropped)
     }
 }

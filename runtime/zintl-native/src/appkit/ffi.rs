@@ -15,6 +15,7 @@ pub struct AppCallback {
 pub struct WindowCallback {
     pub did_create: unsafe extern "C" fn(*const c_void),
     pub will_close: unsafe extern "C" fn(*const c_void),
+    pub did_close: unsafe extern "C" fn(*const c_void),
 }
 
 pub type WindowCommandCallback =
