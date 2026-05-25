@@ -1,0 +1,32 @@
+[workspace]
+
+[package]
+name = "webgpu_byow_macos"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+objc2 = "0.6.2"
+objc2-app-kit = { version = "0.3.2", features = [
+  "NSApplication",
+  "NSEvent",
+  "NSGraphics",
+  "NSResponder",
+  "NSView",
+  "NSWindow",
+] }
+objc2-foundation = { version = "0.3.2", features = [
+  "NSDate",
+  "NSGeometry",
+  "NSObject",
+  "NSRunLoop",
+  "NSString",
+] }
+objc2-quartz-core = { version = "0.3.2", features = [
+  "CALayer",
+  "CAMetalLayer",
+] }
