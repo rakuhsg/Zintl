@@ -1,11 +1,7 @@
 const WIDTH = 640;
 const HEIGHT = 480;
 
-const libName = Deno.build.os === "darwin"
-  ? "libwebgpu_byow_macos.dylib"
-  : Deno.build.os === "windows"
-  ? "webgpu_byow_macos.dll"
-  : "libwebgpu_byow_macos.so";
+const libName = "libwebgpu_byow_macos.dylib";
 
 const libPath = new URL(`./target/debug/${libName}`, import.meta.url);
 const dylib = Deno.dlopen(libPath, {
