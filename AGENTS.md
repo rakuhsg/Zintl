@@ -10,10 +10,12 @@ See `DESIGN.md` for the product and architecture direction.
 - `runtime/Cargo.toml`: A runtime workspace root.
 - `runtime/crates/zintl`: It's just placeholder for now.
 - `runtime/crates/zintl-app`: native app entry point.
+- `runtime/crates/zintl-deno`: Deno runtime for app.
 - `runtime/crates/zintl-native`: platform message loop, main actor, and native bindings.
-- `runtime/crates/zintl-render`: rendering crate placeholder.
+- `runtime/crates/zintl-render`: rendering with wgpu and vello.
 - `platform/ZintlAppkitSupport`: Swift Package used by macOS AppKit FFI.
 - `thirdparty/deno`: Deno 2.8.0 with a local patch applied to the WebGPU extension.
+- `patches/deno`: A local patch files for deno.
 
 ## Commands
 
