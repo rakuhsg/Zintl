@@ -6,10 +6,9 @@ import {
   op_zintl_window_set_position,
   op_zintl_window_set_size,
 } from "ext:core/ops";
-import { eventBus } from "ext:zintl/app.ts";
+import { eventBus } from "./app.ts";
 
 const { ObjectDefineProperty } = primordials;
-const Zintl = globalThis.Zintl ?? {};
 
 export interface ZintlWindowBounds {
   x: number;
@@ -70,8 +69,12 @@ export interface ZintlWindowLifecycleEvent {
   windowId: number;
 }
 
-export type ZintlWindowCommandListener = (event: ZintlWindowCommandEvent) => void;
-export type ZintlWindowLifecycleListener = (event: ZintlWindowLifecycleEvent) => void;
+export type ZintlWindowCommandListener = (
+  event: ZintlWindowCommandEvent,
+) => void;
+export type ZintlWindowLifecycleListener = (
+  event: ZintlWindowLifecycleEvent,
+) => void;
 
 export interface ZintlWindow {
   readonly id: number;
@@ -87,6 +90,14 @@ export interface ZintlWindow {
 export interface ZintlWindowAPI {
   create(options?: ZintlWindowCreateOptions): Promise<ZintlWindow>;
 }
+
+interface ZintlGlobal {
+  window?: ZintlWindowAPI;
+}
+
+type ZintlGlobalThis = typeof globalThis & {
+  Zintl?: ZintlGlobal;
+};
 
 class NativeZintlWindow implements ZintlWindow {
   #id: number;
@@ -149,6 +160,8 @@ const windowApi: ZintlWindowAPI = {
   },
 };
 
+const zintlGlobalThis = globalThis as ZintlGlobalThis;
+const Zintl = zintlGlobalThis.Zintl ?? {};
 Zintl.window = windowApi;
 
 ObjectDefineProperty(globalThis, "Zintl", {

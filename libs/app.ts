@@ -9,7 +9,6 @@ const {
   SetPrototypeDelete,
   SetPrototypeGetSize,
 } = primordials;
-const app = globalThis.app ?? {};
 
 export interface AppWindowCommandEvent {
   type: "window.command";
@@ -37,7 +36,10 @@ export type AppEventListener<T extends AppEventType = AppEventType> = (
 ) => void;
 
 export interface AppEventBus {
-  subscribe<T extends AppEventType>(type: T, listener: AppEventListener<T>): () => void;
+  subscribe<T extends AppEventType>(
+    type: T,
+    listener: AppEventListener<T>,
+  ): () => void;
   poll(): AppEvent | undefined;
 }
 
@@ -45,26 +47,36 @@ export interface ZintlApp {
   eventBus: AppEventBus;
 }
 
+type ZintlGlobalThis = typeof globalThis & {
+  app?: ZintlApp;
+};
+
 interface AppEventSubscription {
   type: AppEventType;
-  listener: AppEventListener;
+  listener: (event: AppEvent) => void;
 }
 
 const appEventSubscriptions = new SafeSet<AppEventSubscription>();
-let appEventPollTimer: number | undefined;
+let appEventPollTimer: ReturnType<typeof globalThis.setInterval> | undefined;
 
 export const eventBus: AppEventBus = {
-  subscribe<T extends AppEventType>(type: T, listener: AppEventListener<T>): () => void {
+  subscribe<T extends AppEventType>(
+    type: T,
+    listener: AppEventListener<T>,
+  ): () => void {
     const subscription: AppEventSubscription = {
       type,
-      listener: listener as AppEventListener,
+      listener: (event) => listener(event as Extract<AppEvent, { type: T }>),
     };
     SetPrototypeAdd(appEventSubscriptions, subscription);
     ensureAppEventPolling();
 
     return () => {
       SetPrototypeDelete(appEventSubscriptions, subscription);
-      if (SetPrototypeGetSize(appEventSubscriptions) === 0 && appEventPollTimer !== undefined) {
+      if (
+        SetPrototypeGetSize(appEventSubscriptions) === 0 &&
+        appEventPollTimer !== undefined
+      ) {
         globalThis.clearInterval(appEventPollTimer);
         appEventPollTimer = undefined;
       }
@@ -82,7 +94,7 @@ function ensureAppEventPolling(): void {
   }
 
   appEventPollTimer = globalThis.setInterval(() => {
-    let event;
+    let event: AppEvent | undefined;
     while ((event = eventBus.poll()) != null) {
       dispatchAppEvent(event);
     }
@@ -92,11 +104,13 @@ function ensureAppEventPolling(): void {
 function dispatchAppEvent(event: AppEvent): void {
   for (const subscription of new SafeSetIterator(appEventSubscriptions)) {
     if (subscription.type === event.type) {
-      subscription.listener(event as never);
+      subscription.listener(event);
     }
   }
 }
 
+const zintlGlobalThis = globalThis as ZintlGlobalThis;
+const app = zintlGlobalThis.app ?? { eventBus };
 app.eventBus = eventBus;
 
 ObjectDefineProperty(globalThis, "app", {
