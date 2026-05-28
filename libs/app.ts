@@ -57,7 +57,7 @@ interface AppEventSubscription {
 }
 
 const appEventSubscriptions = new SafeSet<AppEventSubscription>();
-let appEventPollTimer: number | undefined;
+let appEventPollTimer: ReturnType<typeof globalThis.setInterval> | undefined;
 
 export const eventBus: AppEventBus = {
   subscribe<T extends AppEventType>(
