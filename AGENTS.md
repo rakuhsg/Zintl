@@ -20,6 +20,7 @@ See `DESIGN.md` for the product and architecture direction.
 ## Commands
 
 - Check/build all Rust crates: `cd zintl && cargo check`
+- Check TypeScript libs: `deno check libs/*.ts`
 - Run tests: `cd zintl && cargo test`
 - Run the app on macOS: `cd zintl && cargo run -p zintl-app`
 - Build AppKit support directly: `swift build -c release --package-path platform/ZintlAppkitSupport`
@@ -31,6 +32,7 @@ See `DESIGN.md` for the product and architecture direction.
 - Keep changes small and aligned with `DESIGN.md`.
 - Do not edit files under `thirdparty/`.
 - Always run Cargo commands from the workspace directory, e.g. `cd zintl && cargo check`.
+- Use `deno check libs/*.ts` before finishing TypeScript changes under `libs/`.
 - Use `cd zintl && cargo fmt` before finishing Rust changes.
 - Use `swift format format <file>` before finishing Swift changes.
 - Keep comments clear and short.
