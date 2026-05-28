@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   libs:
-    name: Check libs
+    name: Type-checking TypeScript libs
     runs-on: ubuntu-latest
 
     steps:
