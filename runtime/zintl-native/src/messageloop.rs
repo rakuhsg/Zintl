@@ -7,6 +7,10 @@ use crate::actor::{MainActor, MainActorRef, MainMarker};
 use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
 
+pub type WindowId = u32;
+
+pub type WindowResult<T> = Result<T, WindowError>;
+
 pub struct MainTask<C, M: Send + Sync> {
     pub(crate) f: Box<dyn FnOnce(MainMarker, C) -> () + Send>,
     pub(crate) send_after: Option<M>,
@@ -65,10 +69,6 @@ impl WindowManager {
 pub(crate) trait WindowManagerBackend: Send + Sync {
     fn create_window(&self, marker: MainMarker, window_id: WindowId) -> MainActor<Window>;
 }
-
-pub type WindowId = u32;
-
-pub type WindowResult<T> = Result<T, WindowError>;
 
 #[derive(Clone, Debug)]
 pub enum WindowError {
