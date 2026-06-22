@@ -7,7 +7,7 @@ use zintl_deno::api::{
     ZintlAppApi, ZintlAppError, ZintlAppEvent, ZintlWindowApi, ZintlWindowAppMenu,
     ZintlWindowBounds, ZintlWindowCommandItem, ZintlWindowCommandMenu, ZintlWindowCommandModifier,
     ZintlWindowCommandRole, ZintlWindowCommandSet, ZintlWindowCreateOptions, ZintlWindowError,
-    ZintlWindowFuture, ZintlWindowId, ZintlWindowPosition, ZintlWindowSize,
+    ZintlWindowFuture, ZintlWindowPosition, ZintlWindowSize,
 };
 use zintl_native::{
     Context, Event, MainActorError, MainActorRef, MainMarker, Rect, Window,
@@ -15,7 +15,7 @@ use zintl_native::{
     WindowCommandMenu as NativeWindowCommandMenu,
     WindowCommandModifier as NativeWindowCommandModifier,
     WindowCommandRole as NativeWindowCommandRole, WindowCommandSet as NativeWindowCommandSet,
-    WindowError, WindowEventKind, WindowManager,
+    WindowError, WindowEventKind, WindowId, WindowManager,
 };
 
 pub(crate) enum Message {
@@ -28,12 +28,12 @@ pub(crate) enum Message {
 pub(crate) type WindowOperationId = u32;
 
 enum PendingWindowOperation {
-    Create(oneshot::Sender<Result<ZintlWindowId, ZintlWindowError>>),
+    Create(oneshot::Sender<Result<WindowId, ZintlWindowError>>),
     Unit(oneshot::Sender<Result<(), ZintlWindowError>>),
 }
 
 pub(crate) enum WindowOperationResult {
-    Create(Result<ZintlWindowId, ZintlWindowError>),
+    Create(Result<WindowId, ZintlWindowError>),
     Unit(Result<(), ZintlWindowError>),
 }
 
@@ -64,7 +64,7 @@ impl<C> ZintlWindowApi for AppWindowHost<C>
 where
     C: Context<Message> + Send + Sync,
 {
-    fn create_window(&self, options: ZintlWindowCreateOptions) -> ZintlWindowFuture<ZintlWindowId> {
+    fn create_window(&self, options: ZintlWindowCreateOptions) -> ZintlWindowFuture<WindowId> {
         let (operation_id, receiver) = match self.state.begin_create_window_operation() {
             Ok(operation) => operation,
             Err(error) => return failed_window_future(error),
@@ -121,7 +121,7 @@ where
 
     fn set_window_bounds(
         &self,
-        window_id: ZintlWindowId,
+        window_id: WindowId,
         bounds: ZintlWindowBounds,
     ) -> ZintlWindowFuture<()> {
         let (operation_id, receiver) = match self.state.begin_unit_window_operation() {
@@ -158,11 +158,7 @@ where
             .build()
     }
 
-    fn set_window_size(
-        &self,
-        window_id: ZintlWindowId,
-        size: ZintlWindowSize,
-    ) -> ZintlWindowFuture<()> {
+    fn set_window_size(&self, window_id: WindowId, size: ZintlWindowSize) -> ZintlWindowFuture<()> {
         let (operation_id, receiver) = match self.state.begin_unit_window_operation() {
             Ok(operation) => operation,
             Err(error) => return failed_window_future(error),
@@ -199,7 +195,7 @@ where
 
     fn set_window_position(
         &self,
-        window_id: ZintlWindowId,
+        window_id: WindowId,
         position: ZintlWindowPosition,
     ) -> ZintlWindowFuture<()> {
         let (operation_id, receiver) = match self.state.begin_unit_window_operation() {
@@ -238,7 +234,7 @@ where
 
     fn set_window_commands(
         &self,
-        window_id: ZintlWindowId,
+        window_id: WindowId,
         commands: ZintlWindowCommandSet,
     ) -> ZintlWindowFuture<()> {
         let (operation_id, receiver) = match self.state.begin_unit_window_operation() {
@@ -337,7 +333,7 @@ impl AppWindowState {
     ) -> Result<
         (
             WindowOperationId,
-            oneshot::Receiver<Result<ZintlWindowId, ZintlWindowError>>,
+            oneshot::Receiver<Result<WindowId, ZintlWindowError>>,
         ),
         ZintlWindowError,
     > {
@@ -395,7 +391,7 @@ impl AppWindowState {
         }
     }
 
-    fn window(&self, window_id: ZintlWindowId) -> Option<MainActorRef<Window>> {
+    fn window(&self, window_id: WindowId) -> Option<MainActorRef<Window>> {
         self.window_manager
             .read()
             .ok()
@@ -404,7 +400,7 @@ impl AppWindowState {
 
     fn with_window<T>(
         &self,
-        window_id: ZintlWindowId,
+        window_id: WindowId,
         marker: MainMarker,
         f: impl FnOnce(&Window) -> Result<T, ZintlWindowError>,
     ) -> Result<T, ZintlWindowError> {
@@ -462,11 +458,11 @@ fn failed_window_future<T: Send + 'static>(error: ZintlWindowError) -> ZintlWind
     Box::pin(async move { Err(error) })
 }
 
-fn window_not_found_error(window_id: ZintlWindowId) -> ZintlWindowError {
+fn window_not_found_error(window_id: WindowId) -> ZintlWindowError {
     ZintlWindowError::new(format!("window {window_id} does not exist"))
 }
 
-fn window_actor_error(window_id: ZintlWindowId, error: MainActorError) -> ZintlWindowError {
+fn window_actor_error(window_id: WindowId, error: MainActorError) -> ZintlWindowError {
     match error {
         MainActorError::Dropped => window_not_found_error(window_id),
         MainActorError::LockError => ZintlWindowError::new("window registry is poisoned"),
@@ -476,7 +472,7 @@ fn window_actor_error(window_id: ZintlWindowId, error: MainActorError) -> ZintlW
     }
 }
 
-fn window_backend_error(window_id: ZintlWindowId, error: WindowError) -> ZintlWindowError {
+fn window_backend_error(window_id: WindowId, error: WindowError) -> ZintlWindowError {
     match error {
         WindowError::Closed => window_not_found_error(window_id),
         WindowError::Backend(message) => ZintlWindowError::new(message),
@@ -484,7 +480,7 @@ fn window_backend_error(window_id: ZintlWindowId, error: WindowError) -> ZintlWi
 }
 
 fn apply_create_options(
-    window_id: ZintlWindowId,
+    window_id: WindowId,
     window: &Window,
     options: ZintlWindowCreateOptions,
 ) -> Result<(), ZintlWindowError> {
@@ -521,7 +517,7 @@ fn rect_from_bounds(bounds: ZintlWindowBounds) -> Rect {
 }
 
 fn set_native_commands(
-    window_id: ZintlWindowId,
+    window_id: WindowId,
     window: &Window,
     commands: ZintlWindowCommandSet,
 ) -> Result<(), ZintlWindowError> {
