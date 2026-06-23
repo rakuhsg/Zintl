@@ -1,5 +1,5 @@
-#ifndef _RUNTIL_RUNTILAPPKIT_H_
-#define _RUNTIL_RUNTILAPPKIT_H_
+#ifndef _ZINTL_ZINTLAPPKIT_H_
+#define _ZINTL_ZINTLAPPKIT_H_
 
 #include <stdint.h>
 

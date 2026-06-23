@@ -8,7 +8,7 @@ struct State {
   var loop: CFRunLoop
 }
 
-class RAppDelegate: NSObject, NSApplicationDelegate {
+class ZintlAppDelegate: NSObject, NSApplicationDelegate {
   var ud: UnsafeRawPointer
   var cb: AppCallback
 
@@ -87,11 +87,11 @@ struct ZintlWindowCommandItem: Decodable {
 
 @MainActor
 class ZintlCommandTarget: NSObject {
-  weak var window: RWindow?
+  weak var window: ZintlWindow?
   let commandID: String?
   let role: String?
 
-  init(window: RWindow, commandID: String?, role: String?) {
+  init(window: ZintlWindow, commandID: String?, role: String?) {
     self.window = window
     self.commandID = commandID
     self.role = role
@@ -145,7 +145,7 @@ func zintlAppkitInit(ud: UnsafeRawPointer, appcbPtr: UnsafePointer<AppCallback>)
   let source = CFRunLoopSourceCreate(nil, 1, &source_cx)!
   CFRunLoopAddSource(loop, source, .commonModes)
 
-  let delegate = RAppDelegate(ud: ud, cb: appcb)
+  let delegate = ZintlAppDelegate(ud: ud, cb: appcb)
 
   app.delegate = delegate
 
@@ -183,7 +183,7 @@ func zintlAppkitDestroy() {
 }
 
 @MainActor
-class RWindow: NSObject, NSWindowDelegate {
+class ZintlWindow: NSObject, NSWindowDelegate {
   var window: NSWindow
   var userData: UnsafeRawPointer?
   var callback: WindowCallback?
@@ -411,15 +411,15 @@ class RWindow: NSObject, NSWindowDelegate {
 }
 
 @MainActor
-class RWgpuSurface {
+class ZintlWgpuSurface {
   var view: NSView
   var metalLayer: CAMetalLayer
   weak var window: NSWindow?
 
   @MainActor
-  init(window: RWindow, rect: ZintlRect) {
+  init(window: ZintlWindow, rect: ZintlRect) {
     self.window = window.window
-    self.view = NSView(frame: RWgpuSurface.nsRect(from: rect))
+    self.view = NSView(frame: ZintlWgpuSurface.nsRect(from: rect))
     self.metalLayer = CAMetalLayer()
     self.view.wantsLayer = true
     self.view.layer = self.metalLayer
@@ -434,7 +434,7 @@ class RWgpuSurface {
 
   @MainActor
   func setRect(_ rect: ZintlRect) {
-    self.view.frame = RWgpuSurface.nsRect(from: rect)
+    self.view.frame = ZintlWgpuSurface.nsRect(from: rect)
     self.updateDrawableSize()
   }
 
@@ -469,7 +469,7 @@ func zintlAppkitCreateWindow(
   userData: UnsafeRawPointer?,
   callback: UnsafePointer<WindowCallback>?
 ) -> UnsafeMutableRawPointer {
-  let wnd = RWindow(userData: userData, callback: callback?.pointee)
+  let wnd = ZintlWindow(userData: userData, callback: callback?.pointee)
   let ptr = Unmanaged.passRetained(wnd).toOpaque()
   return ptr
 }
@@ -477,7 +477,7 @@ func zintlAppkitCreateWindow(
 @MainActor
 @_cdecl("zintlappkit_show_window")
 func zintlAppkitShowWindow(ptr: UnsafeMutableRawPointer) {
-  let wnd = Unmanaged<RWindow>.fromOpaque(ptr).takeUnretainedValue()
+  let wnd = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()
   NSApp.activate(ignoringOtherApps: true)
   wnd.window.makeKeyAndOrderFront(nil)
 }
@@ -485,21 +485,21 @@ func zintlAppkitShowWindow(ptr: UnsafeMutableRawPointer) {
 @MainActor
 @_cdecl("zintlappkit_window_set_bounds")
 func zintlAppkitWindowSetBounds(ptr: UnsafeRawPointer, bounds: ZintlRect) {
-  let wnd = Unmanaged<RWindow>.fromOpaque(ptr).takeUnretainedValue()
+  let wnd = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()
   wnd.setBounds(bounds)
 }
 
 @MainActor
 @_cdecl("zintlappkit_window_set_size")
 func zintlAppkitWindowSetSize(ptr: UnsafeRawPointer, width: Double, height: Double) {
-  let wnd = Unmanaged<RWindow>.fromOpaque(ptr).takeUnretainedValue()
+  let wnd = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()
   wnd.setSize(width: width, height: height)
 }
 
 @MainActor
 @_cdecl("zintlappkit_window_set_position")
 func zintlAppkitWindowSetPosition(ptr: UnsafeRawPointer, x: Double, y: Double) {
-  let wnd = Unmanaged<RWindow>.fromOpaque(ptr).takeUnretainedValue()
+  let wnd = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()
   wnd.setPosition(x: x, y: y)
 }
 
@@ -512,7 +512,7 @@ func zintlAppkitWindowSetCommands(
   callback: ZintlWindowCommandCallback?,
   release: ZintlWindowCommandRelease?
 ) {
-  let wnd = Unmanaged<RWindow>.fromOpaque(ptr).takeUnretainedValue()
+  let wnd = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()
   let json = String(cString: commandsJson)
   guard let data = json.data(using: .utf8) else {
     release?(userData)
@@ -529,7 +529,7 @@ func zintlAppkitWindowSetCommands(
 @MainActor
 @_cdecl("zintlappkit_destroy_window")
 func zintlAppkitDestroyWindow(ptr: UnsafeRawPointer) {
-  let _ = Unmanaged<RWindow>.fromOpaque(ptr).takeRetainedValue()
+  let _ = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeRetainedValue()
 }
 
 @MainActor
@@ -537,21 +537,21 @@ func zintlAppkitDestroyWindow(ptr: UnsafeRawPointer) {
 func zintlAppkitCreateWgpuSurface(window: UnsafeRawPointer, rect: ZintlRect)
   -> UnsafeMutableRawPointer
 {
-  let wnd = Unmanaged<RWindow>.fromOpaque(window).takeUnretainedValue()
-  let surface = RWgpuSurface(window: wnd, rect: rect)
+  let wnd = Unmanaged<ZintlWindow>.fromOpaque(window).takeUnretainedValue()
+  let surface = ZintlWgpuSurface(window: wnd, rect: rect)
   return Unmanaged.passRetained(surface).toOpaque()
 }
 
 @MainActor
 @_cdecl("zintlappkit_destroy_wgpu_surface")
 func zintlAppkitDestroyWgpuSurface(surface: UnsafeRawPointer) {
-  let _ = Unmanaged<RWgpuSurface>.fromOpaque(surface).takeRetainedValue()
+  let _ = Unmanaged<ZintlWgpuSurface>.fromOpaque(surface).takeRetainedValue()
 }
 
 @MainActor
 @_cdecl("zintlappkit_wgpu_surface_set_rect")
 func zintlAppkitWgpuSurfaceSetRect(surface: UnsafeRawPointer, rect: ZintlRect) {
-  let surface = Unmanaged<RWgpuSurface>.fromOpaque(surface).takeUnretainedValue()
+  let surface = Unmanaged<ZintlWgpuSurface>.fromOpaque(surface).takeUnretainedValue()
   surface.setRect(rect)
 }
 
@@ -562,7 +562,7 @@ func zintlAppkitWgpuSurfaceDrawableSize(
   outWidth: UnsafeMutablePointer<UInt32>,
   outHeight: UnsafeMutablePointer<UInt32>
 ) {
-  let surface = Unmanaged<RWgpuSurface>.fromOpaque(surface).takeUnretainedValue()
+  let surface = Unmanaged<ZintlWgpuSurface>.fromOpaque(surface).takeUnretainedValue()
   let size = surface.drawableSize()
   outWidth.pointee = size.0
   outHeight.pointee = size.1
@@ -571,6 +571,6 @@ func zintlAppkitWgpuSurfaceDrawableSize(
 @MainActor
 @_cdecl("zintlappkit_wgpu_surface_metal_layer")
 func zintlAppkitWgpuSurfaceMetalLayer(surface: UnsafeRawPointer) -> UnsafeMutableRawPointer {
-  let surface = Unmanaged<RWgpuSurface>.fromOpaque(surface).takeUnretainedValue()
+  let surface = Unmanaged<ZintlWgpuSurface>.fromOpaque(surface).takeUnretainedValue()
   return Unmanaged.passUnretained(surface.metalLayer).toOpaque()
 }
