@@ -21,6 +21,7 @@ private func withProbe(
   body(Unmanaged<WindowCallbackProbe>.fromOpaque(userData).takeUnretainedValue())
 }
 
+/// Verifies native window callbacks and application state ownership across destruction.
 @MainActor
 @Test func nativeOwnershipAndLifecycle() {
   let probe = WindowCallbackProbe()
