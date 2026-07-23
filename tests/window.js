@@ -1,3 +1,30 @@
+const _window = await Zintl.window.create({
+  bounds: {
+    x: 80,
+    y: 80,
+    width: 640,
+    height: 420,
+  },
+  commands: {
+    appMenu: {
+      items: [
+        {
+          title: "About Zintl",
+          role: "about",
+        },
+        {
+          title: "Quit Zintl",
+          role: "quit",
+          key: "q",
+          modifiers: ["cmd"],
+        },
+      ],
+    },
+    menus: [
+    ],
+  },
+});
+
 const window = await Zintl.window.create({
   bounds: {
     x: 80,
