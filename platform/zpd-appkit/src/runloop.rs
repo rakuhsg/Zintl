@@ -25,6 +25,7 @@ impl ApplicationDelegate for () {}
 pub enum ApplicationError {
     NotMainThread,
     AlreadyInitialized,
+    NotActive,
 }
 
 impl std::fmt::Display for ApplicationError {
@@ -32,6 +33,7 @@ impl std::fmt::Display for ApplicationError {
         match self {
             Self::NotMainThread => write!(f, "AppKit must be initialized on the main thread"),
             Self::AlreadyInitialized => write!(f, "AppKit is already initialized"),
+            Self::NotActive => write!(f, "AppKit is not active"),
         }
     }
 }
@@ -122,6 +124,22 @@ impl RunLoopScheduler {
         unsafe { ffi::zintlappkit_schedule() };
         true
     }
+
+    /// Runs the AppKit event loop on the process main thread.
+    pub fn run(&self) -> Result<(), ApplicationError> {
+        // SAFETY: `pthread_main_np` only queries the calling thread.
+        if unsafe { ffi::pthread_main_np() } == 0 {
+            return Err(ApplicationError::NotMainThread);
+        }
+        if !self.state.active.load(Ordering::Acquire) {
+            return Err(ApplicationError::NotActive);
+        }
+
+        // SAFETY: The active state proves that the owning application is
+        // initialized, and the check above proves this is the main thread.
+        unsafe { ffi::zintlappkit_run() };
+        Ok(())
+    }
 }
 
 /// Owns the process-wide AppKit application integration.
@@ -179,8 +197,10 @@ impl<D: ApplicationDelegate> Application<D> {
         }
     }
 
+    /// fire perform callback
     pub fn schedule(&self) {
         let scheduled = self.scheduler().schedule();
+        // TODO
         debug_assert!(scheduled);
     }
 
@@ -193,9 +213,9 @@ impl<D: ApplicationDelegate> Application<D> {
 
     /// Runs the AppKit event loop until the application terminates.
     pub fn run(&self) {
-        // SAFETY: `Application::new` initialized AppKit on the main thread and
-        // this main-thread-bound value cannot be moved to another thread.
-        unsafe { ffi::zintlappkit_run() };
+        self.scheduler()
+            .run()
+            .expect("Application can only run while active on the main thread");
     }
 }
 

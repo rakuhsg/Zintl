@@ -237,7 +237,7 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
     pub fn create_wgpu_surface(
         &self,
         rect: Rect,
-    ) -> Result<WgpuSurface<'_, 'application, D>, WindowError> {
+    ) -> Result<WgpuSurface<'application>, WindowError> {
         self.ensure_open()?;
         // SAFETY: The window handle is valid and called on the main thread.
         let raw = unsafe { ffi::zintlappkit_create_wgpu_surface(self.raw.as_ptr(), rect) };
@@ -246,7 +246,7 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
         };
         Ok(WgpuSurface {
             raw,
-            _window: PhantomData,
+            _application: PhantomData,
             _main_thread: PhantomData,
         })
     }
@@ -326,14 +326,14 @@ impl MetalLayer<'_> {
 
 #[cfg(feature = "wgpu")]
 /// Owns an AppKit view and CAMetalLayer embedded in a window.
-pub struct WgpuSurface<'window, 'application, D: WindowDelegate> {
+pub struct WgpuSurface<'application> {
     raw: NonNull<c_void>,
-    _window: PhantomData<&'window Window<'application, D>>,
+    _application: PhantomData<&'application Application<()>>,
     _main_thread: PhantomData<Rc<()>>,
 }
 
 #[cfg(feature = "wgpu")]
-impl<D: WindowDelegate> WgpuSurface<'_, '_, D> {
+impl WgpuSurface<'_> {
     pub fn set_rect(&self, rect: Rect) {
         // SAFETY: The surface is alive and this type is main-thread-bound.
         unsafe { ffi::zintlappkit_wgpu_surface_set_rect(self.raw.as_ptr(), rect) };
@@ -364,7 +364,7 @@ impl<D: WindowDelegate> WgpuSurface<'_, '_, D> {
 }
 
 #[cfg(feature = "wgpu")]
-impl<D: WindowDelegate> Drop for WgpuSurface<'_, '_, D> {
+impl Drop for WgpuSurface<'_> {
     fn drop(&mut self) {
         // SAFETY: This owned native surface is released exactly once on main.
         unsafe { ffi::zintlappkit_destroy_wgpu_surface(self.raw.as_ptr()) };
