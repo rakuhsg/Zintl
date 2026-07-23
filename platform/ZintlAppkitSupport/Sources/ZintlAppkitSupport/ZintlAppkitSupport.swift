@@ -6,6 +6,7 @@ import ZintlAppkitSupportTypes
 struct State {
   var source: CFRunLoopSource
   var loop: CFRunLoop
+  var delegate: ZintlAppDelegate
 }
 
 class ZintlAppDelegate: NSObject, NSApplicationDelegate {
@@ -136,20 +137,20 @@ func zintlAppkitInit(ud: UnsafeRawPointer, appcbPtr: UnsafePointer<AppCallback>)
     "ZintlAppkitSupportState is already initialized"
   )
 
-  var source_cx = CFRunLoopSourceContext()
-  source_cx.info = Unmanaged.passRetained(
+  var sourceCx = CFRunLoopSourceContext()
+  sourceCx.info = Unmanaged.passRetained(
     ZintlUdWrapper(ud, cb: appcb.perform)
   ).toOpaque()
-  source_cx.perform = performRustFn
-  source_cx.release = releaseRustFn
-  let source = CFRunLoopSourceCreate(nil, 1, &source_cx)!
+  sourceCx.perform = performRustFn
+  sourceCx.release = releaseRustFn
+  let source = CFRunLoopSourceCreate(nil, 1, &sourceCx)!
   CFRunLoopAddSource(loop, source, .commonModes)
 
   let delegate = ZintlAppDelegate(ud: ud, cb: appcb)
 
   app.delegate = delegate
 
-  ZintlAppkitSupportState.shared.state = State(source: source, loop: loop)
+  ZintlAppkitSupportState.shared.state = State(source: source, loop: loop, delegate: delegate)
 }
 
 @_cdecl("zintlappkit_schedule")
@@ -179,6 +180,11 @@ func zintlAppkitRun() {
 @MainActor
 @_cdecl("zintlappkit_destroy")
 func zintlAppkitDestroy() {
+  if let state = ZintlAppkitSupportState.shared.state {
+    CFRunLoopRemoveSource(state.loop, state.source, .commonModes)
+    CFRunLoopSourceInvalidate(state.source)
+  }
+  NSApp.delegate = nil
   ZintlAppkitSupportState.shared.state = nil
 }
 
@@ -212,9 +218,7 @@ class ZintlWindow: NSObject, NSWindowDelegate {
   @MainActor
   deinit {
     self.clearCommandCallback()
-    if !self.isClosed {
-      self.window.close()
-    }
+    self.close()
   }
 
   @MainActor
@@ -270,12 +274,25 @@ class ZintlWindow: NSObject, NSWindowDelegate {
 
   @MainActor
   func windowWillClose(_ notification: Notification) {
-    callback?.will_close(self.userData)
+    self.completeCloseCallbacks()
   }
 
   @MainActor
-  func windowDidClose(_ notification: Notification) {
+  func close() {
+    guard !self.isClosed else {
+      return
+    }
+    self.completeCloseCallbacks()
+    self.window.close()
+  }
+
+  @MainActor
+  func completeCloseCallbacks() {
+    guard !self.isClosed else {
+      return
+    }
     self.isClosed = true
+    callback?.will_close(self.userData)
     callback?.did_close(self.userData)
     self.callback = nil
     self.userData = nil
@@ -529,7 +546,9 @@ func zintlAppkitWindowSetCommands(
 @MainActor
 @_cdecl("zintlappkit_destroy_window")
 func zintlAppkitDestroyWindow(ptr: UnsafeRawPointer) {
-  let _ = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeRetainedValue()
+  let window = Unmanaged<ZintlWindow>.fromOpaque(ptr)
+  window.takeUnretainedValue().close()
+  window.release()
 }
 
 @MainActor
@@ -545,7 +564,7 @@ func zintlAppkitCreateWgpuSurface(window: UnsafeRawPointer, rect: ZintlRect)
 @MainActor
 @_cdecl("zintlappkit_destroy_wgpu_surface")
 func zintlAppkitDestroyWgpuSurface(surface: UnsafeRawPointer) {
-  let _ = Unmanaged<ZintlWgpuSurface>.fromOpaque(surface).takeRetainedValue()
+  Unmanaged<ZintlWgpuSurface>.fromOpaque(surface).release()
 }
 
 @MainActor

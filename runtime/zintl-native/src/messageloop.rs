@@ -12,14 +12,14 @@ pub type WindowId = u32;
 pub type WindowResult<T> = Result<T, WindowError>;
 
 pub struct MainTask<C, M: Send + Sync> {
-    pub(crate) f: Box<dyn FnOnce(MainMarker, C) -> () + Send>,
+    pub(crate) f: Box<dyn FnOnce(MainMarker, C) + Send>,
     pub(crate) send_after: Option<M>,
 }
 
 pub trait Context<M: Send + Sync>: Clone + Send + Sync + 'static {
     fn perform_main(
         &self,
-        f: impl FnOnce(MainMarker, Self) -> () + Send + 'static,
+        f: impl FnOnce(MainMarker, Self) + Send + 'static,
         send_after: Option<M>,
     );
     fn send_message(&self, message: M);

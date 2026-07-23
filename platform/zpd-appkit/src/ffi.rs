@@ -1,12 +1,10 @@
 use std::ffi::{c_char, c_void};
 
-#[cfg(feature = "wgpu")]
-use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
 
 #[repr(C)]
 pub struct AppCallback {
-    pub on_init: unsafe extern "C" fn(*const c_void),
+    pub on_launch: unsafe extern "C" fn(*const c_void),
     pub perform: unsafe extern "C" fn(*const c_void),
     pub will_terminate: unsafe extern "C" fn(*const c_void),
 }
@@ -26,7 +24,6 @@ unsafe extern "C" {
     pub fn zintlappkit_init(ud: *const c_void, cb: *const AppCallback);
     pub fn zintlappkit_schedule();
     pub fn zintlappkit_run();
-    #[allow(dead_code)]
     pub fn zintlappkit_destroy();
     pub fn zintlappkit_create_window(
         user_data: *const c_void,
@@ -58,16 +55,6 @@ unsafe extern "C" {
     );
     #[cfg(feature = "wgpu")]
     pub fn zintlappkit_wgpu_surface_metal_layer(surface: *const c_void) -> *mut c_void;
-}
 
-#[cfg(feature = "wgpu")]
-pub unsafe fn wgpu_surface_drawable_size(surface: *const c_void) -> PhysicalSize {
-    let mut width = 0;
-    let mut height = 0;
-    // SAFETY: The caller guarantees `surface` is a valid AppKit surface pointer;
-    // the out pointers are stack locals valid for this call.
-    unsafe {
-        zintlappkit_wgpu_surface_drawable_size(surface, &mut width, &mut height);
-    }
-    PhysicalSize { width, height }
+    pub fn pthread_main_np() -> std::ffi::c_int;
 }

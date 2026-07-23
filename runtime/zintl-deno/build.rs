@@ -61,8 +61,8 @@ deno_runtime::deno_core::extension!(
     ],
     esm_entry_point = "ext:zintl/window.ts",
     esm = [
-        "ext:zintl/app.ts" = "../../libs/app.ts",
-        "ext:zintl/window.ts" = "../../libs/window.ts",
+        "ext:zintl/app.ts" = "../libs/app.ts",
+        "ext:zintl/window.ts" = "../libs/window.ts",
     ],
 );
 
@@ -75,7 +75,7 @@ fn main() {
         SnapshotOptions::default(),
         vec![zintl::init()],
     );
-    watch_libs(Path::new("../../libs"));
+    watch_libs(Path::new("../libs"));
 }
 
 fn watch_libs(path: &Path) {

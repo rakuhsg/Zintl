@@ -9536,8 +9536,8 @@ dependencies = [
  "crossbeam",
  "futures",
  "serde",
- "serde_json",
  "wgpu",
+ "zpd-appkit",
 ]
 
 [[package]]
@@ -9573,6 +9573,14 @@ dependencies = [
  "potential_utf",
  "resb",
  "serde",
+]
+
+[[package]]
+name = "zpd-appkit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
