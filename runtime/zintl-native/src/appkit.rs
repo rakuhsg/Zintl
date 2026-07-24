@@ -132,14 +132,11 @@ where
             .expect("AppKit application must be initialized before creating windows");
         let scheduler = application.scheduler();
         let native = application
-            .create_window(
+            .create_window(AppkitWindowDelegate {
                 window_id,
-                AppkitWindowDelegate {
-                    window_id,
-                    window_events: self.window_events.clone(),
-                    scheduler: scheduler.clone(),
-                },
-            )
+                window_events: self.window_events.clone(),
+                scheduler: scheduler.clone(),
+            })
             .expect("AppKit failed to create a native window");
         let backend = AppkitWindowBackend { native };
 
@@ -155,13 +152,10 @@ where
         let command_events = self.command_events.clone();
         let scheduler = application.scheduler();
         application
-            .set_commands(
-                &appkit_command_set(commands),
-                move |window_id, command_id| {
-                    command_events.push((window_id, command_id.to_owned()));
-                    scheduler.schedule();
-                },
-            )
+            .set_commands(&appkit_command_set(commands), move |command_id| {
+                command_events.push((0, command_id.to_owned()));
+                scheduler.schedule();
+            })
             .map_err(|error| WindowError::Backend(error.to_string()))
     }
 }
@@ -188,6 +182,12 @@ impl NativeAppkitWindowDelegate for AppkitWindowDelegate {
     fn did_close(&mut self) {
         self.window_events
             .push((self.window_id, WindowEventKind::DidClose));
+        self.scheduler.schedule();
+    }
+
+    fn did_click(&mut self) {
+        self.window_events
+            .push((self.window_id, WindowEventKind::Click));
         self.scheduler.schedule();
     }
 }

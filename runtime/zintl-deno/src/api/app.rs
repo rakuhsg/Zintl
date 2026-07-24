@@ -10,11 +10,10 @@ use super::{ZintlAppCommands, ZintlWindowId, app_host};
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all_fields = "camelCase", tag = "type")]
 pub enum ZintlAppEvent {
+    #[serde(rename = "oncommandclick")]
+    CommandClick { id: String },
     #[serde(rename = "click")]
-    Click {
-        window_id: ZintlWindowId,
-        command_id: String,
-    },
+    WindowClick { window_id: ZintlWindowId },
     #[serde(rename = "onload")]
     WindowCreated { window_id: ZintlWindowId },
     #[serde(rename = "willclose")]
@@ -34,15 +33,13 @@ mod tests {
         assert_eq!(event["windowId"], 7);
         assert!(event.get("window_id").is_none());
 
-        let event = serde_json::to_value(ZintlAppEvent::Click {
-            window_id: 9,
-            command_id: "file.new".into(),
+        let event = serde_json::to_value(ZintlAppEvent::CommandClick {
+            id: "file.new".into(),
         })
         .expect("click event should serialize");
 
-        assert_eq!(event["type"], "click");
-        assert_eq!(event["windowId"], 9);
-        assert_eq!(event["commandId"], "file.new");
+        assert_eq!(event["type"], "oncommandclick");
+        assert_eq!(event["id"], "file.new");
     }
 }
 

@@ -10,6 +10,7 @@ const {
   MapPrototypeDelete,
   MapPrototypeGet,
   MapPrototypeSet,
+  queueMicrotask,
   SafeArrayIterator,
   SafeMap,
 } = primordials;
@@ -41,10 +42,8 @@ export interface ZintlWindowClickEvent extends
   CustomEvent<{
     type: "click";
     windowId: number;
-    commandId: string;
   }> {
   readonly windowId: number;
-  readonly commandId: string;
 }
 
 export type ZintlWindowClickListener = (
@@ -178,11 +177,13 @@ export function createZintlWindow(id: number): ZintlWindow {
   const pending = MapPrototypeGet(pendingEvents, id);
   if (pending !== undefined) {
     MapPrototypeDelete(pendingEvents, id);
-    globalThis.setTimeout(() => {
-      for (const event of new SafeArrayIterator(pending)) {
-        window.dispatchEvent(event);
-      }
-    }, 0);
+    queueMicrotask(() => {
+      queueMicrotask(() => {
+        for (const event of new SafeArrayIterator(pending)) {
+          window.dispatchEvent(event);
+        }
+      });
+    });
   }
   return window;
 }

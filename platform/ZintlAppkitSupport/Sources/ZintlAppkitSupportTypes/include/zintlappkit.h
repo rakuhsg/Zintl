@@ -22,7 +22,6 @@ typedef struct {
 
 typedef void (*ZintlCommandCallback)(
     const void* user_data,
-    uint32_t window_id,
     const char* command_id
 );
 typedef void (*ZintlCommandRelease)(const void* user_data);
@@ -31,10 +30,10 @@ typedef struct {
     void (*did_create)(const void* user_data);
     void (*will_close)(const void* user_data);
     void (*did_close)(const void* user_data);
+    void (*did_click)(const void* user_data);
 } WindowCallback;
 
 void* zintlappkit_create_window(
-    uint32_t window_id,
     const void* user_data,
     const WindowCallback* callback
 );

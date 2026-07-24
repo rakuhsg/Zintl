@@ -68,7 +68,7 @@ impl std::error::Error for CommandError {}
 
 pub(crate) fn install<F>(commands: &CommandSet, callback: F) -> Result<(), CommandError>
 where
-    F: FnMut(u32, &str) + 'static,
+    F: FnMut(&str) + 'static,
 {
     let json = serde_json::to_string(commands).map_err(CommandError::Encoding)?;
     let json = CString::new(json).map_err(CommandError::InvalidJson)?;
@@ -105,9 +105,8 @@ unsafe fn clone_command<F>(user_data: *const c_void) -> Option<Rc<CommandCallbac
     Some(unsafe { Rc::from_raw(state) })
 }
 
-unsafe extern "C" fn invoke_command<F: FnMut(u32, &str) + 'static>(
+unsafe extern "C" fn invoke_command<F: FnMut(&str) + 'static>(
     user_data: *const c_void,
-    window_id: u32,
     command_id: *const c_char,
 ) {
     if user_data.is_null() || command_id.is_null() {
@@ -124,7 +123,7 @@ unsafe extern "C" fn invoke_command<F: FnMut(u32, &str) + 'static>(
         let Ok(mut callback) = state.callback.try_borrow_mut() else {
             std::process::abort();
         };
-        callback(window_id, &command_id);
+        callback(&command_id);
     }))
     .is_err()
     {

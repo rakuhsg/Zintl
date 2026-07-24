@@ -17,8 +17,6 @@ class ZintlAppDelegate: NSObject, NSApplicationDelegate {
   var commandUserData: UnsafeRawPointer?
   var commandCallback: ZintlCommandCallback?
   var commandRelease: ZintlCommandRelease?
-  var windowIDs: [ObjectIdentifier: UInt32] = [:]
-  var activeWindowID: UInt32?
 
   init(ud: UnsafeRawPointer, cb: AppCallback) {
     self.ud = ud
@@ -57,46 +55,12 @@ class ZintlAppDelegate: NSObject, NSApplicationDelegate {
 
   @MainActor
   func performCommand(_ commandID: String) {
-    guard let callback = self.commandCallback, let windowID = self.currentWindowID() else {
+    guard let callback = self.commandCallback else {
       return
     }
     commandID.withCString { commandIDPtr in
-      callback(self.commandUserData, windowID, commandIDPtr)
+      callback(self.commandUserData, commandIDPtr)
     }
-  }
-
-  @MainActor
-  func registerWindow(_ window: NSWindow, id: UInt32) {
-    self.windowIDs[ObjectIdentifier(window)] = id
-    self.activeWindowID = id
-  }
-
-  @MainActor
-  func activateWindow(_ window: NSWindow) {
-    self.activeWindowID = self.windowIDs[ObjectIdentifier(window)]
-  }
-
-  @MainActor
-  func unregisterWindow(_ window: NSWindow) {
-    let removedID = self.windowIDs.removeValue(forKey: ObjectIdentifier(window))
-    if self.activeWindowID == removedID {
-      self.activeWindowID = self.windowIDs.values.first
-    }
-  }
-
-  @MainActor
-  func currentWindowID() -> UInt32? {
-    if let keyWindow = NSApp.keyWindow,
-      let windowID = self.windowIDs[ObjectIdentifier(keyWindow)]
-    {
-      return windowID
-    }
-    if let mainWindow = NSApp.mainWindow,
-      let windowID = self.windowIDs[ObjectIdentifier(mainWindow)]
-    {
-      return windowID
-    }
-    return self.activeWindowID
   }
 
   @MainActor
@@ -364,15 +328,14 @@ func zintlAppkitDestroy() {
 
 @MainActor
 class ZintlWindow: NSObject, NSWindowDelegate {
-  var windowID: UInt32
   var window: NSWindow
   var userData: UnsafeRawPointer?
   var callback: WindowCallback?
+  var clickMonitor: Any?
   var isClosed = false
 
   @MainActor
-  init(windowID: UInt32, userData: UnsafeRawPointer?, callback: WindowCallback?) {
-    self.windowID = windowID
+  init(userData: UnsafeRawPointer?, callback: WindowCallback?) {
     self.userData = userData
     self.callback = callback
     self.window = NSWindow(
@@ -383,7 +346,14 @@ class ZintlWindow: NSObject, NSWindowDelegate {
     )
     super.init()
     self.window.delegate = self
-    ZintlAppkitSupportState.shared.state?.delegate.registerWindow(self.window, id: windowID)
+    self.clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) {
+      [weak self] event in
+      guard let self, !self.isClosed, event.window === self.window else {
+        return event
+      }
+      self.callback?.did_click(self.userData)
+      return event
+    }
     self.callback?.did_create(self.userData)
   }
 
@@ -413,11 +383,6 @@ class ZintlWindow: NSObject, NSWindowDelegate {
   }
 
   @MainActor
-  func windowDidBecomeKey(_ notification: Notification) {
-    ZintlAppkitSupportState.shared.state?.delegate.activateWindow(self.window)
-  }
-
-  @MainActor
   func windowWillClose(_ notification: Notification) {
     self.completeCloseCallbacks()
   }
@@ -437,7 +402,10 @@ class ZintlWindow: NSObject, NSWindowDelegate {
       return
     }
     self.isClosed = true
-    ZintlAppkitSupportState.shared.state?.delegate.unregisterWindow(self.window)
+    if let clickMonitor = self.clickMonitor {
+      NSEvent.removeMonitor(clickMonitor)
+      self.clickMonitor = nil
+    }
     callback?.will_close(self.userData)
     callback?.did_close(self.userData)
     self.callback = nil
@@ -520,11 +488,10 @@ class ZintlWgpuSurface {
 @MainActor
 @_cdecl("zintlappkit_create_window")
 func zintlAppkitCreateWindow(
-  windowID: UInt32,
   userData: UnsafeRawPointer?,
   callback: UnsafePointer<WindowCallback>?
 ) -> UnsafeMutableRawPointer {
-  let wnd = ZintlWindow(windowID: windowID, userData: userData, callback: callback?.pointee)
+  let wnd = ZintlWindow(userData: userData, callback: callback?.pointee)
   let ptr = Unmanaged.passRetained(wnd).toOpaque()
   return ptr
 }

@@ -25,6 +25,36 @@ app.commands = {
   ],
 };
 
+const removedCommandListener = () => {
+  throw new Error("removed oncommandclick listener must not fire");
+};
+app.addEventListener("oncommandclick", removedCommandListener);
+app.removeEventListener("oncommandclick", removedCommandListener);
+
+app.addEventListener("oncommandclick", (event) => {
+  if (typeof event.id !== "string" || event.id.length === 0) {
+    throw new Error("oncommandclick must include a command id");
+  }
+  console.log(`command clicked: ${event.id}`);
+
+
+    let commands = app.commands;
+    commands.menus.push(
+        {
+          title: "File",
+          items: [
+            {
+              id: "file.new",
+              title: "New",
+              key: "n",
+              modifiers: ["cmd"],
+            },
+          ],
+        }
+    );
+    app.commands = commands;
+});
+
 const firstWindow = await app.createWindow({
   bounds: { x: 80, y: 80, width: 640, height: 420 },
 });
@@ -59,17 +89,12 @@ function installWindowListeners(appWindow) {
   });
 
   appWindow.addEventListener("click", (event) => {
-    if (typeof event.commandId !== "string" || event.commandId.length === 0) {
-      throw new Error("command click must include commandId");
-    }
     if (event.windowId !== appWindow.id) {
       throw new Error(
         `click was dispatched to the wrong window: ${event.windowId}`,
       );
     }
-    console.log(
-      `command clicked in window ${appWindow.id}: ${event.commandId}`,
-    );
+    console.log(`window clicked: ${appWindow.id}`);
   });
 }
 

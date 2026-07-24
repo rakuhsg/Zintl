@@ -15,6 +15,7 @@ pub trait WindowDelegate: 'static {
     fn did_create(&mut self) {}
     fn will_close(&mut self) {}
     fn did_close(&mut self) {}
+    fn did_click(&mut self) {}
 }
 
 impl WindowDelegate for () {}
@@ -83,6 +84,11 @@ unsafe extern "C" fn did_create<D: WindowDelegate>(user_data: *const c_void) {
     unsafe { invoke_delegate::<D>(user_data, WindowDelegate::did_create) };
 }
 
+unsafe extern "C" fn did_click<D: WindowDelegate>(user_data: *const c_void) {
+    // SAFETY: This is the `WindowState<D>` pointer passed to native creation.
+    unsafe { invoke_delegate::<D>(user_data, WindowDelegate::did_click) };
+}
+
 unsafe extern "C" fn will_close<D: WindowDelegate>(user_data: *const c_void) {
     // SAFETY: Native code still owns its Rc strong reference on entry.
     let Some(state) = (unsafe { clone_window_state::<D>(user_data) }) else {
@@ -124,7 +130,7 @@ pub struct Window<'application, D: WindowDelegate> {
 }
 
 impl<'application, D: WindowDelegate> Window<'application, D> {
-    pub(crate) fn new(window_id: u32, delegate: D) -> Result<Self, WindowError> {
+    pub(crate) fn new(delegate: D) -> Result<Self, WindowError> {
         let state = Rc::new(WindowState {
             delegate: RefCell::new(delegate),
             closed: Cell::new(false),
@@ -134,12 +140,12 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
             did_create: did_create::<D>,
             will_close: will_close::<D>,
             did_close: did_close::<D>,
+            did_click: did_click::<D>,
         };
 
         // SAFETY: The Rc-backed callback state has a stable address. Native
         // code owns one strong reference and copies the callback table.
-        let raw =
-            unsafe { ffi::zintlappkit_create_window(window_id, ffi_state.cast(), &callbacks) };
+        let raw = unsafe { ffi::zintlappkit_create_window(ffi_state.cast(), &callbacks) };
         let Some(raw) = NonNull::new(raw.cast_mut()) else {
             // SAFETY: Native creation rejected the pointer without retaining
             // it, so reclaim the transferred strong reference.

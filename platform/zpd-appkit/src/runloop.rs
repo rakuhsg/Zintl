@@ -206,15 +206,14 @@ impl<D: ApplicationDelegate> Application<D> {
 
     pub fn create_window<W: WindowDelegate>(
         &self,
-        window_id: u32,
         delegate: W,
     ) -> Result<Window<'_, W>, WindowError> {
-        Window::new(window_id, delegate)
+        Window::new(delegate)
     }
 
     pub fn set_commands<F>(&self, commands: &CommandSet, callback: F) -> Result<(), CommandError>
     where
-        F: FnMut(u32, &str) + 'static,
+        F: FnMut(&str) + 'static,
     {
         crate::ui::commands::install(commands, callback)
     }

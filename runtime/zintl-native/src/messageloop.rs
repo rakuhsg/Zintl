@@ -194,6 +194,7 @@ pub enum WindowCommandRole {
 pub enum WindowEventKind {
     Created,
     WillClose,
+    Click,
     /// NOTE: Don't fire [[WindowEventKind::DidClose]] after free a window
     DidClose,
 }

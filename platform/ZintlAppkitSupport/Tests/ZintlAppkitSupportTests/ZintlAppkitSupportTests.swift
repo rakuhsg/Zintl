@@ -9,6 +9,12 @@ private final class WindowCallbackProbe {
   var didCreate = 0
   var willClose = 0
   var didClose = 0
+  var didClick = 0
+}
+
+@MainActor
+private final class CommandCallbackProbe {
+  var commandIDs: [String] = []
 }
 
 private func withProbe(
@@ -35,10 +41,13 @@ private func withProbe(
     },
     did_close: { userData in
       withProbe(userData) { $0.didClose += 1 }
+    },
+    did_click: { userData in
+      withProbe(userData) { $0.didClick += 1 }
     }
   )
   let window = withUnsafePointer(to: &windowCallbacks) {
-    zintlAppkitCreateWindow(windowID: 1, userData: retainedProbe.toOpaque(), callback: $0)
+    zintlAppkitCreateWindow(userData: retainedProbe.toOpaque(), callback: $0)
   }
 
   #expect(probe.didCreate == 1)
@@ -62,10 +71,41 @@ private func withProbe(
   #expect(NSApp.delegate != nil)
   #expect(ZintlAppkitSupportState.shared.state != nil)
 
-  let registeredWindow = zintlAppkitCreateWindow(windowID: 42, userData: nil, callback: nil)
-  #expect(ZintlAppkitSupportState.shared.state?.delegate.currentWindowID() == 42)
-  zintlAppkitDestroyWindow(ptr: registeredWindow)
-  #expect(ZintlAppkitSupportState.shared.state?.delegate.currentWindowID() == nil)
+  let commandProbe = CommandCallbackProbe()
+  let retainedCommandProbe = Unmanaged.passRetained(commandProbe)
+  let commandsJSON = """
+    {
+      "menus": [
+        {
+          "title": "File",
+          "items": [{ "id": "file.new", "title": "New" }]
+        }
+      ]
+    }
+    """
+  commandsJSON.withCString { commandsJSON in
+    zintlAppkitSetCommands(
+      commandsJson: commandsJSON,
+      userData: retainedCommandProbe.toOpaque(),
+      callback: { userData, commandID in
+        guard let userData, let commandID else {
+          return
+        }
+        let probe = Unmanaged<CommandCallbackProbe>.fromOpaque(userData).takeUnretainedValue()
+        probe.commandIDs.append(String(cString: commandID))
+      },
+      release: { userData in
+        guard let userData else {
+          return
+        }
+        Unmanaged<CommandCallbackProbe>.fromOpaque(userData).release()
+      }
+    )
+  }
+
+  let commandItem = NSApp.mainMenu!.items.first!.submenu!.items.first!
+  #expect(NSApp.sendAction(commandItem.action!, to: commandItem.target, from: commandItem))
+  #expect(commandProbe.commandIDs == ["file.new"])
 
   zintlAppkitDestroy()
 

@@ -294,15 +294,15 @@ impl AppWindowState {
                 WindowEventKind::WillClose => {
                     self.push_app_event(ZintlAppEvent::WindowWillClose { window_id })
                 }
+                WindowEventKind::Click => {
+                    self.push_app_event(ZintlAppEvent::WindowClick { window_id })
+                }
                 WindowEventKind::DidClose => {}
             },
             Event::WindowCommand {
-                window_id,
+                window_id: _,
                 command_id,
-            } => self.push_app_event(ZintlAppEvent::Click {
-                window_id,
-                command_id,
-            }),
+            } => self.push_app_event(ZintlAppEvent::CommandClick { id: command_id }),
         }
     }
 
