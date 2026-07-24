@@ -1,9 +1,14 @@
 const WIDTH = 640;
 const HEIGHT = 480;
+const frameLimit = Deno.args[0] === undefined ? Infinity : Number(Deno.args[0]);
+
+if (frameLimit <= 0 || Number.isNaN(frameLimit)) {
+  throw new Error("Frame limit must be a positive number");
+}
 
 const libName = "libwebgpu_byow_macos.dylib";
 
-const libPath = new URL(`./target/debug/${libName}`, import.meta.url);
+const libPath = new URL(`./.build/debug/${libName}`, import.meta.url);
 const dylib = Deno.dlopen(libPath, {
   byow_create_window: {
     parameters: ["u32", "u32"],
@@ -25,16 +30,29 @@ if (adapter === null) {
   throw new Error("No WebGPU adapter available");
 }
 
+const handle = dylib.symbols.byow_create_window(WIDTH, HEIGHT);
+
+if (handle === null) {
+  dylib.close();
+  throw new Error("Failed to create window");
+}
+
 const surface = new Deno.UnsafeWindowSurface({
   system: "core-animation",
-  windowHandle: dylib.symbols.byow_create_window(WIDTH, HEIGHT),
+  windowHandle: handle,
   displayHandle: null,
   width: WIDTH,
   height: HEIGHT,
 });
 
+const context = surface.getContext("webgpu") as GPUCanvasContext | null;
+if (context === null) {
+  dylib.symbols.byow_close_window();
+  dylib.close();
+  throw new Error("Failed to create WebGPU context");
+}
+
 const device = await adapter.requestDevice();
-const context = surface.getContext("webgpu");
 const format = navigator.gpu.getPreferredCanvasFormat();
 
 context.configure({
@@ -46,7 +64,7 @@ context.configure({
 let frame = 0;
 
 try {
-  while (true) {
+  while (frame < frameLimit) {
     dylib.symbols.byow_poll_events();
 
     const texture = context.getCurrentTexture();
@@ -75,7 +93,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 16));
   }
 } finally {
-  surface.getContext("webgpu").unconfigure();
+  context.unconfigure();
   dylib.symbols.byow_close_window();
   dylib.close();
   device.destroy();
