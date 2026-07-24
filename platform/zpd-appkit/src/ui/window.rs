@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
@@ -9,8 +9,6 @@ use std::rc::Rc;
 use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
 use crate::{ffi, runloop::Application};
-
-use super::CommandSet;
 
 /// Receives native window lifecycle notifications on the AppKit main thread.
 pub trait WindowDelegate: 'static {
@@ -25,8 +23,6 @@ impl WindowDelegate for () {}
 pub enum WindowError {
     NativeCreationFailed,
     Closed,
-    CommandEncoding(serde_json::Error),
-    InvalidCommandJson(std::ffi::NulError),
 }
 
 impl std::fmt::Display for WindowError {
@@ -34,21 +30,13 @@ impl std::fmt::Display for WindowError {
         match self {
             Self::NativeCreationFailed => write!(f, "AppKit failed to create a native object"),
             Self::Closed => write!(f, "the window is closed"),
-            Self::CommandEncoding(error) => write!(f, "failed to encode commands: {error}"),
-            Self::InvalidCommandJson(error) => {
-                write!(f, "encoded commands contain an interior NUL byte: {error}")
-            }
         }
     }
 }
 
 impl std::error::Error for WindowError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::CommandEncoding(error) => Some(error),
-            Self::InvalidCommandJson(error) => Some(error),
-            _ => None,
-        }
+        None
     }
 }
 
@@ -207,32 +195,6 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
         Ok(())
     }
 
-    pub fn set_commands<F>(&self, commands: &CommandSet, callback: F) -> Result<(), WindowError>
-    where
-        F: FnMut(&str) + 'static,
-    {
-        self.ensure_open()?;
-        let json = serde_json::to_string(commands).map_err(WindowError::CommandEncoding)?;
-        let json = CString::new(json).map_err(WindowError::InvalidCommandJson)?;
-        let callback_state = Rc::into_raw(Rc::new(CommandCallback {
-            callback: RefCell::new(callback),
-        }));
-
-        // SAFETY: The JSON buffer lives for the call. Ownership of
-        // `callback_state` transfers to Swift, which invokes `release_command`
-        // exactly once when replacing, rejecting, or destroying the commands.
-        unsafe {
-            ffi::zintlappkit_window_set_commands(
-                self.raw.as_ptr(),
-                json.as_ptr(),
-                callback_state.cast(),
-                invoke_command::<F>,
-                release_command::<F>,
-            );
-        }
-        Ok(())
-    }
-
     #[cfg(feature = "wgpu")]
     pub fn create_wgpu_surface(
         &self,
@@ -258,56 +220,6 @@ impl<D: WindowDelegate> Drop for Window<'_, D> {
         // the callback state, and this type can only be dropped on main.
         unsafe { ffi::zintlappkit_destroy_window(self.raw.as_ptr()) };
     }
-}
-
-struct CommandCallback<F> {
-    callback: RefCell<F>,
-}
-
-unsafe fn clone_command<F>(user_data: *const c_void) -> Option<Rc<CommandCallback<F>>> {
-    let state = user_data.cast::<CommandCallback<F>>();
-    if state.is_null() {
-        return None;
-    }
-
-    // SAFETY: Swift holds the transferred strong reference until it invokes
-    // `release_command`.
-    unsafe { Rc::increment_strong_count(state) };
-    // SAFETY: The increment above created the strong reference returned here.
-    Some(unsafe { Rc::from_raw(state) })
-}
-
-unsafe extern "C" fn invoke_command<F: FnMut(&str) + 'static>(
-    user_data: *const c_void,
-    command_id: *const c_char,
-) {
-    if user_data.is_null() || command_id.is_null() {
-        return;
-    }
-
-    abort_on_panic(|| {
-        // SAFETY: Command callbacks are installed with an Rc-backed state.
-        let Some(state) = (unsafe { clone_command::<F>(user_data) }) else {
-            return;
-        };
-        // SAFETY: Swift provides a NUL-terminated command identifier for this
-        // call.
-        let command_id = unsafe { CStr::from_ptr(command_id) }.to_string_lossy();
-        let Ok(mut callback) = state.callback.try_borrow_mut() else {
-            std::process::abort();
-        };
-        callback(&command_id);
-    });
-}
-
-unsafe extern "C" fn release_command<F>(user_data: *const c_void) {
-    if user_data.is_null() {
-        return;
-    }
-
-    // SAFETY: This consumes the strong reference transferred by `Rc::into_raw`;
-    // Swift calls the release callback exactly once.
-    unsafe { drop(Rc::from_raw(user_data.cast::<CommandCallback<F>>())) };
 }
 
 #[cfg(feature = "wgpu")]

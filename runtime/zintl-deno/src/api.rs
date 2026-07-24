@@ -16,6 +16,8 @@ mod app;
 pub use app::ZintlAppEvent;
 
 pub type ZintlWindowFuture<T> = Pin<Box<dyn Future<Output = Result<T, ZintlWindowError>> + Send>>;
+pub type ZintlAppEventFuture =
+    Pin<Box<dyn Future<Output = Result<ZintlAppEvent, ZintlAppError>> + Send>>;
 
 pub trait ZintlWindowApi: Send + Sync + 'static {
     fn create_window(&self, options: ZintlWindowCreateOptions) -> ZintlWindowFuture<ZintlWindowId>;
@@ -34,15 +36,11 @@ pub trait ZintlWindowApi: Send + Sync + 'static {
         window_id: ZintlWindowId,
         position: ZintlWindowPosition,
     ) -> ZintlWindowFuture<()>;
-    fn set_window_commands(
-        &self,
-        window_id: ZintlWindowId,
-        commands: ZintlWindowCommandSet,
-    ) -> ZintlWindowFuture<()>;
 }
 
 pub trait ZintlAppApi: Send + Sync + 'static {
-    fn take_event(&self) -> Result<Option<ZintlAppEvent>, ZintlAppError>;
+    fn next_event(&self) -> ZintlAppEventFuture;
+    fn set_commands(&self, commands: ZintlAppCommands) -> Result<(), ZintlAppError>;
 }
 
 pub type ZintlWindowId = u32;
@@ -53,7 +51,6 @@ pub struct ZintlWindowCreateOptions {
     pub bounds: Option<ZintlWindowBounds>,
     pub size: Option<ZintlWindowSize>,
     pub position: Option<ZintlWindowPosition>,
-    pub commands: Option<ZintlWindowCommandSet>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -77,39 +74,39 @@ pub struct ZintlWindowPosition {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-pub struct ZintlWindowCommandSet {
+pub struct ZintlAppCommands {
     #[serde(default, rename = "appMenu")]
-    pub app_menu: Option<ZintlWindowAppMenu>,
+    pub app_menu: Option<ZintlAppMenu>,
     #[serde(default)]
-    pub menus: Vec<ZintlWindowCommandMenu>,
+    pub menus: Vec<ZintlCommandMenu>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct ZintlWindowAppMenu {
-    pub items: Vec<ZintlWindowCommandItem>,
+pub struct ZintlAppMenu {
+    pub items: Vec<ZintlCommandItem>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct ZintlWindowCommandMenu {
+pub struct ZintlCommandMenu {
     pub title: String,
-    pub items: Vec<ZintlWindowCommandItem>,
+    pub items: Vec<ZintlCommandItem>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct ZintlWindowCommandItem {
+pub struct ZintlCommandItem {
     pub id: Option<String>,
     pub title: String,
-    pub role: Option<ZintlWindowCommandRole>,
+    pub role: Option<ZintlCommandRole>,
     pub key: Option<String>,
     #[serde(default)]
-    pub modifiers: Vec<ZintlWindowCommandModifier>,
+    pub modifiers: Vec<ZintlCommandModifier>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ZintlWindowCommandModifier {
+pub enum ZintlCommandModifier {
     Cmd,
     Ctrl,
     Alt,
@@ -118,7 +115,7 @@ pub enum ZintlWindowCommandModifier {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ZintlWindowCommandRole {
+pub enum ZintlCommandRole {
     About,
     Quit,
 }
@@ -228,19 +225,7 @@ async fn op_zintl_window_set_position(
         .map_err(|error| JsErrorBox::generic(error.to_string()))
 }
 
-#[op2]
-async fn op_zintl_window_set_commands(
-    state: Rc<RefCell<OpState>>,
-    window_id: ZintlWindowId,
-    #[serde] commands: ZintlWindowCommandSet,
-) -> Result<(), JsErrorBox> {
-    window_host(&state)?
-        .set_window_commands(window_id, commands)
-        .await
-        .map_err(|error| JsErrorBox::generic(error.to_string()))
-}
-
-pub(super) fn app_host(state: &mut OpState) -> Result<Arc<dyn ZintlAppApi>, JsErrorBox> {
+pub(super) fn app_host(state: &OpState) -> Result<Arc<dyn ZintlAppApi>, JsErrorBox> {
     let api = state.borrow::<ZintlApiState>();
     let Some(host) = api.app.as_ref() else {
         return Err(JsErrorBox::generic("app API is not registered"));
@@ -252,7 +237,9 @@ fn window_host(state: &Rc<RefCell<OpState>>) -> Result<Arc<dyn ZintlWindowApi>, 
     let state = state.borrow();
     let api = state.borrow::<ZintlApiState>();
     let Some(host) = api.window.as_ref() else {
-        return Err(JsErrorBox::generic("Zintl.window API is not registered"));
+        return Err(JsErrorBox::generic(
+            "app.createWindow API is not registered",
+        ));
     };
     Ok(host.clone())
 }
@@ -264,10 +251,10 @@ deno_runtime::deno_core::extension!(
         op_zintl_window_set_bounds,
         op_zintl_window_set_size,
         op_zintl_window_set_position,
-        op_zintl_window_set_commands,
-        app::op_zintl_app_event_bus_poll,
+        app::op_zintl_app_next_event,
+        app::op_zintl_app_set_commands,
     ],
-    esm_entry_point = "ext:zintl/window.ts",
+    esm_entry_point = "ext:zintl/app.ts",
     esm = [
         "ext:zintl/app.ts" = "../../libs/app.ts",
         "ext:zintl/window.ts" = "../../libs/window.ts",

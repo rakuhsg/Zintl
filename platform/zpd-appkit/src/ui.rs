@@ -1,8 +1,8 @@
-mod commands;
+pub(crate) mod commands;
 mod window;
 
 pub use commands::{
-    CommandItem, CommandMenu, CommandModifier, CommandRole, CommandSet, WindowAppMenu,
+    CommandError, CommandItem, CommandMenu, CommandModifier, CommandRole, CommandSet, WindowAppMenu,
 };
 #[cfg(feature = "wgpu")]
 pub use window::{MetalLayer, WgpuSurface};

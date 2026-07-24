@@ -21,10 +21,12 @@ struct ZintlWindowSize {}
 struct ZintlWindowPosition {}
 
 #[derive(Deserialize)]
-struct ZintlWindowCommandSet {}
+struct ZintlAppCommands {}
 
 #[derive(Serialize)]
-struct ZintlAppEvent {}
+struct ZintlAppEvent {
+    r#type: &'static str,
+}
 
 #[op2]
 async fn op_zintl_window_create(#[serde] _options: Option<ZintlWindowCreateOptions>) -> u32 {
@@ -41,13 +43,13 @@ async fn op_zintl_window_set_size(_window_id: u32, #[serde] _size: ZintlWindowSi
 async fn op_zintl_window_set_position(_window_id: u32, #[serde] _position: ZintlWindowPosition) {}
 
 #[op2]
-async fn op_zintl_window_set_commands(_window_id: u32, #[serde] _commands: ZintlWindowCommandSet) {}
+#[serde]
+async fn op_zintl_app_next_event() -> ZintlAppEvent {
+    std::future::pending::<ZintlAppEvent>().await
+}
 
 #[op2]
-#[serde]
-fn op_zintl_app_event_bus_poll() -> Option<ZintlAppEvent> {
-    None
-}
+fn op_zintl_app_set_commands(#[serde] _commands: ZintlAppCommands) {}
 
 deno_runtime::deno_core::extension!(
     zintl,
@@ -56,10 +58,10 @@ deno_runtime::deno_core::extension!(
         op_zintl_window_set_bounds,
         op_zintl_window_set_size,
         op_zintl_window_set_position,
-        op_zintl_window_set_commands,
-        op_zintl_app_event_bus_poll,
+        op_zintl_app_next_event,
+        op_zintl_app_set_commands,
     ],
-    esm_entry_point = "ext:zintl/window.ts",
+    esm_entry_point = "ext:zintl/app.ts",
     esm = [
         "ext:zintl/app.ts" = "../libs/app.ts",
         "ext:zintl/window.ts" = "../libs/window.ts",

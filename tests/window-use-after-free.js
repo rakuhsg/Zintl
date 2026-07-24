@@ -1,4 +1,4 @@
-const window = await Zintl.window.create({
+const window = await app.createWindow({
   bounds: {
     x: 120,
     y: 120,
@@ -10,26 +10,28 @@ const window = await Zintl.window.create({
 console.log(`window created: ${window.id}`);
 console.log("close the window to verify post-close operations reject");
 
-let offWillClose;
-const willClose = new Promise((resolve, reject) => {
-  offWillClose = window.onWillClose((event) => {
+const willClose = new Promise((resolve) => {
+  const listener = (event) => {
     if (event.windowId !== window.id) {
-      reject(new Error(`expected willClose for window ${window.id}, got ${event.windowId}`));
       return;
     }
+    globalThis.removeEventListener("willclose", listener);
     console.log(`window will close: ${event.windowId}`);
     resolve();
-  });
+  };
+  globalThis.addEventListener("willclose", listener);
 });
 
-await withTimeout(willClose, 30_000, "timed out waiting for window.willClose");
-offWillClose();
+await withTimeout(willClose, 30_000, "timed out waiting for willclose");
 
 // didClose is intentionally not exposed to JS. Retry one operation until the
 // native message loop has processed didClose and removed the Window.
 await waitForWindowDoesNotExist();
 
-await assertWindowDoesNotExist("setSize", window.setSize({ width: 640, height: 420 }));
+await assertWindowDoesNotExist(
+  "setSize",
+  window.setSize({ width: 640, height: 420 }),
+);
 await assertWindowDoesNotExist(
   "setPosition",
   window.setPosition({ x: 180, y: 180 }),
@@ -38,23 +40,6 @@ await assertWindowDoesNotExist(
   "setBounds",
   window.setBounds({ x: 180, y: 180, width: 640, height: 420 }),
 );
-await assertWindowDoesNotExist(
-  "setCommands",
-  window.setCommands({
-    menus: [
-      {
-        title: "File",
-        items: [
-          {
-            id: "file.noop",
-            title: "Noop",
-          },
-        ],
-      },
-    ],
-  }),
-);
-
 console.log("post-close window operations rejected without crashing");
 Deno.exit(0);
 

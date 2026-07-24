@@ -2,20 +2,19 @@ use deno_error::JsErrorBox;
 use deno_runtime::deno_core::OpState;
 use deno_runtime::deno_core::op2;
 use serde::Serialize;
+use std::cell::RefCell;
+use std::rc::Rc;
 
-use super::{ZintlWindowId, app_host};
+use super::{ZintlAppCommands, ZintlWindowId, app_host};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all_fields = "camelCase", tag = "type")]
 pub enum ZintlAppEvent {
-    #[serde(rename = "window.command")]
-    WindowCommand {
-        window_id: ZintlWindowId,
-        command_id: String,
-    },
-    #[serde(rename = "window.created")]
+    #[serde(rename = "click")]
+    Click { command_id: String },
+    #[serde(rename = "onload")]
     WindowCreated { window_id: ZintlWindowId },
-    #[serde(rename = "window.willClose")]
+    #[serde(rename = "willclose")]
     WindowWillClose { window_id: ZintlWindowId },
 }
 
@@ -28,7 +27,7 @@ mod tests {
         let event = serde_json::to_value(ZintlAppEvent::WindowWillClose { window_id: 7 })
             .expect("window event should serialize");
 
-        assert_eq!(event["type"], "window.willClose");
+        assert_eq!(event["type"], "willclose");
         assert_eq!(event["windowId"], 7);
         assert!(event.get("window_id").is_none());
     }
@@ -36,10 +35,24 @@ mod tests {
 
 #[op2]
 #[serde]
-pub(super) fn op_zintl_app_event_bus_poll(
+pub(super) async fn op_zintl_app_next_event(
+    state: Rc<RefCell<OpState>>,
+) -> Result<ZintlAppEvent, JsErrorBox> {
+    let host = {
+        let state = state.borrow();
+        app_host(&state)?
+    };
+    host.next_event()
+        .await
+        .map_err(|error| JsErrorBox::generic(error.to_string()))
+}
+
+#[op2]
+pub(super) fn op_zintl_app_set_commands(
     state: &mut OpState,
-) -> Result<Option<ZintlAppEvent>, JsErrorBox> {
+    #[serde] commands: ZintlAppCommands,
+) -> Result<(), JsErrorBox> {
     app_host(state)?
-        .take_event()
+        .set_commands(commands)
         .map_err(|error| JsErrorBox::generic(error.to_string()))
 }

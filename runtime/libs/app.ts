@@ -1,117 +1,73 @@
 import { primordials } from "ext:core/mod.js";
-import { op_zintl_app_event_bus_poll } from "ext:core/ops";
+import {
+  op_zintl_app_next_event,
+  op_zintl_app_set_commands,
+  op_zintl_window_create,
+} from "ext:core/ops";
+import type { ZintlWindow, ZintlWindowCreateOptions } from "./window.ts";
+import { createZintlWindow } from "./window.ts";
 
-const {
-  ObjectDefineProperty,
-  SafeSet,
-  SafeSetIterator,
-  SetPrototypeAdd,
-  SetPrototypeDelete,
-  SetPrototypeGetSize,
-} = primordials;
+const { ObjectDefineProperty } = primordials;
 
-export interface AppWindowCommandEvent {
-  type: "window.command";
-  windowId: number;
-  commandId: string;
-}
-
-export interface AppWindowCreatedEvent {
-  type: "window.created";
-  windowId: number;
-}
-
-export interface AppWindowWillCloseEvent {
-  type: "window.willClose";
-  windowId: number;
-}
-
-export type AppEvent =
-  | AppWindowCommandEvent
-  | AppWindowCreatedEvent
-  | AppWindowWillCloseEvent;
-export type AppEventType = AppEvent["type"];
-export type AppEventListener<T extends AppEventType = AppEventType> = (
-  event: Extract<AppEvent, { type: T }>,
-) => void;
-
-export interface AppEventBus {
-  subscribe<T extends AppEventType>(
-    type: T,
-    listener: AppEventListener<T>,
-  ): () => void;
-  poll(): AppEvent | undefined;
+interface NativeWindowEvent {
+  type: "onload" | "willclose" | "click";
+  windowId?: number;
+  commandId?: string;
 }
 
 export interface ZintlApp {
-  eventBus: AppEventBus;
+  commands: ZintlAppCommands;
+  createWindow(options?: ZintlWindowCreateOptions): Promise<ZintlWindow>;
 }
 
-type ZintlGlobalThis = typeof globalThis & {
-  app?: ZintlApp;
-};
+export type ZintlCommandModifier = "cmd" | "ctrl" | "alt" | "shift";
+export type ZintlCommandRole = "about" | "quit";
 
-interface AppEventSubscription {
-  type: AppEventType;
-  listener: (event: AppEvent) => void;
+export interface ZintlCommandItem {
+  id?: string;
+  title: string;
+  role?: ZintlCommandRole;
+  key?: string;
+  modifiers?: ZintlCommandModifier[];
+  enabled?: boolean;
 }
 
-const appEventSubscriptions = new SafeSet<AppEventSubscription>();
-let appEventPollTimer: ReturnType<typeof globalThis.setInterval> | undefined;
+export interface ZintlAppMenu {
+  items: ZintlCommandItem[];
+}
 
-export const eventBus: AppEventBus = {
-  subscribe<T extends AppEventType>(
-    type: T,
-    listener: AppEventListener<T>,
-  ): () => void {
-    const subscription: AppEventSubscription = {
-      type,
-      listener: (event) => listener(event as Extract<AppEvent, { type: T }>),
-    };
-    SetPrototypeAdd(appEventSubscriptions, subscription);
-    ensureAppEventPolling();
+export interface ZintlCommandMenu {
+  title: string;
+  items: ZintlCommandItem[];
+}
 
-    return () => {
-      SetPrototypeDelete(appEventSubscriptions, subscription);
-      if (
-        SetPrototypeGetSize(appEventSubscriptions) === 0 &&
-        appEventPollTimer !== undefined
-      ) {
-        globalThis.clearInterval(appEventPollTimer);
-        appEventPollTimer = undefined;
-      }
-    };
+export interface ZintlAppCommands {
+  appMenu?: ZintlAppMenu;
+  menus?: ZintlCommandMenu[];
+}
+
+let commands: ZintlAppCommands = {};
+let isListeningForNativeEvents = false;
+
+const app: ZintlApp = {
+  get commands(): ZintlAppCommands {
+    return commands;
   },
 
-  poll(): AppEvent | undefined {
-    return op_zintl_app_event_bus_poll() ?? undefined;
+  set commands(value: ZintlAppCommands) {
+    op_zintl_app_set_commands(value);
+    commands = value;
+  },
+
+  async createWindow(
+    options?: ZintlWindowCreateOptions,
+  ): Promise<ZintlWindow> {
+    ensureNativeEventListening();
+    return createZintlWindow(
+      await op_zintl_window_create(options ?? null),
+    );
   },
 };
-
-function ensureAppEventPolling(): void {
-  if (appEventPollTimer !== undefined) {
-    return;
-  }
-
-  appEventPollTimer = globalThis.setInterval(() => {
-    let event: AppEvent | undefined;
-    while ((event = eventBus.poll()) != null) {
-      dispatchAppEvent(event);
-    }
-  }, 16);
-}
-
-function dispatchAppEvent(event: AppEvent): void {
-  for (const subscription of new SafeSetIterator(appEventSubscriptions)) {
-    if (subscription.type === event.type) {
-      subscription.listener(event);
-    }
-  }
-}
-
-const zintlGlobalThis = globalThis as ZintlGlobalThis;
-const app = zintlGlobalThis.app ?? { eventBus };
-app.eventBus = eventBus;
 
 ObjectDefineProperty(globalThis, "app", {
   value: app,
@@ -119,5 +75,33 @@ ObjectDefineProperty(globalThis, "app", {
   enumerable: false,
   writable: true,
 });
+
+async function listenForNativeEvents(): Promise<void> {
+  while (true) {
+    const nativeEvent: NativeWindowEvent = await op_zintl_app_next_event();
+    const event = new CustomEvent(nativeEvent.type, { detail: nativeEvent });
+    if (nativeEvent.windowId !== undefined) {
+      ObjectDefineProperty(event, "windowId", {
+        value: nativeEvent.windowId,
+        enumerable: true,
+      });
+    }
+    if (nativeEvent.commandId !== undefined) {
+      ObjectDefineProperty(event, "commandId", {
+        value: nativeEvent.commandId,
+        enumerable: true,
+      });
+    }
+    globalThis.dispatchEvent(event);
+  }
+}
+
+function ensureNativeEventListening(): void {
+  if (isListeningForNativeEvents) {
+    return;
+  }
+  isListeningForNativeEvents = true;
+  listenForNativeEvents();
+}
 
 export { app };
