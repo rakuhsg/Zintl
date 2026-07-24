@@ -14,7 +14,7 @@ See `DESIGN.md` for the product and architecture direction.
 - `runtime/crates/zintl-native`: platform message loop, main actor, and native bindings.
 - `runtime/crates/zintl-render`: rendering with wgpu and vello.
 - `platform/ZintlAppkitSupport`: Swift Package used by macOS AppKit FFI.
-- `thirdparty/deno`: Deno 2.8.0 with a local patch applied to the WebGPU extension.
+- `thirdparty/deno`: Deno 2.9.4 with a local patch applied to the WebGPU extension.
 - `patches/deno`: A local patch files for deno.
 
 ## Commands

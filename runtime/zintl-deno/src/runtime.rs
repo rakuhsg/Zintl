@@ -139,7 +139,7 @@ impl DenoRuntime {
                 permissions,
                 fs,
                 deno_rt_native_addon_loader: None,
-                blob_store: Default::default(),
+                blob_store: Arc::new(deno_runtime::deno_web::BlobStore::default()),
                 broadcast_channel: Default::default(),
                 feature_checker: feature_checker.clone(),
                 node_services: None,

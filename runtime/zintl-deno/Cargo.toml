@@ -5,7 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-deno_ast = { version = "=0.53.2", features = ["transpiling"] }
+deno_ast = { version = "=0.53.3", features = ["transpiling"] }
 deno_core = { path = "../../thirdparty/deno/libs/core" }
 deno_error = "=0.7.1"
 deno_runtime = { path = "../../thirdparty/deno/runtime" }
