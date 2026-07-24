@@ -5,7 +5,11 @@ import {
   op_zintl_window_create,
 } from "ext:core/ops";
 import type { ZintlWindow, ZintlWindowCreateOptions } from "./window.ts";
-import { createZintlWindow } from "./window.ts";
+import {
+  createZintlWindow,
+  dispatchZintlWindowEvent,
+  forgetZintlWindow,
+} from "./window.ts";
 
 const { ObjectDefineProperty } = primordials;
 
@@ -18,6 +22,10 @@ interface NativeWindowEvent {
 export interface ZintlApp {
   commands: ZintlAppCommands;
   createWindow(options?: ZintlWindowCreateOptions): Promise<ZintlWindow>;
+}
+
+declare global {
+  var app: ZintlApp;
 }
 
 export type ZintlCommandModifier = "cmd" | "ctrl" | "alt" | "shift";
@@ -73,7 +81,7 @@ ObjectDefineProperty(globalThis, "app", {
   value: app,
   configurable: true,
   enumerable: false,
-  writable: true,
+  writable: false,
 });
 
 async function listenForNativeEvents(): Promise<void> {
@@ -92,7 +100,19 @@ async function listenForNativeEvents(): Promise<void> {
         enumerable: true,
       });
     }
-    globalThis.dispatchEvent(event);
+    if (nativeEvent.windowId !== undefined) {
+      const dispatch = () => {
+        dispatchZintlWindowEvent(nativeEvent.windowId!, event);
+        if (nativeEvent.type === "willclose") {
+          forgetZintlWindow(nativeEvent.windowId!);
+        }
+      };
+      if (nativeEvent.type === "onload") {
+        globalThis.setTimeout(dispatch, 0);
+      } else {
+        dispatch();
+      }
+    }
   }
 }
 

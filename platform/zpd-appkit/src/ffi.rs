@@ -17,7 +17,7 @@ pub struct WindowCallback {
 }
 
 pub type CommandCallback =
-    unsafe extern "C" fn(user_data: *const c_void, command_id: *const c_char);
+    unsafe extern "C" fn(user_data: *const c_void, window_id: u32, command_id: *const c_char);
 pub type CommandRelease = unsafe extern "C" fn(user_data: *const c_void);
 
 unsafe extern "C" {
@@ -26,6 +26,7 @@ unsafe extern "C" {
     pub fn zintlappkit_run();
     pub fn zintlappkit_destroy();
     pub fn zintlappkit_create_window(
+        window_id: u32,
         user_data: *const c_void,
         callback: *const WindowCallback,
     ) -> *const c_void;

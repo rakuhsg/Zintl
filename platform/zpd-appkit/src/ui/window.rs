@@ -124,7 +124,7 @@ pub struct Window<'application, D: WindowDelegate> {
 }
 
 impl<'application, D: WindowDelegate> Window<'application, D> {
-    pub(crate) fn new(delegate: D) -> Result<Self, WindowError> {
+    pub(crate) fn new(window_id: u32, delegate: D) -> Result<Self, WindowError> {
         let state = Rc::new(WindowState {
             delegate: RefCell::new(delegate),
             closed: Cell::new(false),
@@ -138,7 +138,8 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
 
         // SAFETY: The Rc-backed callback state has a stable address. Native
         // code owns one strong reference and copies the callback table.
-        let raw = unsafe { ffi::zintlappkit_create_window(ffi_state.cast(), &callbacks) };
+        let raw =
+            unsafe { ffi::zintlappkit_create_window(window_id, ffi_state.cast(), &callbacks) };
         let Some(raw) = NonNull::new(raw.cast_mut()) else {
             // SAFETY: Native creation rejected the pointer without retaining
             // it, so reclaim the transferred strong reference.

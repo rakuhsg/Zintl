@@ -38,7 +38,7 @@ private func withProbe(
     }
   )
   let window = withUnsafePointer(to: &windowCallbacks) {
-    zintlAppkitCreateWindow(userData: retainedProbe.toOpaque(), callback: $0)
+    zintlAppkitCreateWindow(windowID: 1, userData: retainedProbe.toOpaque(), callback: $0)
   }
 
   #expect(probe.didCreate == 1)
@@ -61,6 +61,11 @@ private func withProbe(
 
   #expect(NSApp.delegate != nil)
   #expect(ZintlAppkitSupportState.shared.state != nil)
+
+  let registeredWindow = zintlAppkitCreateWindow(windowID: 42, userData: nil, callback: nil)
+  #expect(ZintlAppkitSupportState.shared.state?.delegate.currentWindowID() == 42)
+  zintlAppkitDestroyWindow(ptr: registeredWindow)
+  #expect(ZintlAppkitSupportState.shared.state?.delegate.currentWindowID() == nil)
 
   zintlAppkitDestroy()
 
