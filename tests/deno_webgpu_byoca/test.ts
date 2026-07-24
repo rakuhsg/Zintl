@@ -1,5 +1,6 @@
 const WIDTH = 640;
 const HEIGHT = 480;
+const WINDOW_READY_DELAY_MS = 250;
 const frameLimit = Deno.args[0] === undefined ? Infinity : Number(Deno.args[0]);
 
 if (frameLimit <= 0 || Number.isNaN(frameLimit)) {
@@ -60,6 +61,13 @@ context.configure({
   format,
   alphaMode: "opaque",
 });
+
+// Waiting for the window to show.
+const readyAt = performance.now() + WINDOW_READY_DELAY_MS;
+do {
+  dylib.symbols.byow_poll_events();
+  await new Promise((resolve) => setTimeout(resolve, 16));
+} while (performance.now() < readyAt);
 
 let frame = 0;
 
