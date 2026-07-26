@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::ffi;
-use crate::ui::{Window, WindowDelegate, WindowError};
+use crate::ui::{CommandError, CommandSet, Window, WindowDelegate, WindowError};
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -209,6 +209,13 @@ impl<D: ApplicationDelegate> Application<D> {
         delegate: W,
     ) -> Result<Window<'_, W>, WindowError> {
         Window::new(delegate)
+    }
+
+    pub fn set_commands<F>(&self, commands: &CommandSet, callback: F) -> Result<(), CommandError>
+    where
+        F: FnMut(&str) + 'static,
+    {
+        crate::ui::commands::install(commands, callback)
     }
 
     /// Runs the AppKit event loop until the application terminates.

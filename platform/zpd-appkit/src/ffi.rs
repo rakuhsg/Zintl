@@ -14,11 +14,14 @@ pub struct WindowCallback {
     pub did_create: unsafe extern "C" fn(*const c_void),
     pub will_close: unsafe extern "C" fn(*const c_void),
     pub did_close: unsafe extern "C" fn(*const c_void),
+    pub did_click: unsafe extern "C" fn(*const c_void),
+    pub release: WindowRelease,
 }
 
-pub type WindowCommandCallback =
+pub type WindowRelease = unsafe extern "C" fn(user_data: *const c_void);
+pub type CommandCallback =
     unsafe extern "C" fn(user_data: *const c_void, command_id: *const c_char);
-pub type WindowCommandRelease = unsafe extern "C" fn(user_data: *const c_void);
+pub type CommandRelease = unsafe extern "C" fn(user_data: *const c_void);
 
 unsafe extern "C" {
     pub fn zintlappkit_init(ud: *const c_void, cb: *const AppCallback);
@@ -33,12 +36,11 @@ unsafe extern "C" {
     pub fn zintlappkit_window_set_bounds(ptr: *const c_void, bounds: Rect);
     pub fn zintlappkit_window_set_size(ptr: *const c_void, width: f64, height: f64);
     pub fn zintlappkit_window_set_position(ptr: *const c_void, x: f64, y: f64);
-    pub fn zintlappkit_window_set_commands(
-        ptr: *const c_void,
+    pub fn zintlappkit_set_commands(
         commands_json: *const c_char,
         user_data: *const c_void,
-        callback: WindowCommandCallback,
-        release: WindowCommandRelease,
+        callback: CommandCallback,
+        release: CommandRelease,
     );
     pub fn zintlappkit_destroy_window(ptr: *const c_void);
     #[cfg(feature = "wgpu")]

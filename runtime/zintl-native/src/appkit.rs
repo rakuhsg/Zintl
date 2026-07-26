@@ -138,14 +138,25 @@ where
                 scheduler: scheduler.clone(),
             })
             .expect("AppKit failed to create a native window");
-        let backend = AppkitWindowBackend {
-            native,
-            window_id,
-            command_events: self.command_events.clone(),
-            scheduler,
-        };
+        let backend = AppkitWindowBackend { native };
 
         MainActor::new(marker, Window::new(Box::new(backend)))
+    }
+
+    fn set_commands(&self, _marker: MainMarker, commands: WindowCommandSet) -> WindowResult<()> {
+        let application = self
+            .application
+            .get()
+            .copied()
+            .expect("AppKit application must be initialized before setting commands");
+        let command_events = self.command_events.clone();
+        let scheduler = application.scheduler();
+        application
+            .set_commands(&appkit_command_set(commands), move |command_id| {
+                command_events.push((0, command_id.to_owned()));
+                scheduler.schedule();
+            })
+            .map_err(|error| WindowError::Backend(error.to_string()))
     }
 }
 
@@ -173,13 +184,16 @@ impl NativeAppkitWindowDelegate for AppkitWindowDelegate {
             .push((self.window_id, WindowEventKind::DidClose));
         self.scheduler.schedule();
     }
+
+    fn did_click(&mut self) {
+        self.window_events
+            .push((self.window_id, WindowEventKind::Click));
+        self.scheduler.schedule();
+    }
 }
 
 struct AppkitWindowBackend {
     native: NativeAppkitWindow<'static, AppkitWindowDelegate>,
-    window_id: WindowId,
-    command_events: Arc<SegQueue<(WindowId, String)>>,
-    scheduler: RunLoopScheduler,
 }
 
 // SAFETY: `AppkitWindowBackend` is only read through `MainActor` while holding
@@ -206,20 +220,6 @@ impl WindowBackend for AppkitWindowBackend {
 
     fn set_position(&self, x: f64, y: f64) -> WindowResult<()> {
         self.native.set_position(x, y).map_err(window_error)
-    }
-
-    fn set_commands(&self, commands: WindowCommandSet) -> WindowResult<()> {
-        let commands = appkit_command_set(commands);
-        let window_id = self.window_id;
-        let command_events = self.command_events.clone();
-        let scheduler = self.scheduler.clone();
-
-        self.native
-            .set_commands(&commands, move |command_id| {
-                command_events.push((window_id, command_id.to_owned()));
-                scheduler.schedule();
-            })
-            .map_err(window_error)
     }
 
     #[cfg(feature = "wgpu")]
@@ -381,6 +381,11 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
     }
 
     fn dispatch_window_event(self: &Arc<Self>, window_id: WindowId, kind: WindowEventKind) {
+        if matches!(kind, WindowEventKind::Click) && self.window_manager.window(window_id).is_none()
+        {
+            return;
+        }
+
         if matches!(kind, WindowEventKind::DidClose) {
             self.window_manager.remove_window(window_id);
         }

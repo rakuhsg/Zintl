@@ -12,6 +12,11 @@ struct State {
 class ZintlAppDelegate: NSObject, NSApplicationDelegate {
   var ud: UnsafeRawPointer
   var cb: AppCallback
+  var commandSet = ZintlCommandSet(appMenu: nil, menus: [])
+  var commandTargets: [ZintlCommandTarget] = []
+  var commandUserData: UnsafeRawPointer?
+  var commandCallback: ZintlCommandCallback?
+  var commandRelease: ZintlCommandRelease?
 
   init(ud: UnsafeRawPointer, cb: AppCallback) {
     self.ud = ud
@@ -19,13 +24,96 @@ class ZintlAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    NSApp.mainMenu = NSMenu()
-
+    self.installCommandsMenu()
     self.cb.on_launch(self.ud)
   }
 
   func applicationWillTerminate(_ notification: Notification) {
     self.cb.will_terminate(self.ud)
+  }
+
+  deinit {
+    if let release = self.commandRelease, let userData = self.commandUserData {
+      release(userData)
+    }
+  }
+
+  @MainActor
+  func setCommands(
+    commands: ZintlCommandSet,
+    userData: UnsafeRawPointer?,
+    callback: ZintlCommandCallback?,
+    release: ZintlCommandRelease?
+  ) {
+    self.clearCommandCallback()
+    self.commandSet = commands
+    self.commandUserData = userData
+    self.commandCallback = callback
+    self.commandRelease = release
+    self.installCommandsMenu()
+  }
+
+  @MainActor
+  func performCommand(_ commandID: String) {
+    guard let callback = self.commandCallback else {
+      return
+    }
+    commandID.withCString { commandIDPtr in
+      callback(self.commandUserData, commandIDPtr)
+    }
+  }
+
+  @MainActor
+  func installCommandsMenu() {
+    let mainMenu = NSMenu()
+    self.commandTargets.removeAll()
+
+    if let appMenu = self.commandSet.appMenu {
+      let appMenuItem = NSMenuItem()
+      let submenu = NSMenu(title: ProcessInfo.processInfo.processName)
+      appMenuItem.submenu = submenu
+      mainMenu.addItem(appMenuItem)
+      self.installCommandItems(appMenu.items, into: submenu)
+    }
+
+    for menu in self.commandSet.menus {
+      let menuItem = NSMenuItem()
+      let submenu = NSMenu(title: menu.title)
+      menuItem.submenu = submenu
+      mainMenu.addItem(menuItem)
+      self.installCommandItems(menu.items, into: submenu)
+    }
+
+    NSApp.mainMenu = mainMenu
+  }
+
+  @MainActor
+  func installCommandItems(_ commands: [ZintlCommandItem], into menu: NSMenu) {
+    for command in commands {
+      let target = ZintlCommandTarget(app: self, commandID: command.id, role: command.role)
+      self.commandTargets.append(target)
+      let item = NSMenuItem(
+        title: command.title,
+        action: #selector(ZintlCommandTarget.handleMenuCommand(_:)),
+        keyEquivalent: ZintlCommandTarget.keyEquivalent(command.key)
+      )
+      item.target = target
+      item.keyEquivalentModifierMask = ZintlCommandTarget.modifierMask(
+        command.modifiers ?? ["cmd"])
+      item.isEnabled = command.enabled ?? true
+      ZintlCommandTarget.setRoleSymbol(command.role, on: item, title: command.title)
+      menu.addItem(item)
+    }
+  }
+
+  @MainActor
+  func clearCommandCallback() {
+    if let release = self.commandRelease, let userData = self.commandUserData {
+      release(userData)
+    }
+    self.commandUserData = nil
+    self.commandCallback = nil
+    self.commandRelease = nil
   }
 }
 
@@ -63,21 +151,21 @@ func releaseRustFn(rp: UnsafeRawPointer?) {
   }
 }
 
-struct ZintlWindowCommandSet: Decodable {
+struct ZintlCommandSet: Decodable {
   var appMenu: ZintlWindowAppMenu?
-  var menus: [ZintlWindowCommandMenu]
+  var menus: [ZintlCommandMenu]
 }
 
 struct ZintlWindowAppMenu: Decodable {
-  var items: [ZintlWindowCommandItem]
+  var items: [ZintlCommandItem]
 }
 
-struct ZintlWindowCommandMenu: Decodable {
+struct ZintlCommandMenu: Decodable {
   var title: String
-  var items: [ZintlWindowCommandItem]
+  var items: [ZintlCommandItem]
 }
 
-struct ZintlWindowCommandItem: Decodable {
+struct ZintlCommandItem: Decodable {
   var id: String?
   var title: String
   var role: String?
@@ -88,12 +176,12 @@ struct ZintlWindowCommandItem: Decodable {
 
 @MainActor
 class ZintlCommandTarget: NSObject {
-  weak var window: ZintlWindow?
+  weak var app: ZintlAppDelegate?
   let commandID: String?
   let role: String?
 
-  init(window: ZintlWindow, commandID: String?, role: String?) {
-    self.window = window
+  init(app: ZintlAppDelegate, commandID: String?, role: String?) {
+    self.app = app
     self.commandID = commandID
     self.role = role
   }
@@ -106,7 +194,7 @@ class ZintlCommandTarget: NSObject {
     guard let commandID else {
       return
     }
-    self.window?.performCommand(commandID)
+    self.app?.performCommand(commandID)
   }
 
   static func performRole(_ role: String) {
@@ -117,6 +205,56 @@ class ZintlCommandTarget: NSObject {
       NSApp.terminate(nil)
     default:
       break
+    }
+  }
+
+  static func keyEquivalent(_ key: String?) -> String {
+    guard let key, let first = key.lowercased().first else {
+      return ""
+    }
+    return String(first)
+  }
+
+  static func modifierMask(_ modifiers: [String]) -> NSEvent.ModifierFlags {
+    var mask: NSEvent.ModifierFlags = []
+    for modifier in modifiers {
+      switch modifier {
+      case "cmd":
+        mask.insert(.command)
+      case "ctrl":
+        mask.insert(.control)
+      case "alt":
+        mask.insert(.option)
+      case "shift":
+        mask.insert(.shift)
+      default:
+        break
+      }
+    }
+    return mask
+  }
+
+  static func setRoleSymbol(_ role: String?, on item: NSMenuItem, title: String) {
+    guard #available(macOS 11.0, *),
+      let role,
+      let symbolName = Self.symbolName(forRole: role),
+      let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
+    else {
+      return
+    }
+
+    image.isTemplate = true
+    item.image = image
+  }
+
+  static func symbolName(forRole role: String) -> String? {
+    switch role {
+    case "about":
+      return "info.circle"
+    case "quit":
+      return "xmark.rectangle"
+    default:
+      return nil
     }
   }
 }
@@ -193,32 +331,39 @@ class ZintlWindow: NSObject, NSWindowDelegate {
   var window: NSWindow
   var userData: UnsafeRawPointer?
   var callback: WindowCallback?
-  var commandSet = ZintlWindowCommandSet(appMenu: nil, menus: [])
-  var commandTargets: [ZintlCommandTarget] = []
-  var commandUserData: UnsafeRawPointer?
-  var commandCallback: ZintlWindowCommandCallback?
-  var commandRelease: ZintlWindowCommandRelease?
+  var releaseCallback: ZintlWindowRelease?
+  var clickMonitor: Any?
   var isClosed = false
 
   @MainActor
   init(userData: UnsafeRawPointer?, callback: WindowCallback?) {
     self.userData = userData
     self.callback = callback
+    self.releaseCallback = callback?.release
     self.window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 480, height: 300),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false
     )
+    self.window.isReleasedWhenClosed = false
     super.init()
     self.window.delegate = self
+    self.clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) {
+      [weak self] event in
+      guard let self, !self.isClosed, event.window === self.window else {
+        return event
+      }
+      self.dispatchClickIfOpen()
+      return event
+    }
     self.callback?.did_create(self.userData)
   }
 
   @MainActor
   deinit {
-    self.clearCommandCallback()
     self.close()
+    self.releaseUserData()
   }
 
   @MainActor
@@ -242,37 +387,6 @@ class ZintlWindow: NSObject, NSWindowDelegate {
   }
 
   @MainActor
-  func setCommands(
-    commands: ZintlWindowCommandSet,
-    userData: UnsafeRawPointer?,
-    callback: ZintlWindowCommandCallback?,
-    release: ZintlWindowCommandRelease?
-  ) {
-    // Release the Rust-owned callback state before replacing the active command set.
-    self.clearCommandCallback()
-    self.commandSet = commands
-    self.commandUserData = userData
-    self.commandCallback = callback
-    self.commandRelease = release
-    self.installCommandsMenuIfActive()
-  }
-
-  @MainActor
-  func performCommand(_ commandID: String) {
-    guard let callback = self.commandCallback else {
-      return
-    }
-    commandID.withCString { commandIDPtr in
-      callback(self.commandUserData, commandIDPtr)
-    }
-  }
-
-  @MainActor
-  func windowDidBecomeKey(_ notification: Notification) {
-    self.installCommandsMenu()
-  }
-
-  @MainActor
   func windowWillClose(_ notification: Notification) {
     self.completeCloseCallbacks()
   }
@@ -292,70 +406,31 @@ class ZintlWindow: NSObject, NSWindowDelegate {
       return
     }
     self.isClosed = true
+    if let clickMonitor = self.clickMonitor {
+      NSEvent.removeMonitor(clickMonitor)
+      self.clickMonitor = nil
+    }
+    let callback = self.callback
+    self.callback = nil
     callback?.will_close(self.userData)
     callback?.did_close(self.userData)
-    self.callback = nil
+  }
+
+  @MainActor
+  func dispatchClickIfOpen() {
+    guard !self.isClosed else {
+      return
+    }
+    self.callback?.did_click(self.userData)
+  }
+
+  @MainActor
+  func releaseUserData() {
+    let release = self.releaseCallback
+    self.releaseCallback = nil
+    let userData = self.userData
     self.userData = nil
-  }
-
-  @MainActor
-  func installCommandsMenuIfActive() {
-    if self.window.isKeyWindow || NSApp.keyWindow == nil {
-      self.installCommandsMenu()
-    }
-  }
-
-  @MainActor
-  func installCommandsMenu() {
-    let mainMenu = NSMenu()
-    self.commandTargets.removeAll()
-
-    if let appMenu = self.commandSet.appMenu {
-      let appMenuItem = NSMenuItem()
-      let submenu = NSMenu(title: ProcessInfo.processInfo.processName)
-      appMenuItem.submenu = submenu
-      mainMenu.addItem(appMenuItem)
-      self.installCommandItems(appMenu.items, into: submenu)
-    }
-
-    for menu in self.commandSet.menus {
-      let menuItem = NSMenuItem()
-      let submenu = NSMenu(title: menu.title)
-      menuItem.submenu = submenu
-      mainMenu.addItem(menuItem)
-
-      self.installCommandItems(menu.items, into: submenu)
-    }
-
-    NSApp.mainMenu = mainMenu
-  }
-
-  @MainActor
-  func installCommandItems(_ commands: [ZintlWindowCommandItem], into menu: NSMenu) {
-    for command in commands {
-      let target = ZintlCommandTarget(window: self, commandID: command.id, role: command.role)
-      self.commandTargets.append(target)
-      let item = NSMenuItem(
-        title: command.title,
-        action: #selector(ZintlCommandTarget.handleMenuCommand(_:)),
-        keyEquivalent: Self.keyEquivalent(command.key)
-      )
-      item.target = target
-      item.keyEquivalentModifierMask = Self.modifierMask(command.modifiers ?? ["cmd"])
-      item.isEnabled = command.enabled ?? true
-      Self.setRoleSymbol(command.role, on: item, title: command.title)
-      menu.addItem(item)
-    }
-  }
-
-  @MainActor
-  func clearCommandCallback() {
-    if let release = self.commandRelease, let userData = self.commandUserData {
-      release(userData)
-    }
-    self.commandUserData = nil
-    self.commandCallback = nil
-    self.commandRelease = nil
+    release?(userData)
   }
 
   @MainActor
@@ -376,55 +451,6 @@ class ZintlWindow: NSObject, NSWindowDelegate {
     screen.frame.maxY - frame.maxY
   }
 
-  static func keyEquivalent(_ key: String?) -> String {
-    guard let key, let first = key.lowercased().first else {
-      return ""
-    }
-    return String(first)
-  }
-
-  static func modifierMask(_ modifiers: [String]) -> NSEvent.ModifierFlags {
-    var mask: NSEvent.ModifierFlags = []
-    for modifier in modifiers {
-      switch modifier {
-      case "cmd":
-        mask.insert(.command)
-      case "ctrl":
-        mask.insert(.control)
-      case "alt":
-        mask.insert(.option)
-      case "shift":
-        mask.insert(.shift)
-      default:
-        break
-      }
-    }
-    return mask
-  }
-
-  static func setRoleSymbol(_ role: String?, on item: NSMenuItem, title: String) {
-    guard #available(macOS 11.0, *),
-      let role,
-      let symbolName = Self.symbolName(forRole: role),
-      let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
-    else {
-      return
-    }
-
-    image.isTemplate = true
-    item.image = image
-  }
-
-  static func symbolName(forRole role: String) -> String? {
-    switch role {
-    case "about":
-      return "info.circle"
-    case "quit":
-      return "xmark.rectangle"
-    default:
-      return nil
-    }
-  }
 }
 
 @MainActor
@@ -521,23 +547,26 @@ func zintlAppkitWindowSetPosition(ptr: UnsafeRawPointer, x: Double, y: Double) {
 }
 
 @MainActor
-@_cdecl("zintlappkit_window_set_commands")
-func zintlAppkitWindowSetCommands(
-  ptr: UnsafeRawPointer,
+@_cdecl("zintlappkit_set_commands")
+func zintlAppkitSetCommands(
   commandsJson: UnsafePointer<CChar>,
   userData: UnsafeRawPointer?,
-  callback: ZintlWindowCommandCallback?,
-  release: ZintlWindowCommandRelease?
+  callback: ZintlCommandCallback?,
+  release: ZintlCommandRelease?
 ) {
-  let wnd = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()
   let json = String(cString: commandsJson)
   guard let data = json.data(using: .utf8) else {
     release?(userData)
     return
   }
   do {
-    let commands = try JSONDecoder().decode(ZintlWindowCommandSet.self, from: data)
-    wnd.setCommands(commands: commands, userData: userData, callback: callback, release: release)
+    let commands = try JSONDecoder().decode(ZintlCommandSet.self, from: data)
+    guard let delegate = ZintlAppkitSupportState.shared.state?.delegate else {
+      release?(userData)
+      return
+    }
+    delegate.setCommands(
+      commands: commands, userData: userData, callback: callback, release: release)
   } catch {
     release?(userData)
   }
@@ -547,7 +576,9 @@ func zintlAppkitWindowSetCommands(
 @_cdecl("zintlappkit_destroy_window")
 func zintlAppkitDestroyWindow(ptr: UnsafeRawPointer) {
   let window = Unmanaged<ZintlWindow>.fromOpaque(ptr)
-  window.takeUnretainedValue().close()
+  let value = window.takeUnretainedValue()
+  value.close()
+  value.releaseUserData()
   window.release()
 }
 

@@ -1,9 +1,11 @@
-const win = await Zintl.window.create({});
+const win = await app.createWindow({});
 
-app.eventBus.subscribe("window.willClose", (e) => {
-    console.log(`Window will close ${e.windowId}`);
+win.addEventListener("click", (e) => {
+  console.log("click event");
 });
 
-win.onWillClose((e) => {
-    console.log("hello, world");
+win.addEventListener("willclose", (event) => {
+  if (event.windowId === win.id) {
+    console.log(`Window will close ${event.windowId}`);
+  }
 });

@@ -59,6 +59,10 @@ impl WindowManager {
             .and_then(|windows| windows.get(&window_id).map(MainActor::downgrade))
     }
 
+    pub fn set_commands(&self, marker: MainMarker, commands: WindowCommandSet) -> WindowResult<()> {
+        self.backend.set_commands(marker, commands)
+    }
+
     pub(crate) fn remove_window(&self, window_id: WindowId) {
         if let Ok(mut windows) = self.windows.write() {
             windows.remove(&window_id);
@@ -68,6 +72,7 @@ impl WindowManager {
 
 pub(crate) trait WindowManagerBackend: Send + Sync {
     fn create_window(&self, marker: MainMarker, window_id: WindowId) -> MainActor<Window>;
+    fn set_commands(&self, marker: MainMarker, commands: WindowCommandSet) -> WindowResult<()>;
 }
 
 #[derive(Clone, Debug)]
@@ -117,10 +122,6 @@ impl Window {
         self.backend.set_position(x, y)
     }
 
-    pub fn set_commands(&self, commands: WindowCommandSet) -> WindowResult<()> {
-        self.backend.set_commands(commands)
-    }
-
     #[cfg(feature = "wgpu")]
     pub fn create_wgpu_surface(
         &self,
@@ -138,8 +139,6 @@ pub(crate) trait WindowBackend: Send + Sync {
     fn set_bounds(&self, bounds: Rect) -> WindowResult<()>;
     fn set_size(&self, width: f64, height: f64) -> WindowResult<()>;
     fn set_position(&self, x: f64, y: f64) -> WindowResult<()>;
-    fn set_commands(&self, commands: WindowCommandSet) -> WindowResult<()>;
-
     #[cfg(feature = "wgpu")]
     fn create_wgpu_surface(&self, marker: MainMarker, rect: Rect) -> WindowResult<WgpuSurface>;
 }
@@ -195,6 +194,7 @@ pub enum WindowCommandRole {
 pub enum WindowEventKind {
     Created,
     WillClose,
+    Click,
     /// NOTE: Don't fire [[WindowEventKind::DidClose]] after free a window
     DidClose,
 }

@@ -1,13 +1,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use futures::channel::oneshot;
 use zintl_deno::api::{
-    ZintlAppApi, ZintlAppError, ZintlAppEvent, ZintlWindowApi, ZintlWindowAppMenu,
-    ZintlWindowBounds, ZintlWindowCommandItem, ZintlWindowCommandMenu, ZintlWindowCommandModifier,
-    ZintlWindowCommandRole, ZintlWindowCommandSet, ZintlWindowCreateOptions, ZintlWindowError,
-    ZintlWindowFuture, ZintlWindowPosition, ZintlWindowSize,
+    ZintlAppApi, ZintlAppCommands, ZintlAppError, ZintlAppEvent, ZintlAppEventFuture, ZintlAppMenu,
+    ZintlCommandItem, ZintlCommandMenu, ZintlCommandModifier, ZintlCommandRole, ZintlWindowApi,
+    ZintlWindowBounds, ZintlWindowCreateOptions, ZintlWindowError, ZintlWindowFuture,
+    ZintlWindowPosition, ZintlWindowSize,
 };
 use zintl_native::{
     Context, Event, MainActorError, MainActorRef, MainMarker, Rect, Window,
@@ -38,10 +38,16 @@ pub(crate) enum WindowOperationResult {
 }
 
 #[derive(Default)]
+struct AppEventState {
+    events: VecDeque<ZintlAppEvent>,
+    waiter: Option<oneshot::Sender<ZintlAppEvent>>,
+}
+
+#[derive(Default)]
 pub(crate) struct AppWindowState {
     next_operation_id: AtomicU32,
     window_manager: RwLock<Option<WindowManager>>,
-    app_events: RwLock<VecDeque<ZintlAppEvent>>,
+    app_events: Mutex<AppEventState>,
     pending_window_operations: RwLock<HashMap<WindowOperationId, PendingWindowOperation>>,
 }
 
@@ -231,56 +237,44 @@ where
             .set_error_message("window operation completion was canceled")
             .build()
     }
-
-    fn set_window_commands(
-        &self,
-        window_id: WindowId,
-        commands: ZintlWindowCommandSet,
-    ) -> ZintlWindowFuture<()> {
-        let (operation_id, receiver) = match self.state.begin_unit_window_operation() {
-            Ok(operation) => operation,
-            Err(error) => return failed_window_future(error),
-        };
-        if let Err(error) = validate_commands(&commands) {
-            self.cx.send_message(Message::WindowOperationCompleted {
-                operation_id,
-                result: WindowOperationResult::Unit(Err(error)),
-            });
-            return ZintlWindowFutureFactory::new(receiver)
-                .set_error_message("window operation completion was canceled")
-                .build();
-        }
-
-        let state = self.state.clone();
-        self.cx.perform_main(
-            move |marker, cx| {
-                let result = state.with_window(window_id, marker, |window| {
-                    set_native_commands(window_id, window, commands)
-                });
-                cx.send_message(Message::WindowOperationCompleted {
-                    operation_id,
-                    result: WindowOperationResult::Unit(result),
-                });
-            },
-            None,
-        );
-        ZintlWindowFutureFactory::new(receiver)
-            .set_error_message("window operation completion was canceled")
-            .build()
-    }
 }
 
 impl<C> ZintlAppApi for AppWindowHost<C>
 where
     C: Context<Message> + Send + Sync,
 {
-    fn take_event(&self) -> Result<Option<ZintlAppEvent>, ZintlAppError> {
-        let mut app_events = self
-            .state
-            .app_events
-            .write()
-            .map_err(|_| ZintlAppError::new("app event queue is poisoned"))?;
-        Ok(app_events.pop_front())
+    fn next_event(&self) -> ZintlAppEventFuture {
+        let mut state = match self.state.app_events.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                return Box::pin(async { Err(ZintlAppError::new("app event queue is poisoned")) });
+            }
+        };
+        if let Some(event) = state.events.pop_front() {
+            return Box::pin(async move { Ok(event) });
+        }
+
+        let (sender, receiver) = oneshot::channel();
+        state.waiter = Some(sender);
+        Box::pin(async move {
+            receiver
+                .await
+                .map_err(|_| ZintlAppError::new("app event listener was canceled"))
+        })
+    }
+
+    fn set_commands(&self, commands: ZintlAppCommands) -> Result<(), ZintlAppError> {
+        validate_commands(&commands).map_err(|error| ZintlAppError::new(error.to_string()))?;
+        let state = self.state.clone();
+        self.cx.perform_main(
+            move |marker, _| {
+                if let Ok(window_manager) = state.window_manager() {
+                    let _ = window_manager.set_commands(marker, native_command_set(commands));
+                }
+            },
+            None,
+        );
+        Ok(())
     }
 }
 
@@ -300,15 +294,15 @@ impl AppWindowState {
                 WindowEventKind::WillClose => {
                     self.push_app_event(ZintlAppEvent::WindowWillClose { window_id })
                 }
+                WindowEventKind::Click => {
+                    self.push_app_event(ZintlAppEvent::WindowClick { window_id })
+                }
                 WindowEventKind::DidClose => {}
             },
             Event::WindowCommand {
-                window_id,
+                window_id: _,
                 command_id,
-            } => self.push_app_event(ZintlAppEvent::WindowCommand {
-                window_id,
-                command_id,
-            }),
+            } => self.push_app_event(ZintlAppEvent::CommandClick { id: command_id }),
         }
     }
 
@@ -416,8 +410,12 @@ impl AppWindowState {
     }
 
     fn push_app_event(&self, event: ZintlAppEvent) {
-        if let Ok(mut events) = self.app_events.write() {
-            events.push_back(event);
+        if let Ok(mut state) = self.app_events.lock() {
+            if let Some(waiter) = state.waiter.take() {
+                let _ = waiter.send(event);
+            } else {
+                state.events.push_back(event);
+            }
         }
     }
 }
@@ -501,9 +499,6 @@ fn apply_create_options(
         }
     }
 
-    if let Some(commands) = options.commands {
-        set_native_commands(window_id, window, commands)?;
-    }
     Ok(())
 }
 
@@ -516,17 +511,7 @@ fn rect_from_bounds(bounds: ZintlWindowBounds) -> Rect {
     }
 }
 
-fn set_native_commands(
-    window_id: WindowId,
-    window: &Window,
-    commands: ZintlWindowCommandSet,
-) -> Result<(), ZintlWindowError> {
-    window
-        .set_commands(native_command_set(commands))
-        .map_err(|error| window_backend_error(window_id, error))
-}
-
-fn native_command_set(commands: ZintlWindowCommandSet) -> NativeWindowCommandSet {
+fn native_command_set(commands: ZintlAppCommands) -> NativeWindowCommandSet {
     NativeWindowCommandSet {
         app_menu: commands.app_menu.map(native_app_menu),
         menus: commands
@@ -537,20 +522,20 @@ fn native_command_set(commands: ZintlWindowCommandSet) -> NativeWindowCommandSet
     }
 }
 
-fn native_app_menu(menu: ZintlWindowAppMenu) -> NativeWindowAppMenu {
+fn native_app_menu(menu: ZintlAppMenu) -> NativeWindowAppMenu {
     NativeWindowAppMenu {
         items: menu.items.into_iter().map(native_command_item).collect(),
     }
 }
 
-fn native_command_menu(menu: ZintlWindowCommandMenu) -> NativeWindowCommandMenu {
+fn native_command_menu(menu: ZintlCommandMenu) -> NativeWindowCommandMenu {
     NativeWindowCommandMenu {
         title: menu.title,
         items: menu.items.into_iter().map(native_command_item).collect(),
     }
 }
 
-fn native_command_item(item: ZintlWindowCommandItem) -> NativeWindowCommandItem {
+fn native_command_item(item: ZintlCommandItem) -> NativeWindowCommandItem {
     NativeWindowCommandItem {
         id: item.id,
         title: item.title,
@@ -561,19 +546,19 @@ fn native_command_item(item: ZintlWindowCommandItem) -> NativeWindowCommandItem 
     }
 }
 
-fn native_modifier(modifier: ZintlWindowCommandModifier) -> NativeWindowCommandModifier {
+fn native_modifier(modifier: ZintlCommandModifier) -> NativeWindowCommandModifier {
     match modifier {
-        ZintlWindowCommandModifier::Cmd => NativeWindowCommandModifier::Cmd,
-        ZintlWindowCommandModifier::Ctrl => NativeWindowCommandModifier::Ctrl,
-        ZintlWindowCommandModifier::Alt => NativeWindowCommandModifier::Alt,
-        ZintlWindowCommandModifier::Shift => NativeWindowCommandModifier::Shift,
+        ZintlCommandModifier::Cmd => NativeWindowCommandModifier::Cmd,
+        ZintlCommandModifier::Ctrl => NativeWindowCommandModifier::Ctrl,
+        ZintlCommandModifier::Alt => NativeWindowCommandModifier::Alt,
+        ZintlCommandModifier::Shift => NativeWindowCommandModifier::Shift,
     }
 }
 
-fn native_role(role: ZintlWindowCommandRole) -> NativeWindowCommandRole {
+fn native_role(role: ZintlCommandRole) -> NativeWindowCommandRole {
     match role {
-        ZintlWindowCommandRole::About => NativeWindowCommandRole::About,
-        ZintlWindowCommandRole::Quit => NativeWindowCommandRole::Quit,
+        ZintlCommandRole::About => NativeWindowCommandRole::About,
+        ZintlCommandRole::Quit => NativeWindowCommandRole::Quit,
     }
 }
 
@@ -586,9 +571,6 @@ fn validate_create_options(options: &ZintlWindowCreateOptions) -> Result<(), Zin
     }
     if let Some(position) = options.position {
         validate_position(position)?;
-    }
-    if let Some(commands) = options.commands.as_ref() {
-        validate_commands(commands)?;
     }
     Ok(())
 }
@@ -626,14 +608,14 @@ fn validate_position(position: ZintlWindowPosition) -> Result<(), ZintlWindowErr
     Ok(())
 }
 
-fn validate_commands(commands: &ZintlWindowCommandSet) -> Result<(), ZintlWindowError> {
+fn validate_commands(commands: &ZintlAppCommands) -> Result<(), ZintlWindowError> {
     if let Some(app_menu) = commands.app_menu.as_ref() {
         validate_command_items(&app_menu.items)?;
     }
     for menu in &commands.menus {
         if menu.title.is_empty() {
             return Err(ZintlWindowError::new(
-                "window command menu title cannot be empty",
+                "app command menu title cannot be empty",
             ));
         }
         validate_command_items(&menu.items)?;
@@ -641,23 +623,21 @@ fn validate_commands(commands: &ZintlWindowCommandSet) -> Result<(), ZintlWindow
     Ok(())
 }
 
-fn validate_command_items(items: &[ZintlWindowCommandItem]) -> Result<(), ZintlWindowError> {
+fn validate_command_items(items: &[ZintlCommandItem]) -> Result<(), ZintlWindowError> {
     for item in items {
         let has_command_id = item.id.as_ref().is_some_and(|id| !id.is_empty());
         if !has_command_id && item.role.is_none() {
             return Err(ZintlWindowError::new(
-                "window command id cannot be empty unless role is set",
+                "app command id cannot be empty unless role is set",
             ));
         }
         if has_command_id && item.role.is_some() {
             return Err(ZintlWindowError::new(
-                "window command cannot set both id and role",
+                "app command cannot set both id and role",
             ));
         }
         if item.title.is_empty() {
-            return Err(ZintlWindowError::new(
-                "window command title cannot be empty",
-            ));
+            return Err(ZintlWindowError::new("app command title cannot be empty"));
         }
     }
     Ok(())

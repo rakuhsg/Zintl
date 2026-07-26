@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
@@ -10,13 +10,12 @@ use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
 use crate::{ffi, runloop::Application};
 
-use super::CommandSet;
-
 /// Receives native window lifecycle notifications on the AppKit main thread.
 pub trait WindowDelegate: 'static {
     fn did_create(&mut self) {}
     fn will_close(&mut self) {}
     fn did_close(&mut self) {}
+    fn did_click(&mut self) {}
 }
 
 impl WindowDelegate for () {}
@@ -25,8 +24,6 @@ impl WindowDelegate for () {}
 pub enum WindowError {
     NativeCreationFailed,
     Closed,
-    CommandEncoding(serde_json::Error),
-    InvalidCommandJson(std::ffi::NulError),
 }
 
 impl std::fmt::Display for WindowError {
@@ -34,21 +31,13 @@ impl std::fmt::Display for WindowError {
         match self {
             Self::NativeCreationFailed => write!(f, "AppKit failed to create a native object"),
             Self::Closed => write!(f, "the window is closed"),
-            Self::CommandEncoding(error) => write!(f, "failed to encode commands: {error}"),
-            Self::InvalidCommandJson(error) => {
-                write!(f, "encoded commands contain an interior NUL byte: {error}")
-            }
         }
     }
 }
 
 impl std::error::Error for WindowError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::CommandEncoding(error) => Some(error),
-            Self::InvalidCommandJson(error) => Some(error),
-            _ => None,
-        }
+        None
     }
 }
 
@@ -64,7 +53,8 @@ unsafe fn clone_window_state<D>(user_data: *const c_void) -> Option<Rc<WindowSta
     }
 
     // SAFETY: Native code owns the strong reference transferred during window
-    // creation until the did-close callback.
+    // creation until it invokes the release callback while destroying the
+    // native window handle.
     unsafe { Rc::increment_strong_count(state) };
     // SAFETY: The increment above created the strong reference returned here.
     Some(unsafe { Rc::from_raw(state) })
@@ -95,6 +85,23 @@ unsafe extern "C" fn did_create<D: WindowDelegate>(user_data: *const c_void) {
     unsafe { invoke_delegate::<D>(user_data, WindowDelegate::did_create) };
 }
 
+unsafe extern "C" fn did_click<D: WindowDelegate>(user_data: *const c_void) {
+    // SAFETY: Native code owns its Rc strong reference until window
+    // destruction, so the pointer remains valid after did-close.
+    let Some(state) = (unsafe { clone_window_state::<D>(user_data) }) else {
+        return;
+    };
+    if state.closed.get() {
+        return;
+    }
+    abort_on_panic(|| {
+        let Ok(mut delegate) = state.delegate.try_borrow_mut() else {
+            std::process::abort();
+        };
+        delegate.did_click();
+    });
+}
+
 unsafe extern "C" fn will_close<D: WindowDelegate>(user_data: *const c_void) {
     // SAFETY: Native code still owns its Rc strong reference on entry.
     let Some(state) = (unsafe { clone_window_state::<D>(user_data) }) else {
@@ -121,9 +128,16 @@ unsafe extern "C" fn did_close<D: WindowDelegate>(user_data: *const c_void) {
         };
         delegate.did_close();
     });
+}
 
-    // SAFETY: This consumes the native side's strong reference exactly once,
-    // when Swift permanently clears the window callback.
+unsafe extern "C" fn release_window_state<D>(user_data: *const c_void) {
+    if user_data.is_null() {
+        return;
+    }
+
+    // SAFETY: This consumes the strong reference transferred during native
+    // window creation. Swift invokes this callback exactly once when the
+    // native window handle is destroyed.
     unsafe { drop(Rc::from_raw(user_data.cast::<WindowState<D>>())) };
 }
 
@@ -146,6 +160,8 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
             did_create: did_create::<D>,
             will_close: will_close::<D>,
             did_close: did_close::<D>,
+            did_click: did_click::<D>,
+            release: release_window_state::<D>,
         };
 
         // SAFETY: The Rc-backed callback state has a stable address. Native
@@ -207,32 +223,6 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
         Ok(())
     }
 
-    pub fn set_commands<F>(&self, commands: &CommandSet, callback: F) -> Result<(), WindowError>
-    where
-        F: FnMut(&str) + 'static,
-    {
-        self.ensure_open()?;
-        let json = serde_json::to_string(commands).map_err(WindowError::CommandEncoding)?;
-        let json = CString::new(json).map_err(WindowError::InvalidCommandJson)?;
-        let callback_state = Rc::into_raw(Rc::new(CommandCallback {
-            callback: RefCell::new(callback),
-        }));
-
-        // SAFETY: The JSON buffer lives for the call. Ownership of
-        // `callback_state` transfers to Swift, which invokes `release_command`
-        // exactly once when replacing, rejecting, or destroying the commands.
-        unsafe {
-            ffi::zintlappkit_window_set_commands(
-                self.raw.as_ptr(),
-                json.as_ptr(),
-                callback_state.cast(),
-                invoke_command::<F>,
-                release_command::<F>,
-            );
-        }
-        Ok(())
-    }
-
     #[cfg(feature = "wgpu")]
     pub fn create_wgpu_surface(
         &self,
@@ -260,54 +250,67 @@ impl<D: WindowDelegate> Drop for Window<'_, D> {
     }
 }
 
-struct CommandCallback<F> {
-    callback: RefCell<F>,
-}
+#[cfg(test)]
+mod tests {
+    use super::{
+        WindowDelegate, WindowState, did_click, did_close, release_window_state, will_close,
+    };
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
-unsafe fn clone_command<F>(user_data: *const c_void) -> Option<Rc<CommandCallback<F>>> {
-    let state = user_data.cast::<CommandCallback<F>>();
-    if state.is_null() {
-        return None;
+    struct CallbackProbe {
+        clicks: Rc<Cell<usize>>,
+        will_close: Rc<Cell<usize>>,
+        did_close: Rc<Cell<usize>>,
     }
 
-    // SAFETY: Swift holds the transferred strong reference until it invokes
-    // `release_command`.
-    unsafe { Rc::increment_strong_count(state) };
-    // SAFETY: The increment above created the strong reference returned here.
-    Some(unsafe { Rc::from_raw(state) })
-}
+    impl WindowDelegate for CallbackProbe {
+        fn did_click(&mut self) {
+            self.clicks.set(self.clicks.get() + 1);
+        }
 
-unsafe extern "C" fn invoke_command<F: FnMut(&str) + 'static>(
-    user_data: *const c_void,
-    command_id: *const c_char,
-) {
-    if user_data.is_null() || command_id.is_null() {
-        return;
+        fn will_close(&mut self) {
+            self.will_close.set(self.will_close.get() + 1);
+        }
+
+        fn did_close(&mut self) {
+            self.did_close.set(self.did_close.get() + 1);
+        }
     }
 
-    abort_on_panic(|| {
-        // SAFETY: Command callbacks are installed with an Rc-backed state.
-        let Some(state) = (unsafe { clone_command::<F>(user_data) }) else {
-            return;
-        };
-        // SAFETY: Swift provides a NUL-terminated command identifier for this
-        // call.
-        let command_id = unsafe { CStr::from_ptr(command_id) }.to_string_lossy();
-        let Ok(mut callback) = state.callback.try_borrow_mut() else {
-            std::process::abort();
-        };
-        callback(&command_id);
-    });
-}
+    #[test]
+    fn callback_state_lives_until_release_and_ignores_clicks_after_close() {
+        let clicks = Rc::new(Cell::new(0));
+        let will_close_count = Rc::new(Cell::new(0));
+        let did_close_count = Rc::new(Cell::new(0));
+        let state = Rc::new(WindowState {
+            delegate: RefCell::new(CallbackProbe {
+                clicks: clicks.clone(),
+                will_close: will_close_count.clone(),
+                did_close: did_close_count.clone(),
+            }),
+            closed: Cell::new(false),
+        });
+        let native_state = Rc::into_raw(state.clone());
 
-unsafe extern "C" fn release_command<F>(user_data: *const c_void) {
-    if user_data.is_null() {
-        return;
+        // SAFETY: `native_state` owns the transferred strong reference until
+        // the release callback at the end of this test.
+        unsafe {
+            did_click::<CallbackProbe>(native_state.cast());
+            will_close::<CallbackProbe>(native_state.cast());
+            did_click::<CallbackProbe>(native_state.cast());
+            did_close::<CallbackProbe>(native_state.cast());
+        }
+
+        assert_eq!(clicks.get(), 1);
+        assert_eq!(will_close_count.get(), 1);
+        assert_eq!(did_close_count.get(), 1);
+        assert_eq!(Rc::strong_count(&state), 2);
+
+        // SAFETY: This consumes the one strong reference transferred above.
+        unsafe { release_window_state::<CallbackProbe>(native_state.cast()) };
+        assert_eq!(Rc::strong_count(&state), 1);
     }
-
-    // SAFETY: This consumes the strong reference transferred by `Rc::into_raw`;
-    // Swift calls the release callback exactly once.
-    unsafe { drop(Rc::from_raw(user_data.cast::<CommandCallback<F>>())) };
 }
 
 #[cfg(feature = "wgpu")]

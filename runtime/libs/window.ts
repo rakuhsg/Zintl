@@ -1,14 +1,19 @@
 import { primordials } from "ext:core/mod.js";
 import {
-  op_zintl_window_create,
   op_zintl_window_set_bounds,
-  op_zintl_window_set_commands,
   op_zintl_window_set_position,
   op_zintl_window_set_size,
 } from "ext:core/ops";
-import { eventBus } from "./app.ts";
 
-const { ObjectDefineProperty } = primordials;
+const {
+  ArrayPrototypePush,
+  MapPrototypeDelete,
+  MapPrototypeGet,
+  MapPrototypeSet,
+  queueMicrotask,
+  SafeArrayIterator,
+  SafeMap,
+} = primordials;
 
 export interface ZintlWindowBounds {
   x: number;
@@ -27,87 +32,130 @@ export interface ZintlWindowPosition {
   y: number;
 }
 
-export type ZintlWindowCommandModifier = "cmd" | "ctrl" | "alt" | "shift";
-export type ZintlWindowCommandRole = "about" | "quit";
-
-export interface ZintlWindowCommandItem {
-  id?: string;
-  title: string;
-  role?: ZintlWindowCommandRole;
-  key?: string;
-  modifiers?: ZintlWindowCommandModifier[];
-  enabled?: boolean;
-}
-
-export interface ZintlWindowAppMenu {
-  items: ZintlWindowCommandItem[];
-}
-
-export interface ZintlWindowCommandMenu {
-  title: string;
-  items: ZintlWindowCommandItem[];
-}
-
-export interface ZintlWindowCommandSet {
-  appMenu?: ZintlWindowAppMenu;
-  menus?: ZintlWindowCommandMenu[];
-}
-
 export interface ZintlWindowCreateOptions {
   bounds?: ZintlWindowBounds;
   size?: ZintlWindowSize;
   position?: ZintlWindowPosition;
-  commands?: ZintlWindowCommandSet;
 }
 
-export interface ZintlWindowCommandEvent {
-  windowId: number;
-  commandId: string;
+export interface ZintlWindowClickEvent extends
+  CustomEvent<{
+    type: "click";
+    windowId: number;
+  }> {
+  readonly windowId: number;
 }
 
-export interface ZintlWindowLifecycleEvent {
-  windowId: number;
-}
-
-export type ZintlWindowCommandListener = (
-  event: ZintlWindowCommandEvent,
+export type ZintlWindowClickListener = (
+  event: ZintlWindowClickEvent,
 ) => void;
+
+export interface ZintlWindowLifecycleEvent extends
+  CustomEvent<{
+    type: "onload" | "willclose";
+    windowId: number;
+  }> {
+  readonly windowId: number;
+}
+
 export type ZintlWindowLifecycleListener = (
   event: ZintlWindowLifecycleEvent,
 ) => void;
 
 export interface ZintlWindow {
   readonly id: number;
+  addEventListener(
+    type: "onload" | "willclose",
+    listener: ZintlWindowLifecycleListener | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  addEventListener(
+    type: "click",
+    listener: ZintlWindowClickListener | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: "onload" | "willclose",
+    listener: ZintlWindowLifecycleListener | null,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: "click",
+    listener: ZintlWindowClickListener | null,
+    options?: boolean | EventListenerOptions,
+  ): void;
   setBounds(bounds: ZintlWindowBounds): Promise<void>;
   setSize(size: ZintlWindowSize): Promise<void>;
   setPosition(position: ZintlWindowPosition): Promise<void>;
-  setCommands(commands: ZintlWindowCommandSet): Promise<void>;
-  onCommand(listener: ZintlWindowCommandListener): () => void;
-  onCreated(listener: ZintlWindowLifecycleListener): () => void;
-  onWillClose(listener: ZintlWindowLifecycleListener): () => void;
 }
 
-export interface ZintlWindowAPI {
-  create(options?: ZintlWindowCreateOptions): Promise<ZintlWindow>;
-}
+const windows = new SafeMap<number, NativeZintlWindow>();
+const pendingEvents = new SafeMap<number, Event[]>();
 
-interface ZintlGlobal {
-  window?: ZintlWindowAPI;
-}
-
-type ZintlGlobalThis = typeof globalThis & {
-  Zintl?: ZintlGlobal;
-};
-
-class NativeZintlWindow implements ZintlWindow {
+class NativeZintlWindow extends EventTarget implements ZintlWindow {
   #id: number;
 
   constructor(id: number) {
+    super();
     this.#id = id;
   }
 
   get id(): number {
     return this.#id;
+  }
+
+  override addEventListener(
+    type: "onload" | "willclose",
+    listener: ZintlWindowLifecycleListener | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  override addEventListener(
+    type: "click",
+    listener: ZintlWindowClickListener | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  override addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  override addEventListener(
+    type: string,
+    listener:
+      | EventListenerOrEventListenerObject
+      | ZintlWindowClickListener
+      | ZintlWindowLifecycleListener
+      | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
+    super.addEventListener(type, listener as EventListener, options);
+  }
+
+  override removeEventListener(
+    type: "onload" | "willclose",
+    listener: ZintlWindowLifecycleListener | null,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  override removeEventListener(
+    type: "click",
+    listener: ZintlWindowClickListener | null,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  override removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  override removeEventListener(
+    type: string,
+    listener:
+      | EventListenerOrEventListenerObject
+      | ZintlWindowClickListener
+      | ZintlWindowLifecycleListener
+      | null,
+    options?: boolean | EventListenerOptions,
+  ): void {
+    super.removeEventListener(type, listener as EventListener, options);
   }
 
   async setBounds(bounds: ZintlWindowBounds): Promise<void> {
@@ -121,52 +169,44 @@ class NativeZintlWindow implements ZintlWindow {
   async setPosition(position: ZintlWindowPosition): Promise<void> {
     await op_zintl_window_set_position(this.#id, position);
   }
-
-  async setCommands(commands: ZintlWindowCommandSet): Promise<void> {
-    await op_zintl_window_set_commands(this.#id, commands);
-  }
-
-  onCommand(listener: ZintlWindowCommandListener): () => void {
-    const windowId = this.#id;
-    return eventBus.subscribe("window.command", (event) => {
-      if (event.windowId === windowId) {
-        listener({ windowId: event.windowId, commandId: event.commandId });
-      }
-    });
-  }
-
-  onCreated(listener: ZintlWindowLifecycleListener): () => void {
-    const windowId = this.#id;
-    return eventBus.subscribe("window.created", (event) => {
-      if (event.windowId === windowId) {
-        listener({ windowId: event.windowId });
-      }
-    });
-  }
-
-  onWillClose(listener: ZintlWindowLifecycleListener): () => void {
-    const windowId = this.#id;
-    return eventBus.subscribe("window.willClose", (event) => {
-      if (event.windowId === windowId) {
-        listener({ windowId: event.windowId });
-      }
-    });
-  }
 }
 
-const windowApi: ZintlWindowAPI = {
-  async create(options?: ZintlWindowCreateOptions): Promise<ZintlWindow> {
-    return new NativeZintlWindow(await op_zintl_window_create(options ?? null));
-  },
-};
+export function createZintlWindow(id: number): ZintlWindow {
+  const window = new NativeZintlWindow(id);
+  MapPrototypeSet(windows, id, window);
+  const pending = MapPrototypeGet(pendingEvents, id);
+  if (pending !== undefined) {
+    MapPrototypeDelete(pendingEvents, id);
+    queueMicrotask(() => {
+      queueMicrotask(() => {
+        for (const event of new SafeArrayIterator(pending)) {
+          window.dispatchEvent(event);
+        }
+      });
+    });
+  }
+  return window;
+}
 
-const zintlGlobalThis = globalThis as ZintlGlobalThis;
-const Zintl = zintlGlobalThis.Zintl ?? {};
-Zintl.window = windowApi;
+export function dispatchZintlWindowEvent(
+  windowId: number,
+  event: Event,
+): void {
+  const window = MapPrototypeGet(windows, windowId);
+  if (window !== undefined) {
+    window.dispatchEvent(event);
+    return;
+  }
 
-ObjectDefineProperty(globalThis, "Zintl", {
-  value: Zintl,
-  configurable: true,
-  enumerable: false,
-  writable: true,
-});
+  let pending = MapPrototypeGet(pendingEvents, windowId);
+  if (pending === undefined) {
+    pending = [];
+    MapPrototypeSet(pendingEvents, windowId, pending);
+  }
+  ArrayPrototypePush(pending, event);
+}
+
+export function forgetZintlWindow(windowId: number): void {
+  MapPrototypeDelete(windows, windowId);
+  MapPrototypeDelete(pendingEvents, windowId);
+}

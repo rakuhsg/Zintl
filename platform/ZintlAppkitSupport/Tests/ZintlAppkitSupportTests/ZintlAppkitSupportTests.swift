@@ -9,6 +9,13 @@ private final class WindowCallbackProbe {
   var didCreate = 0
   var willClose = 0
   var didClose = 0
+  var didClick = 0
+  var releases = 0
+}
+
+@MainActor
+private final class CommandCallbackProbe {
+  var commandIDs: [String] = []
 }
 
 private func withProbe(
@@ -23,7 +30,7 @@ private func withProbe(
 
 /// Verifies native window callbacks and application state ownership across destruction.
 @MainActor
-@Test func nativeOwnershipAndLifecycle() {
+@Test func nativeOwnershipAndLifecycle() throws {
   let probe = WindowCallbackProbe()
   let retainedProbe = Unmanaged.passRetained(probe)
   var windowCallbacks = WindowCallback(
@@ -35,6 +42,16 @@ private func withProbe(
     },
     did_close: { userData in
       withProbe(userData) { $0.didClose += 1 }
+    },
+    did_click: { userData in
+      withProbe(userData) { $0.didClick += 1 }
+    },
+    release: { userData in
+      withProbe(userData) { $0.releases += 1 }
+      guard let userData else {
+        return
+      }
+      Unmanaged<WindowCallbackProbe>.fromOpaque(userData).release()
     }
   )
   let window = withUnsafePointer(to: &windowCallbacks) {
@@ -42,11 +59,18 @@ private func withProbe(
   }
 
   #expect(probe.didCreate == 1)
+  let nativeWindow = Unmanaged<ZintlWindow>.fromOpaque(window).takeUnretainedValue()
+  #expect(!nativeWindow.window.isReleasedWhenClosed)
+  nativeWindow.dispatchClickIfOpen()
+  let closeButton = try #require(nativeWindow.window.standardWindowButton(.closeButton))
+  closeButton.performClick(nil)
+  nativeWindow.dispatchClickIfOpen()
+  nativeWindow.close()
   zintlAppkitDestroyWindow(ptr: window)
   #expect(probe.willClose == 1)
   #expect(probe.didClose == 1)
-
-  retainedProbe.release()
+  #expect(probe.didClick == 1)
+  #expect(probe.releases == 1)
 
   var callbacks = AppCallback(
     on_launch: { _ in },
@@ -61,6 +85,42 @@ private func withProbe(
 
   #expect(NSApp.delegate != nil)
   #expect(ZintlAppkitSupportState.shared.state != nil)
+
+  let commandProbe = CommandCallbackProbe()
+  let retainedCommandProbe = Unmanaged.passRetained(commandProbe)
+  let commandsJSON = """
+    {
+      "menus": [
+        {
+          "title": "File",
+          "items": [{ "id": "file.new", "title": "New" }]
+        }
+      ]
+    }
+    """
+  commandsJSON.withCString { commandsJSON in
+    zintlAppkitSetCommands(
+      commandsJson: commandsJSON,
+      userData: retainedCommandProbe.toOpaque(),
+      callback: { userData, commandID in
+        guard let userData, let commandID else {
+          return
+        }
+        let probe = Unmanaged<CommandCallbackProbe>.fromOpaque(userData).takeUnretainedValue()
+        probe.commandIDs.append(String(cString: commandID))
+      },
+      release: { userData in
+        guard let userData else {
+          return
+        }
+        Unmanaged<CommandCallbackProbe>.fromOpaque(userData).release()
+      }
+    )
+  }
+
+  let commandItem = NSApp.mainMenu!.items.first!.submenu!.items.first!
+  #expect(NSApp.sendAction(commandItem.action!, to: commandItem.target, from: commandItem))
+  #expect(commandProbe.commandIDs == ["file.new"])
 
   zintlAppkitDestroy()
 
