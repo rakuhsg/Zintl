@@ -1,3 +1,9 @@
+use std::cell::RefCell;
+use std::ffi::{CStr, CString, c_char, c_void};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
+
+use crate::ffi;
 #[derive(Clone, Debug, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandSet {
@@ -165,9 +171,3 @@ mod tests {
         assert_eq!(json["appMenu"]["items"][0]["role"], "quit");
     }
 }
-use std::cell::RefCell;
-use std::ffi::{CStr, CString, c_char, c_void};
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::rc::Rc;
-
-use crate::ffi;
