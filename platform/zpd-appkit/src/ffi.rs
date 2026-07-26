@@ -15,8 +15,10 @@ pub struct WindowCallback {
     pub will_close: unsafe extern "C" fn(*const c_void),
     pub did_close: unsafe extern "C" fn(*const c_void),
     pub did_click: unsafe extern "C" fn(*const c_void),
+    pub release: WindowRelease,
 }
 
+pub type WindowRelease = unsafe extern "C" fn(user_data: *const c_void);
 pub type CommandCallback =
     unsafe extern "C" fn(user_data: *const c_void, command_id: *const c_char);
 pub type CommandRelease = unsafe extern "C" fn(user_data: *const c_void);

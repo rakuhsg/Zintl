@@ -3,6 +3,13 @@ fn main() {
     {
         use std::process::Command;
 
+        println!(
+            "cargo:rerun-if-changed=../../platform/ZintlAppkitSupport/Sources/ZintlAppkitSupport/ZintlAppkitSupport.swift"
+        );
+        println!(
+            "cargo:rerun-if-changed=../../platform/ZintlAppkitSupport/Sources/ZintlAppkitSupportTypes/include/zintlappkit.h"
+        );
+
         // Get a path of Swift Runtime Library
         let path = String::from_utf8(
             Command::new("xcode-select")

@@ -22,11 +22,7 @@ const willClose = new Promise((resolve) => {
   appWindow.addEventListener("willclose", listener);
 });
 
-await withTimeout(willClose, 30_000, "timed out waiting for willclose");
-
-// didClose is intentionally not exposed to JS. Retry one operation until the
-// native message loop has processed didClose and removed the Window.
-await waitForWindowDoesNotExist();
+await willClose;
 
 await assertWindowDoesNotExist(
   "setSize",
@@ -56,47 +52,4 @@ async function assertWindowDoesNotExist(name, promise) {
   }
 
   throw new Error(`${name} must reject after window close`);
-}
-
-async function waitForWindowDoesNotExist() {
-  const deadline = Date.now() + 2_000;
-  let lastError;
-
-  while (Date.now() < deadline) {
-    try {
-      await appWindow.setSize({ width: 640, height: 420 });
-    } catch (error) {
-      const message = String(error?.message ?? error);
-      if (message.includes(`window ${appWindow.id} does not exist`)) {
-        console.log(`window removed after close: ${message}`);
-        return;
-      }
-      lastError = error;
-    }
-    await delay(50);
-  }
-
-  if (lastError !== undefined) {
-    throw lastError;
-  }
-  throw new Error("window remained usable after close");
-}
-
-function delay(ms) {
-  return new Promise((resolve) => {
-    globalThis.setTimeout(resolve, ms);
-  });
-}
-
-function withTimeout(promise, ms, message) {
-  let timeoutId;
-  const timeout = new Promise((_, reject) => {
-    timeoutId = globalThis.setTimeout(() => {
-      reject(new Error(message));
-    }, ms);
-  });
-
-  return Promise.race([promise, timeout]).finally(() => {
-    globalThis.clearTimeout(timeoutId);
-  });
 }

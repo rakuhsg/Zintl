@@ -25,12 +25,14 @@ typedef void (*ZintlCommandCallback)(
     const char* command_id
 );
 typedef void (*ZintlCommandRelease)(const void* user_data);
+typedef void (*ZintlWindowRelease)(const void* user_data);
 
 typedef struct {
     void (*did_create)(const void* user_data);
     void (*will_close)(const void* user_data);
     void (*did_close)(const void* user_data);
     void (*did_click)(const void* user_data);
+    ZintlWindowRelease release;
 } WindowCallback;
 
 void* zintlappkit_create_window(

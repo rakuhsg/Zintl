@@ -331,6 +331,7 @@ class ZintlWindow: NSObject, NSWindowDelegate {
   var window: NSWindow
   var userData: UnsafeRawPointer?
   var callback: WindowCallback?
+  var releaseCallback: ZintlWindowRelease?
   var clickMonitor: Any?
   var isClosed = false
 
@@ -338,12 +339,14 @@ class ZintlWindow: NSObject, NSWindowDelegate {
   init(userData: UnsafeRawPointer?, callback: WindowCallback?) {
     self.userData = userData
     self.callback = callback
+    self.releaseCallback = callback?.release
     self.window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 480, height: 300),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false
     )
+    self.window.isReleasedWhenClosed = false
     super.init()
     self.window.delegate = self
     self.clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) {
@@ -351,7 +354,7 @@ class ZintlWindow: NSObject, NSWindowDelegate {
       guard let self, !self.isClosed, event.window === self.window else {
         return event
       }
-      self.callback?.did_click(self.userData)
+      self.dispatchClickIfOpen()
       return event
     }
     self.callback?.did_create(self.userData)
@@ -360,6 +363,7 @@ class ZintlWindow: NSObject, NSWindowDelegate {
   @MainActor
   deinit {
     self.close()
+    self.releaseUserData()
   }
 
   @MainActor
@@ -406,10 +410,27 @@ class ZintlWindow: NSObject, NSWindowDelegate {
       NSEvent.removeMonitor(clickMonitor)
       self.clickMonitor = nil
     }
+    let callback = self.callback
+    self.callback = nil
     callback?.will_close(self.userData)
     callback?.did_close(self.userData)
-    self.callback = nil
+  }
+
+  @MainActor
+  func dispatchClickIfOpen() {
+    guard !self.isClosed else {
+      return
+    }
+    self.callback?.did_click(self.userData)
+  }
+
+  @MainActor
+  func releaseUserData() {
+    let release = self.releaseCallback
+    self.releaseCallback = nil
+    let userData = self.userData
     self.userData = nil
+    release?(userData)
   }
 
   @MainActor
@@ -555,7 +576,9 @@ func zintlAppkitSetCommands(
 @_cdecl("zintlappkit_destroy_window")
 func zintlAppkitDestroyWindow(ptr: UnsafeRawPointer) {
   let window = Unmanaged<ZintlWindow>.fromOpaque(ptr)
-  window.takeUnretainedValue().close()
+  let value = window.takeUnretainedValue()
+  value.close()
+  value.releaseUserData()
   window.release()
 }
 

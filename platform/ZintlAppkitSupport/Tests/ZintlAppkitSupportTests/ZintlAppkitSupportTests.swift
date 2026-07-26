@@ -10,6 +10,7 @@ private final class WindowCallbackProbe {
   var willClose = 0
   var didClose = 0
   var didClick = 0
+  var releases = 0
 }
 
 @MainActor
@@ -29,7 +30,7 @@ private func withProbe(
 
 /// Verifies native window callbacks and application state ownership across destruction.
 @MainActor
-@Test func nativeOwnershipAndLifecycle() {
+@Test func nativeOwnershipAndLifecycle() throws {
   let probe = WindowCallbackProbe()
   let retainedProbe = Unmanaged.passRetained(probe)
   var windowCallbacks = WindowCallback(
@@ -44,6 +45,13 @@ private func withProbe(
     },
     did_click: { userData in
       withProbe(userData) { $0.didClick += 1 }
+    },
+    release: { userData in
+      withProbe(userData) { $0.releases += 1 }
+      guard let userData else {
+        return
+      }
+      Unmanaged<WindowCallbackProbe>.fromOpaque(userData).release()
     }
   )
   let window = withUnsafePointer(to: &windowCallbacks) {
@@ -51,11 +59,18 @@ private func withProbe(
   }
 
   #expect(probe.didCreate == 1)
+  let nativeWindow = Unmanaged<ZintlWindow>.fromOpaque(window).takeUnretainedValue()
+  #expect(!nativeWindow.window.isReleasedWhenClosed)
+  nativeWindow.dispatchClickIfOpen()
+  let closeButton = try #require(nativeWindow.window.standardWindowButton(.closeButton))
+  closeButton.performClick(nil)
+  nativeWindow.dispatchClickIfOpen()
+  nativeWindow.close()
   zintlAppkitDestroyWindow(ptr: window)
   #expect(probe.willClose == 1)
   #expect(probe.didClose == 1)
-
-  retainedProbe.release()
+  #expect(probe.didClick == 1)
+  #expect(probe.releases == 1)
 
   var callbacks = AppCallback(
     on_launch: { _ in },

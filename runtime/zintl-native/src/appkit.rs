@@ -381,6 +381,11 @@ impl<M: Send + Sync + 'static, H: MessageHandler<M> + 'static> AppkitMessageLoop
     }
 
     fn dispatch_window_event(self: &Arc<Self>, window_id: WindowId, kind: WindowEventKind) {
+        if matches!(kind, WindowEventKind::Click) && self.window_manager.window(window_id).is_none()
+        {
+            return;
+        }
+
         if matches!(kind, WindowEventKind::DidClose) {
             self.window_manager.remove_window(window_id);
         }

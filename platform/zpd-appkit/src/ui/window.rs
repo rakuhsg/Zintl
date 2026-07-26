@@ -53,7 +53,8 @@ unsafe fn clone_window_state<D>(user_data: *const c_void) -> Option<Rc<WindowSta
     }
 
     // SAFETY: Native code owns the strong reference transferred during window
-    // creation until the did-close callback.
+    // creation until it invokes the release callback while destroying the
+    // native window handle.
     unsafe { Rc::increment_strong_count(state) };
     // SAFETY: The increment above created the strong reference returned here.
     Some(unsafe { Rc::from_raw(state) })
@@ -85,8 +86,20 @@ unsafe extern "C" fn did_create<D: WindowDelegate>(user_data: *const c_void) {
 }
 
 unsafe extern "C" fn did_click<D: WindowDelegate>(user_data: *const c_void) {
-    // SAFETY: This is the `WindowState<D>` pointer passed to native creation.
-    unsafe { invoke_delegate::<D>(user_data, WindowDelegate::did_click) };
+    // SAFETY: Native code owns its Rc strong reference until window
+    // destruction, so the pointer remains valid after did-close.
+    let Some(state) = (unsafe { clone_window_state::<D>(user_data) }) else {
+        return;
+    };
+    if state.closed.get() {
+        return;
+    }
+    abort_on_panic(|| {
+        let Ok(mut delegate) = state.delegate.try_borrow_mut() else {
+            std::process::abort();
+        };
+        delegate.did_click();
+    });
 }
 
 unsafe extern "C" fn will_close<D: WindowDelegate>(user_data: *const c_void) {
@@ -115,9 +128,16 @@ unsafe extern "C" fn did_close<D: WindowDelegate>(user_data: *const c_void) {
         };
         delegate.did_close();
     });
+}
 
-    // SAFETY: This consumes the native side's strong reference exactly once,
-    // when Swift permanently clears the window callback.
+unsafe extern "C" fn release_window_state<D>(user_data: *const c_void) {
+    if user_data.is_null() {
+        return;
+    }
+
+    // SAFETY: This consumes the strong reference transferred during native
+    // window creation. Swift invokes this callback exactly once when the
+    // native window handle is destroyed.
     unsafe { drop(Rc::from_raw(user_data.cast::<WindowState<D>>())) };
 }
 
@@ -141,6 +161,7 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
             will_close: will_close::<D>,
             did_close: did_close::<D>,
             did_click: did_click::<D>,
+            release: release_window_state::<D>,
         };
 
         // SAFETY: The Rc-backed callback state has a stable address. Native
@@ -226,6 +247,69 @@ impl<D: WindowDelegate> Drop for Window<'_, D> {
         // SAFETY: The native handle is released exactly once, before Rust drops
         // the callback state, and this type can only be dropped on main.
         unsafe { ffi::zintlappkit_destroy_window(self.raw.as_ptr()) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        WindowDelegate, WindowState, did_click, did_close, release_window_state, will_close,
+    };
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    struct CallbackProbe {
+        clicks: Rc<Cell<usize>>,
+        will_close: Rc<Cell<usize>>,
+        did_close: Rc<Cell<usize>>,
+    }
+
+    impl WindowDelegate for CallbackProbe {
+        fn did_click(&mut self) {
+            self.clicks.set(self.clicks.get() + 1);
+        }
+
+        fn will_close(&mut self) {
+            self.will_close.set(self.will_close.get() + 1);
+        }
+
+        fn did_close(&mut self) {
+            self.did_close.set(self.did_close.get() + 1);
+        }
+    }
+
+    #[test]
+    fn callback_state_lives_until_release_and_ignores_clicks_after_close() {
+        let clicks = Rc::new(Cell::new(0));
+        let will_close_count = Rc::new(Cell::new(0));
+        let did_close_count = Rc::new(Cell::new(0));
+        let state = Rc::new(WindowState {
+            delegate: RefCell::new(CallbackProbe {
+                clicks: clicks.clone(),
+                will_close: will_close_count.clone(),
+                did_close: did_close_count.clone(),
+            }),
+            closed: Cell::new(false),
+        });
+        let native_state = Rc::into_raw(state.clone());
+
+        // SAFETY: `native_state` owns the transferred strong reference until
+        // the release callback at the end of this test.
+        unsafe {
+            did_click::<CallbackProbe>(native_state.cast());
+            will_close::<CallbackProbe>(native_state.cast());
+            did_click::<CallbackProbe>(native_state.cast());
+            did_close::<CallbackProbe>(native_state.cast());
+        }
+
+        assert_eq!(clicks.get(), 1);
+        assert_eq!(will_close_count.get(), 1);
+        assert_eq!(did_close_count.get(), 1);
+        assert_eq!(Rc::strong_count(&state), 2);
+
+        // SAFETY: This consumes the one strong reference transferred above.
+        unsafe { release_window_state::<CallbackProbe>(native_state.cast()) };
+        assert_eq!(Rc::strong_count(&state), 1);
     }
 }
 
