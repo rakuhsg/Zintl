@@ -10,7 +10,9 @@ use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
 use crate::{ffi, runloop::Application};
 
-use super::view::{AsView, ViewRef};
+#[cfg(feature = "wgpu")]
+use super::view::AsView;
+use super::view::ViewRef;
 
 /// Receives native window lifecycle notifications on the AppKit main thread.
 pub trait WindowDelegate: 'static {
