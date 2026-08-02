@@ -624,3 +624,10 @@ func zintlAppkitWgpuSurfaceMetalLayer(surface: UnsafeRawPointer) -> UnsafeMutabl
   let surface = Unmanaged<ZintlWgpuSurface>.fromOpaque(surface).takeUnretainedValue()
   return Unmanaged.passUnretained(surface.metalLayer).toOpaque()
 }
+
+@MainActor
+@_cdecl("zintlappkit_wgpu_surface_view")
+func zintlAppkitWgpuSurfaceView(surface: UnsafeRawPointer) -> UnsafeMutableRawPointer {
+  let surface = Unmanaged<ZintlWgpuSurface>.fromOpaque(surface).takeUnretainedValue()
+  return Unmanaged.passUnretained(surface.view).toOpaque()
+}

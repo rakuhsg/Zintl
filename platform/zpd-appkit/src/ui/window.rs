@@ -10,6 +10,8 @@ use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
 use crate::{ffi, runloop::Application};
 
+use super::view::{AsView, ViewRef};
+
 /// Receives native window lifecycle notifications on the AppKit main thread.
 pub trait WindowDelegate: 'static {
     fn did_create(&mut self) {}
@@ -223,6 +225,18 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
         Ok(())
     }
 
+    pub fn content_view(&self) -> Result<ViewRef<'_>, WindowError> {
+        self.ensure_open()?;
+        // SAFETY: The window owns its content view for the lifetime of this
+        // borrow and this method runs on the AppKit main thread.
+        let raw = unsafe { ffi::zintlappkit_window_content_view(self.raw.as_ptr()) };
+        let Some(_) = NonNull::new(raw) else {
+            return Err(WindowError::NativeCreationFailed);
+        };
+        // SAFETY: Null was checked above and the borrow is tied to `self`.
+        Ok(unsafe { ViewRef::from_raw(raw) })
+    }
+
     #[cfg(feature = "wgpu")]
     pub fn create_wgpu_surface(
         &self,
@@ -363,6 +377,17 @@ impl WgpuSurface<'_> {
                 _surface: PhantomData,
             })
             .ok_or(WindowError::NativeCreationFailed)
+    }
+}
+
+#[cfg(feature = "wgpu")]
+impl AsView for WgpuSurface<'_> {
+    fn as_view(&self) -> ViewRef<'_> {
+        // SAFETY: The surface owns its NSView and the returned borrow cannot
+        // outlive the surface wrapper.
+        let raw = unsafe { ffi::zintlappkit_wgpu_surface_view(self.raw.as_ptr()) };
+        // SAFETY: A live WGPU surface always owns a native view.
+        unsafe { ViewRef::from_raw(raw) }
     }
 }
 

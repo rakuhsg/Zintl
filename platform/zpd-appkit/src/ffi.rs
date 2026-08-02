@@ -19,6 +19,8 @@ pub struct WindowCallback {
 }
 
 pub type WindowRelease = unsafe extern "C" fn(user_data: *const c_void);
+pub type ControlAction = unsafe extern "C" fn(user_data: *const c_void);
+pub type ControlRelease = unsafe extern "C" fn(user_data: *const c_void);
 pub type CommandCallback =
     unsafe extern "C" fn(user_data: *const c_void, command_id: *const c_char);
 pub type CommandRelease = unsafe extern "C" fn(user_data: *const c_void);
@@ -36,6 +38,45 @@ unsafe extern "C" {
     pub fn zintlappkit_window_set_bounds(ptr: *const c_void, bounds: Rect);
     pub fn zintlappkit_window_set_size(ptr: *const c_void, width: f64, height: f64);
     pub fn zintlappkit_window_set_position(ptr: *const c_void, x: f64, y: f64);
+    pub fn zintlappkit_window_content_view(ptr: *const c_void) -> *mut c_void;
+    pub fn zintlappkit_create_view(frame: Rect) -> *mut c_void;
+    pub fn zintlappkit_release_view(view: *const c_void);
+    pub fn zintlappkit_view_add_subview(parent: *const c_void, child: *const c_void);
+    pub fn zintlappkit_view_remove_from_superview(view: *const c_void);
+    pub fn zintlappkit_view_set_frame(view: *const c_void, frame: Rect);
+    pub fn zintlappkit_view_set_translates_autoresizing_mask_into_constraints(
+        view: *const c_void,
+        enabled: bool,
+    );
+    pub fn zintlappkit_create_button(title: *const c_char) -> *mut c_void;
+    pub fn zintlappkit_button_set_title(button: *const c_void, title: *const c_char);
+    pub fn zintlappkit_button_set_action(
+        button: *const c_void,
+        user_data: *const c_void,
+        action: ControlAction,
+        release: ControlRelease,
+    );
+    pub fn zintlappkit_button_clear_action(button: *const c_void);
+    pub fn zintlappkit_create_text_field(value: *const c_char, label: bool) -> *mut c_void;
+    pub fn zintlappkit_text_field_set_string_value(text_field: *const c_void, value: *const c_char);
+    pub fn zintlappkit_text_field_set_placeholder_string(
+        text_field: *const c_void,
+        value: *const c_char,
+    );
+    pub fn zintlappkit_text_field_set_editable(text_field: *const c_void, editable: bool);
+    pub fn zintlappkit_text_field_set_selectable(text_field: *const c_void, selectable: bool);
+    pub fn zintlappkit_layout_constraint_create(
+        first_view: *const c_void,
+        first_attribute: i32,
+        relation: i32,
+        second_view: *const c_void,
+        second_attribute: i32,
+        multiplier: f64,
+        constant: f64,
+    ) -> *mut c_void;
+    pub fn zintlappkit_layout_constraint_set_active(constraint: *const c_void, active: bool);
+    pub fn zintlappkit_layout_constraint_set_priority(constraint: *const c_void, priority: f32);
+    pub fn zintlappkit_release_layout_constraint(constraint: *const c_void);
     pub fn zintlappkit_set_commands(
         commands_json: *const c_char,
         user_data: *const c_void,
@@ -57,6 +98,8 @@ unsafe extern "C" {
     );
     #[cfg(feature = "wgpu")]
     pub fn zintlappkit_wgpu_surface_metal_layer(surface: *const c_void) -> *mut c_void;
+    #[cfg(feature = "wgpu")]
+    pub fn zintlappkit_wgpu_surface_view(surface: *const c_void) -> *mut c_void;
 
     pub fn pthread_main_np() -> std::ffi::c_int;
 }

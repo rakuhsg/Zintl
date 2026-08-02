@@ -10,9 +10,7 @@ fn main() {
 
     println!(
         "cargo:rerun-if-changed={}",
-        support_dir
-            .join("Sources/ZintlAppkitSupport/ZintlAppkitSupport.swift")
-            .display()
+        support_dir.join("Sources/ZintlAppkitSupport").display()
     );
     println!(
         "cargo:rerun-if-changed={}",

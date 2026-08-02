@@ -18,6 +18,12 @@ private final class CommandCallbackProbe {
   var commandIDs: [String] = []
 }
 
+@MainActor
+private final class ControlActionProbe {
+  var actions = 0
+  var releases = 0
+}
+
 private func withProbe(
   _ userData: UnsafeRawPointer?,
   body: (WindowCallbackProbe) -> Void
@@ -126,4 +132,75 @@ private func withProbe(
 
   #expect(NSApp.delegate == nil)
   #expect(ZintlAppkitSupportState.shared.state == nil)
+}
+
+/// Verifies native view ownership, target/action, and Auto Layout bridging.
+@MainActor
+@Test func nativeControlsAndAutoLayout() throws {
+  let parent = zintlAppkitCreateView(frame: ZintlRect(x: 0, y: 0, width: 320, height: 200))
+  let button = "Save".withCString { zintlAppkitCreateButton(title: $0) }
+  let textField = "".withCString {
+    zintlAppkitCreateTextField(value: $0, label: false)
+  }
+
+  zintlAppkitViewAddSubview(parent: parent, child: button)
+  zintlAppkitViewAddSubview(parent: parent, child: textField)
+  zintlAppkitViewSetTranslatesAutoresizingMaskIntoConstraints(view: button, enabled: false)
+  zintlAppkitViewSetTranslatesAutoresizingMaskIntoConstraints(view: textField, enabled: false)
+
+  let probe = ControlActionProbe()
+  let retainedProbe = Unmanaged.passRetained(probe)
+  zintlAppkitButtonSetAction(
+    button: button,
+    userData: retainedProbe.toOpaque(),
+    action: { userData in
+      guard let userData else {
+        return
+      }
+      let probe = Unmanaged<ControlActionProbe>.fromOpaque(userData).takeUnretainedValue()
+      probe.actions += 1
+    },
+    release: { userData in
+      guard let userData else {
+        return
+      }
+      let retainedProbe = Unmanaged<ControlActionProbe>.fromOpaque(userData)
+      retainedProbe.takeUnretainedValue().releases += 1
+      retainedProbe.release()
+    }
+  )
+
+  let constraint = zintlAppkitLayoutConstraintCreate(
+    firstView: button,
+    firstAttribute: Int32(NSLayoutConstraint.Attribute.leading.rawValue),
+    relation: Int32(NSLayoutConstraint.Relation.equal.rawValue),
+    secondView: parent,
+    secondAttribute: Int32(NSLayoutConstraint.Attribute.leading.rawValue),
+    multiplier: 1,
+    constant: 20
+  )
+  zintlAppkitLayoutConstraintSetActive(constraint: constraint, active: true)
+
+  var nativeButton: NSButton? = Unmanaged<NSButton>.fromOpaque(button).takeUnretainedValue()
+  var nativeConstraint: NSLayoutConstraint? =
+    Unmanaged<NSLayoutConstraint>.fromOpaque(constraint).takeUnretainedValue()
+  #expect(nativeButton?.superview != nil)
+  #expect(nativeConstraint?.isActive == true)
+  #expect(nativeConstraint?.constant == 20)
+
+  nativeButton?.performClick(nil)
+  #expect(probe.actions == 1)
+  nativeButton = nil
+  nativeConstraint = nil
+
+  zintlAppkitLayoutConstraintSetActive(constraint: constraint, active: false)
+  zintlAppkitReleaseLayoutConstraint(constraint: constraint)
+  zintlAppkitReleaseView(view: button)
+  zintlAppkitReleaseView(view: textField)
+  #expect(probe.releases == 0)
+  zintlAppkitButtonClearAction(button: button)
+  #expect(probe.releases == 1)
+  zintlAppkitViewRemoveFromSuperview(view: button)
+  zintlAppkitViewRemoveFromSuperview(view: textField)
+  zintlAppkitReleaseView(view: parent)
 }

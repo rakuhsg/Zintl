@@ -2,7 +2,8 @@ use std::error::Error;
 
 use zpd_appkit::runloop::Application;
 use zpd_appkit::ui::{
-    CommandItem, CommandMenu, CommandModifier, CommandRole, CommandSet, WindowAppMenu,
+    AsView, Button, CommandItem, CommandMenu, CommandModifier, CommandRole, CommandSet,
+    LayoutConstraint, TextField, WindowAppMenu,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -15,6 +16,48 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let window = application.create_window(())?;
     window.set_size(640.0, 400.0)?;
+
+    let content = window.content_view()?;
+    let label = TextField::label_with_string(&application, "Name")?;
+    let input = TextField::with_string(&application, "")?;
+    let button = Button::with_title(&application, "Save")?;
+
+    input.set_placeholder_string(Some("Your name"))?;
+    button.set_action(|| println!("Save button clicked"));
+
+    content.add_subview(&label);
+    content.add_subview(&input);
+    content.add_subview(&button);
+
+    label.set_translates_autoresizing_mask_into_constraints(false);
+    input.set_translates_autoresizing_mask_into_constraints(false);
+    button.set_translates_autoresizing_mask_into_constraints(false);
+
+    let constraints = [
+        label
+            .leading_anchor()
+            .constraint_equal_to(content.leading_anchor(), 20.0),
+        label
+            .center_y_anchor()
+            .constraint_equal_to(input.center_y_anchor(), 0.0),
+        input
+            .leading_anchor()
+            .constraint_equal_to(label.trailing_anchor(), 8.0),
+        input
+            .trailing_anchor()
+            .constraint_equal_to(content.trailing_anchor(), -20.0),
+        input
+            .top_anchor()
+            .constraint_equal_to(content.top_anchor(), 20.0),
+        button
+            .top_anchor()
+            .constraint_equal_to(input.bottom_anchor(), 12.0),
+        button
+            .trailing_anchor()
+            .constraint_equal_to(input.trailing_anchor(), 0.0),
+    ];
+    LayoutConstraint::activate(&constraints);
+
     window.show()?;
 
     application.run();

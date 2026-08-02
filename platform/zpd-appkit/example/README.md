@@ -1,8 +1,9 @@
 # zpd-appkit example
 
 This example installs an application menu and a custom **Example** menu, then
-creates and shows an AppKit window. Selecting **Example > Print Hello** prints a
-message to the terminal.
+creates and shows an AppKit window with an `NSTextField` label, editable text
+field, and `NSButton` laid out using Auto Layout. Selecting **Example > Print
+Hello** or clicking **Save** prints a message to the terminal.
 
 Run it from the repository root on macOS:
 
