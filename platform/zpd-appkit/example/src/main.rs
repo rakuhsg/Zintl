@@ -22,8 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input = TextField::with_string(&application, "")?;
     let button = Button::with_title(&application, "Save")?;
 
-    input.set_placeholder_string(Some("Your name"))?;
-    button.set_action(|| println!("Save button clicked"));
+    input.set_placeholder_string(Some("Your name"));
 
     content.add_subview(&label);
     content.add_subview(&input);
@@ -57,6 +56,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             .constraint_equal_to(input.trailing_anchor(), 0.0),
     ];
     LayoutConstraint::activate(&constraints);
+    drop(constraints);
+
+    button.set_action(move || println!("{}", input.string_value()));
 
     window.show()?;
 

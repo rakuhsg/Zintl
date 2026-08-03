@@ -1,6 +1,7 @@
-use std::ffi::{c_char, c_void};
+use std::ffi::c_void;
 
 use crate::geometry::Rect;
+use crate::string::{NativeOptionalString, NativeString, NativeStringCallback};
 
 #[repr(C)]
 pub struct AppCallback {
@@ -21,8 +22,7 @@ pub struct WindowCallback {
 pub type WindowRelease = unsafe extern "C" fn(user_data: *const c_void);
 pub type ControlAction = unsafe extern "C" fn(user_data: *const c_void);
 pub type ControlRelease = unsafe extern "C" fn(user_data: *const c_void);
-pub type CommandCallback =
-    unsafe extern "C" fn(user_data: *const c_void, command_id: *const c_char);
+pub type CommandCallback = unsafe extern "C" fn(user_data: *const c_void, command_id: NativeString);
 pub type CommandRelease = unsafe extern "C" fn(user_data: *const c_void);
 
 unsafe extern "C" {
@@ -48,8 +48,8 @@ unsafe extern "C" {
         view: *const c_void,
         enabled: bool,
     );
-    pub fn zintlappkit_create_button(title: *const c_char) -> *mut c_void;
-    pub fn zintlappkit_button_set_title(button: *const c_void, title: *const c_char);
+    pub fn zintlappkit_create_button(title: NativeString) -> *mut c_void;
+    pub fn zintlappkit_button_set_title(button: *const c_void, title: NativeString);
     pub fn zintlappkit_button_set_action(
         button: *const c_void,
         user_data: *const c_void,
@@ -57,11 +57,16 @@ unsafe extern "C" {
         release: ControlRelease,
     );
     pub fn zintlappkit_button_clear_action(button: *const c_void);
-    pub fn zintlappkit_create_text_field(value: *const c_char, label: bool) -> *mut c_void;
-    pub fn zintlappkit_text_field_set_string_value(text_field: *const c_void, value: *const c_char);
+    pub fn zintlappkit_create_text_field(value: NativeString, label: bool) -> *mut c_void;
+    pub fn zintlappkit_text_field_set_string_value(text_field: *const c_void, value: NativeString);
+    pub fn zintlappkit_text_field_get_string_value(
+        text_field: *const c_void,
+        user_data: *mut c_void,
+        callback: NativeStringCallback,
+    );
     pub fn zintlappkit_text_field_set_placeholder_string(
         text_field: *const c_void,
-        value: *const c_char,
+        value: NativeOptionalString,
     );
     pub fn zintlappkit_text_field_set_editable(text_field: *const c_void, editable: bool);
     pub fn zintlappkit_text_field_set_selectable(text_field: *const c_void, selectable: bool);
@@ -78,7 +83,7 @@ unsafe extern "C" {
     pub fn zintlappkit_layout_constraint_set_priority(constraint: *const c_void, priority: f32);
     pub fn zintlappkit_release_layout_constraint(constraint: *const c_void);
     pub fn zintlappkit_set_commands(
-        commands_json: *const c_char,
+        commands_json: NativeString,
         user_data: *const c_void,
         callback: CommandCallback,
         release: CommandRelease,

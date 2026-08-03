@@ -58,8 +58,8 @@ class ZintlAppDelegate: NSObject, NSApplicationDelegate {
     guard let callback = self.commandCallback else {
       return
     }
-    commandID.withCString { commandIDPtr in
-      callback(self.commandUserData, commandIDPtr)
+    withZintlString(commandID) { commandID in
+      callback(self.commandUserData, commandID)
     }
   }
 
@@ -549,12 +549,12 @@ func zintlAppkitWindowSetPosition(ptr: UnsafeRawPointer, x: Double, y: Double) {
 @MainActor
 @_cdecl("zintlappkit_set_commands")
 func zintlAppkitSetCommands(
-  commandsJson: UnsafePointer<CChar>,
+  commandsJson: ZintlString,
   userData: UnsafeRawPointer?,
   callback: ZintlCommandCallback?,
   release: ZintlCommandRelease?
 ) {
-  let json = String(cString: commandsJson)
+  let json = zintlString(commandsJson)
   guard let data = json.data(using: .utf8) else {
     release?(userData)
     return

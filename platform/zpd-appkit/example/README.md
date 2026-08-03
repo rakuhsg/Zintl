@@ -3,7 +3,7 @@
 This example installs an application menu and a custom **Example** menu, then
 creates and shows an AppKit window with an `NSTextField` label, editable text
 field, and `NSButton` laid out using Auto Layout. Selecting **Example > Print
-Hello** or clicking **Save** prints a message to the terminal.
+Hello** prints a greeting; clicking **Save** prints the text entered by the user.
 
 Run it from the repository root on macOS:
 

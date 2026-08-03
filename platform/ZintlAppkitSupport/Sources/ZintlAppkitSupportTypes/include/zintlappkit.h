@@ -21,14 +21,25 @@ typedef struct {
     double height;
 } ZintlRect;
 
+typedef struct {
+    const uint8_t* bytes;
+    uintptr_t length;
+} ZintlString;
+
+typedef struct {
+    ZintlString value;
+    bool is_some;
+} ZintlOptionalString;
+
 typedef void (*ZintlCommandCallback)(
     const void* user_data,
-    const char* command_id
+    ZintlString command_id
 );
 typedef void (*ZintlCommandRelease)(const void* user_data);
 typedef void (*ZintlWindowRelease)(const void* user_data);
 typedef void (*ZintlControlAction)(const void* user_data);
 typedef void (*ZintlControlRelease)(const void* user_data);
+typedef void (*ZintlStringCallback)(void* user_data, ZintlString value);
 
 typedef struct {
     void (*did_create)(const void* user_data);
@@ -56,8 +67,8 @@ void zintlappkit_view_set_translates_autoresizing_mask_into_constraints(
     const void* view,
     bool enabled
 );
-void* zintlappkit_create_button(const char* title);
-void zintlappkit_button_set_title(const void* button, const char* title);
+void* zintlappkit_create_button(ZintlString title);
+void zintlappkit_button_set_title(const void* button, ZintlString title);
 void zintlappkit_button_set_action(
     const void* button,
     const void* user_data,
@@ -65,9 +76,17 @@ void zintlappkit_button_set_action(
     ZintlControlRelease release
 );
 void zintlappkit_button_clear_action(const void* button);
-void* zintlappkit_create_text_field(const char* value, bool label);
-void zintlappkit_text_field_set_string_value(const void* text_field, const char* value);
-void zintlappkit_text_field_set_placeholder_string(const void* text_field, const char* value);
+void* zintlappkit_create_text_field(ZintlString value, bool label);
+void zintlappkit_text_field_set_string_value(const void* text_field, ZintlString value);
+void zintlappkit_text_field_get_string_value(
+    const void* text_field,
+    void* user_data,
+    ZintlStringCallback callback
+);
+void zintlappkit_text_field_set_placeholder_string(
+    const void* text_field,
+    ZintlOptionalString value
+);
 void zintlappkit_text_field_set_editable(const void* text_field, bool editable);
 void zintlappkit_text_field_set_selectable(const void* text_field, bool selectable);
 void* zintlappkit_layout_constraint_create(
@@ -83,7 +102,7 @@ void zintlappkit_layout_constraint_set_active(const void* constraint, bool activ
 void zintlappkit_layout_constraint_set_priority(const void* constraint, float priority);
 void zintlappkit_release_layout_constraint(const void* constraint);
 void zintlappkit_set_commands(
-    const char* commands_json,
+    ZintlString commands_json,
     const void* user_data,
     ZintlCommandCallback callback,
     ZintlCommandRelease release

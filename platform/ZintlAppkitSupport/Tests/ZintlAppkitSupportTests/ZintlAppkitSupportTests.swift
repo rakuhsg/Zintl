@@ -24,6 +24,11 @@ private final class ControlActionProbe {
   var releases = 0
 }
 
+@MainActor
+private final class StringValueProbe {
+  var utf8: [UInt8] = []
+}
+
 private func withProbe(
   _ userData: UnsafeRawPointer?,
   body: (WindowCallbackProbe) -> Void
@@ -32,6 +37,12 @@ private func withProbe(
     return
   }
   body(Unmanaged<WindowCallbackProbe>.fromOpaque(userData).takeUnretainedValue())
+}
+
+@Test func nativeStringPreservesUTF8AndInteriorNul() {
+  let expected = "AppKit ↔ Rust\0string"
+  let actual = withZintlString(expected, zintlString)
+  #expect(actual == expected)
 }
 
 /// Verifies native window callbacks and application state ownership across destruction.
@@ -104,16 +115,16 @@ private func withProbe(
       ]
     }
     """
-  commandsJSON.withCString { commandsJSON in
+  withZintlString(commandsJSON) { commandsJSON in
     zintlAppkitSetCommands(
       commandsJson: commandsJSON,
       userData: retainedCommandProbe.toOpaque(),
       callback: { userData, commandID in
-        guard let userData, let commandID else {
+        guard let userData else {
           return
         }
         let probe = Unmanaged<CommandCallbackProbe>.fromOpaque(userData).takeUnretainedValue()
-        probe.commandIDs.append(String(cString: commandID))
+        probe.commandIDs.append(zintlString(commandID))
       },
       release: { userData in
         guard let userData else {
@@ -138,8 +149,8 @@ private func withProbe(
 @MainActor
 @Test func nativeControlsAndAutoLayout() throws {
   let parent = zintlAppkitCreateView(frame: ZintlRect(x: 0, y: 0, width: 320, height: 200))
-  let button = "Save".withCString { zintlAppkitCreateButton(title: $0) }
-  let textField = "".withCString {
+  let button = withZintlString("Save") { zintlAppkitCreateButton(title: $0) }
+  let textField = withZintlString("") {
     zintlAppkitCreateTextField(value: $0, label: false)
   }
 
@@ -182,6 +193,8 @@ private func withProbe(
   zintlAppkitLayoutConstraintSetActive(constraint: constraint, active: true)
 
   var nativeButton: NSButton? = Unmanaged<NSButton>.fromOpaque(button).takeUnretainedValue()
+  var nativeTextField: NSTextField? =
+    Unmanaged<NSTextField>.fromOpaque(textField).takeUnretainedValue()
   var nativeConstraint: NSLayoutConstraint? =
     Unmanaged<NSLayoutConstraint>.fromOpaque(constraint).takeUnretainedValue()
   #expect(nativeButton?.superview != nil)
@@ -190,7 +203,25 @@ private func withProbe(
 
   nativeButton?.performClick(nil)
   #expect(probe.actions == 1)
+
+  let expectedValue = "こんにちは\0Zintl"
+  nativeTextField?.stringValue = expectedValue
+  let stringProbe = StringValueProbe()
+  zintlAppkitTextFieldGetStringValue(
+    textField: textField,
+    userData: Unmanaged.passUnretained(stringProbe).toOpaque(),
+    callback: { userData, value in
+      guard let userData else {
+        return
+      }
+      let probe = Unmanaged<StringValueProbe>.fromOpaque(userData).takeUnretainedValue()
+      probe.utf8 = Array(zintlString(value).utf8)
+    }
+  )
+  #expect(String(decoding: stringProbe.utf8, as: UTF8.self) == expectedValue)
+
   nativeButton = nil
+  nativeTextField = nil
   nativeConstraint = nil
 
   zintlAppkitLayoutConstraintSetActive(constraint: constraint, active: false)

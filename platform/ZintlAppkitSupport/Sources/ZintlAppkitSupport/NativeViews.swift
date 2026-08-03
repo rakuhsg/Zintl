@@ -109,15 +109,15 @@ func zintlAppkitViewSetTranslatesAutoresizingMaskIntoConstraints(
 
 @MainActor
 @_cdecl("zintlappkit_create_button")
-func zintlAppkitCreateButton(title: UnsafePointer<CChar>) -> UnsafeMutableRawPointer {
-  let button = ZintlButton(title: String(cString: title), target: nil, action: nil)
+func zintlAppkitCreateButton(title: ZintlString) -> UnsafeMutableRawPointer {
+  let button = ZintlButton(title: zintlString(title), target: nil, action: nil)
   return Unmanaged.passRetained(button).toOpaque()
 }
 
 @MainActor
 @_cdecl("zintlappkit_button_set_title")
-func zintlAppkitButtonSetTitle(button: UnsafeRawPointer, title: UnsafePointer<CChar>) {
-  zintlButton(button).title = String(cString: title)
+func zintlAppkitButtonSetTitle(button: UnsafeRawPointer, title: ZintlString) {
+  zintlButton(button).title = zintlString(title)
 }
 
 @MainActor
@@ -153,10 +153,10 @@ func zintlAppkitButtonClearAction(button: UnsafeRawPointer) {
 @MainActor
 @_cdecl("zintlappkit_create_text_field")
 func zintlAppkitCreateTextField(
-  value: UnsafePointer<CChar>,
+  value: ZintlString,
   label: Bool
 ) -> UnsafeMutableRawPointer {
-  let value = String(cString: value)
+  let value = zintlString(value)
   let textField =
     label
     ? NSTextField(labelWithString: value)
@@ -168,18 +168,30 @@ func zintlAppkitCreateTextField(
 @_cdecl("zintlappkit_text_field_set_string_value")
 func zintlAppkitTextFieldSetStringValue(
   textField: UnsafeRawPointer,
-  value: UnsafePointer<CChar>
+  value: ZintlString
 ) {
-  zintlTextField(textField).stringValue = String(cString: value)
+  zintlTextField(textField).stringValue = zintlString(value)
+}
+
+@MainActor
+@_cdecl("zintlappkit_text_field_get_string_value")
+func zintlAppkitTextFieldGetStringValue(
+  textField: UnsafeRawPointer,
+  userData: UnsafeMutableRawPointer?,
+  callback: ZintlStringCallback?
+) {
+  withZintlString(zintlTextField(textField).stringValue) { value in
+    callback?(userData, value)
+  }
 }
 
 @MainActor
 @_cdecl("zintlappkit_text_field_set_placeholder_string")
 func zintlAppkitTextFieldSetPlaceholderString(
   textField: UnsafeRawPointer,
-  value: UnsafePointer<CChar>?
+  value: ZintlOptionalString
 ) {
-  zintlTextField(textField).placeholderString = value.map(String.init(cString:))
+  zintlTextField(textField).placeholderString = zintlOptionalString(value)
 }
 
 @MainActor

@@ -6,4 +6,5 @@
 mod ffi;
 pub mod geometry;
 pub mod runloop;
+mod string;
 pub mod ui;

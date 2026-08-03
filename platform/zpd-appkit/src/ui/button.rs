@@ -1,10 +1,11 @@
 use std::cell::RefCell;
-use std::ffi::{CString, c_void};
+use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use crate::ffi;
 use crate::runloop::{Application, ApplicationDelegate};
+use crate::string::NativeString;
 
 use super::view::{AsView, OwnedView, ViewError, ViewRef};
 
@@ -39,27 +40,33 @@ unsafe extern "C" fn release_action<F>(user_data: *const c_void) {
 }
 
 /// Owns a strong reference to an AppKit `NSButton`.
-pub struct Button<'application> {
-    view: OwnedView<'application>,
+pub struct Button {
+    view: OwnedView,
 }
 
-impl<'application> Button<'application> {
+impl Button {
     pub fn with_title<D: ApplicationDelegate>(
-        _application: &'application Application<D>,
+        _application: &Application<D>,
         title: &str,
     ) -> Result<Self, ViewError> {
-        let title = CString::new(title).map_err(|_| ViewError::InteriorNul)?;
         // SAFETY: `Application` proves main-thread access and the returned
         // native button has a +1 retain count.
-        let view = unsafe { OwnedView::from_raw(ffi::zintlappkit_create_button(title.as_ptr()))? };
+        let view = unsafe {
+            OwnedView::from_raw(ffi::zintlappkit_create_button(NativeString::from_str(
+                title,
+            )))?
+        };
         Ok(Self { view })
     }
 
-    pub fn set_title(&self, title: &str) -> Result<(), ViewError> {
-        let title = CString::new(title).map_err(|_| ViewError::InteriorNul)?;
+    pub fn set_title(&self, title: &str) {
         // SAFETY: `self` owns a live NSButton on the AppKit main thread.
-        unsafe { ffi::zintlappkit_button_set_title(self.view.as_view().as_ptr(), title.as_ptr()) };
-        Ok(())
+        unsafe {
+            ffi::zintlappkit_button_set_title(
+                self.view.as_view().as_ptr(),
+                NativeString::from_str(title),
+            )
+        };
     }
 
     pub fn set_action<F>(&self, action: F)
@@ -88,7 +95,7 @@ impl<'application> Button<'application> {
     }
 }
 
-impl AsView for Button<'_> {
+impl AsView for Button {
     fn as_view(&self) -> ViewRef<'_> {
         self.view.as_view()
     }

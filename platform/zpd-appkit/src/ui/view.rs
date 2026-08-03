@@ -12,32 +12,28 @@ use super::layout::{Dimension, LayoutAttribute, XAxisAnchor, YAxisAnchor};
 #[derive(Debug)]
 pub enum ViewError {
     NativeCreationFailed,
-    InteriorNul,
 }
 
 impl std::fmt::Display for ViewError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NativeCreationFailed => write!(f, "AppKit failed to create a native view"),
-            Self::InteriorNul => write!(f, "the string contains an interior NUL byte"),
         }
     }
 }
 
 impl std::error::Error for ViewError {}
 
-pub(crate) struct OwnedView<'application> {
+pub(crate) struct OwnedView {
     raw: NonNull<c_void>,
-    _application: PhantomData<&'application ()>,
     _main_thread: PhantomData<Rc<()>>,
 }
 
-impl<'application> OwnedView<'application> {
+impl OwnedView {
     pub(crate) unsafe fn from_raw(raw: *mut c_void) -> Result<Self, ViewError> {
         let raw = NonNull::new(raw).ok_or(ViewError::NativeCreationFailed)?;
         Ok(Self {
             raw,
-            _application: PhantomData,
             _main_thread: PhantomData,
         })
     }
@@ -48,7 +44,7 @@ impl<'application> OwnedView<'application> {
     }
 }
 
-impl Drop for OwnedView<'_> {
+impl Drop for OwnedView {
     fn drop(&mut self) {
         // SAFETY: The strong native view reference is released exactly once on
         // the AppKit main thread. Removing it from its superview is explicit.
@@ -57,13 +53,13 @@ impl Drop for OwnedView<'_> {
 }
 
 /// Owns a strong reference to an AppKit `NSView`.
-pub struct View<'application> {
-    inner: OwnedView<'application>,
+pub struct View {
+    inner: OwnedView,
 }
 
-impl<'application> View<'application> {
+impl View {
     pub fn new<D: ApplicationDelegate>(
-        _application: &'application Application<D>,
+        _application: &Application<D>,
         frame: Rect,
     ) -> Result<Self, ViewError> {
         // SAFETY: `Application` is main-thread-bound and the returned handle is
@@ -73,7 +69,7 @@ impl<'application> View<'application> {
     }
 }
 
-impl AsView for View<'_> {
+impl AsView for View {
     fn as_view(&self) -> ViewRef<'_> {
         self.inner.as_view()
     }
