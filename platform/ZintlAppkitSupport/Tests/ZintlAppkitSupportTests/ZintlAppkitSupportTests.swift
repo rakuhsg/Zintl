@@ -312,6 +312,13 @@ private func withProbe(
   }
   let toolbar = try #require(nativeWindow.window.toolbar)
   #expect(nativeWindow.toolbarDefaultItemIdentifiers(toolbar).contains(.toggleSidebar))
+  #expect(toolbar.items.contains { $0.itemIdentifier == .toggleSidebar })
+  if #available(macOS 11.0, *) {
+    #expect(
+      toolbar.items.map(\.itemIdentifier).starts(with: [
+        .toggleSidebar, .sidebarTrackingSeparator,
+      ]))
+  }
   #expect(probe.selections == ["home"])
 
   zintlAppkitWindowClearSidebar(window: window)

@@ -334,6 +334,7 @@ class ZintlWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
   var splitViewController: NSSplitViewController?
   var ownsSidebarToolbar = false
   var insertedSidebarToolbarItem = false
+  var insertedSidebarTrackingSeparator = false
   var userData: UnsafeRawPointer?
   var callback: WindowCallback?
   var releaseCallback: ZintlWindowRelease?
@@ -491,7 +492,18 @@ class ZintlWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
     {
       self.window.toolbar?.removeItem(at: index)
     }
+    if self.insertedSidebarTrackingSeparator,
+      let index = self.window.toolbar?.items.firstIndex(where: {
+        if #available(macOS 11.0, *) {
+          return $0.itemIdentifier == .sidebarTrackingSeparator
+        }
+        return false
+      })
+    {
+      self.window.toolbar?.removeItem(at: index)
+    }
     self.insertedSidebarToolbarItem = false
+    self.insertedSidebarTrackingSeparator = false
     self.window.styleMask.remove(.fullSizeContentView)
     self.window.titlebarAppearsTransparent = false
     if #available(macOS 11.0, *) {
@@ -505,25 +517,50 @@ class ZintlWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
       let toolbar = NSToolbar(identifier: "zintl.sidebar.toolbar")
       toolbar.delegate = self
       toolbar.displayMode = .iconOnly
-      toolbar.insertItem(withItemIdentifier: .toggleSidebar, at: 0)
       self.window.toolbar = toolbar
+      toolbar.insertItem(withItemIdentifier: .toggleSidebar, at: 0)
+      if #available(macOS 11.0, *) {
+        toolbar.insertItem(withItemIdentifier: .sidebarTrackingSeparator, at: 1)
+      }
       self.ownsSidebarToolbar = true
-    } else if self.window.toolbar?.items.contains(where: {
-      $0.itemIdentifier == .toggleSidebar
-    }) == false {
-      self.window.toolbar?.insertItem(withItemIdentifier: .toggleSidebar, at: 0)
-      self.insertedSidebarToolbarItem = true
+    } else {
+      guard let toolbar = self.window.toolbar else {
+        return
+      }
+      if !toolbar.items.contains(where: { $0.itemIdentifier == .toggleSidebar }) {
+        toolbar.insertItem(withItemIdentifier: .toggleSidebar, at: 0)
+        self.insertedSidebarToolbarItem = true
+      }
+      if #available(macOS 11.0, *),
+        !toolbar.items.contains(where: { $0.itemIdentifier == .sidebarTrackingSeparator })
+      {
+        toolbar.insertItem(
+          withItemIdentifier: .sidebarTrackingSeparator,
+          at: min(1, toolbar.items.count)
+        )
+        self.insertedSidebarTrackingSeparator = true
+      }
     }
   }
 
   @MainActor
   func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-    [.toggleSidebar, .flexibleSpace]
+    var identifiers: [NSToolbarItem.Identifier] = [.toggleSidebar]
+    if #available(macOS 11.0, *) {
+      identifiers.append(.sidebarTrackingSeparator)
+    }
+    identifiers.append(.flexibleSpace)
+    return identifiers
   }
 
   @MainActor
   func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-    [.toggleSidebar, .flexibleSpace, .space]
+    var identifiers: [NSToolbarItem.Identifier] = [.toggleSidebar]
+    if #available(macOS 11.0, *) {
+      identifiers.append(.sidebarTrackingSeparator)
+    }
+    identifiers.append(contentsOf: [.flexibleSpace, .space])
+    return identifiers
   }
 
   @MainActor
