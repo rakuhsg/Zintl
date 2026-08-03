@@ -3,7 +3,7 @@ use std::error::Error;
 use zpd_appkit::runloop::Application;
 use zpd_appkit::ui::{
     AsView, Button, CommandItem, CommandMenu, CommandModifier, CommandRole, CommandSet,
-    LayoutConstraint, TextField, WindowAppMenu,
+    LayoutConstraint, Sidebar, SidebarItem, SidebarSection, TextField, WindowAppMenu,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -59,6 +59,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     drop(constraints);
 
     button.set_action(move || println!("{}", input.string_value()));
+
+    window.set_sidebar(
+        &Sidebar {
+            sections: vec![
+                SidebarSection {
+                    title: Some("Library".into()),
+                    items: vec![
+                        SidebarItem {
+                            id: "home".into(),
+                            title: "Home".into(),
+                            system_image: Some("house".into()),
+                        },
+                        SidebarItem {
+                            id: "recent".into(),
+                            title: "Recent".into(),
+                            system_image: Some("clock".into()),
+                        },
+                    ],
+                },
+                SidebarSection {
+                    title: Some("Workspace".into()),
+                    items: vec![SidebarItem {
+                        id: "projects".into(),
+                        title: "Projects".into(),
+                        system_image: Some("square.grid.2x2".into()),
+                    }],
+                },
+            ],
+            selected_id: Some("home".into()),
+        },
+        move |item_id| label.set_string_value(&format!("Selected: {item_id}")),
+    )?;
 
     window.show()?;
 

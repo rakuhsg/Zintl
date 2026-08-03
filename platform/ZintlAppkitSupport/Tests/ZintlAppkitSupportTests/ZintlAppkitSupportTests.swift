@@ -29,6 +29,12 @@ private final class StringValueProbe {
   var utf8: [UInt8] = []
 }
 
+@MainActor
+private final class SidebarCallbackProbe {
+  var selections: [String] = []
+  var releases = 0
+}
+
 private func withProbe(
   _ userData: UnsafeRawPointer?,
   body: (WindowCallbackProbe) -> Void
@@ -234,4 +240,82 @@ private func withProbe(
   zintlAppkitViewRemoveFromSuperview(view: button)
   zintlAppkitViewRemoveFromSuperview(view: textField)
   zintlAppkitReleaseView(view: parent)
+}
+
+/// Verifies native split-view installation and sidebar callback ownership.
+@MainActor
+@Test func nativeSidebarLifecycle() throws {
+  let probe = SidebarCallbackProbe()
+  let retainedProbe = Unmanaged.passRetained(probe)
+  var callbacks = WindowCallback(
+    did_create: { _ in },
+    will_close: { _ in },
+    did_close: { _ in },
+    did_click: { _ in },
+    release: { _ in }
+  )
+  let window = withUnsafePointer(to: &callbacks) {
+    zintlAppkitCreateWindow(userData: nil, callback: $0)
+  }
+  let sidebarJSON = """
+    {
+      "sections": [
+        {
+          "title": "Library",
+          "items": [
+            { "id": "home", "title": "Home", "systemImage": "house" },
+            { "id": "recent", "title": "Recent", "systemImage": "clock" }
+          ]
+        }
+      ],
+      "selectedId": "home"
+    }
+    """
+  let installed = withZintlString(sidebarJSON) { sidebarJSON in
+    zintlAppkitWindowSetSidebar(
+      window: window,
+      sidebarJson: sidebarJSON,
+      userData: retainedProbe.toOpaque(),
+      callback: { userData, itemId in
+        guard let userData else {
+          return
+        }
+        let probe = Unmanaged<SidebarCallbackProbe>.fromOpaque(userData).takeUnretainedValue()
+        probe.selections.append(zintlString(itemId))
+      },
+      release: { userData in
+        guard let userData else {
+          return
+        }
+        let probe = Unmanaged<SidebarCallbackProbe>.fromOpaque(userData)
+        probe.takeUnretainedValue().releases += 1
+        probe.release()
+      }
+    )
+  }
+
+  #expect(installed)
+  let nativeWindow = Unmanaged<ZintlWindow>.fromOpaque(window).takeUnretainedValue()
+  let splitViewController = try #require(
+    nativeWindow.window.contentViewController as? NSSplitViewController)
+  #expect(splitViewController.splitViewItems.count == 2)
+  #expect(splitViewController.splitViewItems[0].behavior == .sidebar)
+  if #available(macOS 11.0, *) {
+    let sidebarScrollView = try #require(
+      splitViewController.splitViewItems[0].viewController.view as? NSScrollView)
+    let outlineView = try #require(sidebarScrollView.documentView as? NSOutlineView)
+    #expect(outlineView.effectiveStyle == .sourceList)
+    let selectedRowView = try #require(
+      outlineView.rowView(atRow: outlineView.selectedRow, makeIfNecessary: true))
+    selectedRowView.isEmphasized = true
+    #expect(!selectedRowView.isEmphasized)
+  }
+  let toolbar = try #require(nativeWindow.window.toolbar)
+  #expect(nativeWindow.toolbarDefaultItemIdentifiers(toolbar).contains(.toggleSidebar))
+  #expect(probe.selections == ["home"])
+
+  zintlAppkitWindowClearSidebar(window: window)
+  #expect(nativeWindow.window.contentViewController === nativeWindow.contentController)
+  #expect(probe.releases == 1)
+  zintlAppkitDestroyWindow(ptr: window)
 }

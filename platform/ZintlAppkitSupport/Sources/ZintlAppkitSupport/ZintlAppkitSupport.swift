@@ -327,8 +327,13 @@ func zintlAppkitDestroy() {
 }
 
 @MainActor
-class ZintlWindow: NSObject, NSWindowDelegate {
+class ZintlWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
   var window: NSWindow
+  let contentController: NSViewController
+  var sidebarController: ZintlSidebarViewController?
+  var splitViewController: NSSplitViewController?
+  var ownsSidebarToolbar = false
+  var insertedSidebarToolbarItem = false
   var userData: UnsafeRawPointer?
   var callback: WindowCallback?
   var releaseCallback: ZintlWindowRelease?
@@ -340,6 +345,8 @@ class ZintlWindow: NSObject, NSWindowDelegate {
     self.userData = userData
     self.callback = callback
     self.releaseCallback = callback?.release
+    self.contentController = NSViewController()
+    self.contentController.view = NSView()
     self.window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 480, height: 300),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -348,6 +355,7 @@ class ZintlWindow: NSObject, NSWindowDelegate {
     )
     self.window.isReleasedWhenClosed = false
     super.init()
+    self.window.contentViewController = self.contentController
     self.window.delegate = self
     self.clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) {
       [weak self] event in
@@ -434,6 +442,91 @@ class ZintlWindow: NSObject, NSWindowDelegate {
   }
 
   @MainActor
+  func setSidebar(_ controller: ZintlSidebarViewController) {
+    self.clearSidebar()
+
+    let splitViewController = NSSplitViewController()
+    let sidebarItem = NSSplitViewItem(sidebarWithViewController: controller)
+    sidebarItem.minimumThickness = 180
+    sidebarItem.maximumThickness = 360
+    sidebarItem.canCollapse = true
+    if #available(macOS 11.0, *) {
+      sidebarItem.allowsFullHeightLayout = true
+    }
+    splitViewController.addSplitViewItem(sidebarItem)
+    splitViewController.addSplitViewItem(
+      NSSplitViewItem(viewController: self.contentController)
+    )
+
+    self.sidebarController = controller
+    self.splitViewController = splitViewController
+    self.window.styleMask.insert(.fullSizeContentView)
+    self.window.titlebarAppearsTransparent = true
+    if #available(macOS 11.0, *) {
+      self.window.toolbarStyle = .unified
+    }
+    self.window.contentViewController = splitViewController
+    self.installSidebarToolbar()
+  }
+
+  @MainActor
+  func clearSidebar() {
+    guard let splitViewController = self.splitViewController else {
+      return
+    }
+    for item in splitViewController.splitViewItems.reversed() {
+      splitViewController.removeSplitViewItem(item)
+    }
+    self.window.contentViewController = self.contentController
+    self.sidebarController?.releaseUserData()
+    self.splitViewController = nil
+    self.sidebarController = nil
+    if self.ownsSidebarToolbar {
+      self.window.toolbar = nil
+      self.ownsSidebarToolbar = false
+    } else if self.insertedSidebarToolbarItem,
+      let index = self.window.toolbar?.items.firstIndex(where: {
+        $0.itemIdentifier == .toggleSidebar
+      })
+    {
+      self.window.toolbar?.removeItem(at: index)
+    }
+    self.insertedSidebarToolbarItem = false
+    self.window.styleMask.remove(.fullSizeContentView)
+    self.window.titlebarAppearsTransparent = false
+    if #available(macOS 11.0, *) {
+      self.window.toolbarStyle = .automatic
+    }
+  }
+
+  @MainActor
+  private func installSidebarToolbar() {
+    if self.window.toolbar == nil {
+      let toolbar = NSToolbar(identifier: "zintl.sidebar.toolbar")
+      toolbar.delegate = self
+      toolbar.displayMode = .iconOnly
+      toolbar.insertItem(withItemIdentifier: .toggleSidebar, at: 0)
+      self.window.toolbar = toolbar
+      self.ownsSidebarToolbar = true
+    } else if self.window.toolbar?.items.contains(where: {
+      $0.itemIdentifier == .toggleSidebar
+    }) == false {
+      self.window.toolbar?.insertItem(withItemIdentifier: .toggleSidebar, at: 0)
+      self.insertedSidebarToolbarItem = true
+    }
+  }
+
+  @MainActor
+  func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+    [.toggleSidebar, .flexibleSpace]
+  }
+
+  @MainActor
+  func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+    [.toggleSidebar, .flexibleSpace, .space]
+  }
+
+  @MainActor
   func targetScreen() -> NSScreen {
     self.window.screen ?? NSScreen.main ?? NSScreen.screens.first!
   }
@@ -467,7 +560,7 @@ class ZintlWgpuSurface {
     self.view.wantsLayer = true
     self.view.layer = self.metalLayer
     self.updateDrawableSize()
-    window.window.contentView?.addSubview(self.view)
+    window.contentController.view.addSubview(self.view)
   }
 
   @MainActor

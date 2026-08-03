@@ -10,6 +10,7 @@ use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
 use crate::{ffi, runloop::Application};
 
+use super::sidebar::{self, Sidebar, SidebarError};
 #[cfg(feature = "wgpu")]
 use super::view::AsView;
 use super::view::ViewRef;
@@ -237,6 +238,24 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
         };
         // SAFETY: Null was checked above and the borrow is tied to `self`.
         Ok(unsafe { ViewRef::from_raw(raw) })
+    }
+
+    /// Installs a native AppKit source-list sidebar in this window.
+    pub fn set_sidebar<F>(&self, sidebar: &Sidebar, on_selection: F) -> Result<(), SidebarError>
+    where
+        F: FnMut(&str) + 'static,
+    {
+        if self.state.closed.get() {
+            return Err(SidebarError::Closed);
+        }
+        sidebar::install(self.raw, sidebar, on_selection)
+    }
+
+    pub fn clear_sidebar(&self) -> Result<(), WindowError> {
+        self.ensure_open()?;
+        // SAFETY: The window handle is valid and this runs on the main thread.
+        unsafe { ffi::zintlappkit_window_clear_sidebar(self.raw.as_ptr()) };
+        Ok(())
     }
 
     #[cfg(feature = "wgpu")]
