@@ -36,4 +36,5 @@ See `DESIGN.md` for the product and architecture direction.
 - Use `cd zintl && cargo fmt` before finishing Rust changes.
 - Use `swift format format <file>` before finishing Swift changes.
 - Keep comments clear and short.
+- Add a short comment to every test explaining the behavior or contract it verifies.
 - Add SAFETY note to unsafe blocks.
