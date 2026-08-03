@@ -45,13 +45,14 @@ private func withProbe(
   body(Unmanaged<WindowCallbackProbe>.fromOpaque(userData).takeUnretainedValue())
 }
 
+/// Verifies that the Swift/C string bridge round-trips UTF-8 and interior NUL bytes unchanged.
 @Test func nativeStringPreservesUTF8AndInteriorNul() {
   let expected = "AppKit ↔ Rust\0string"
   let actual = withZintlString(expected, zintlString)
   #expect(actual == expected)
 }
 
-/// Verifies native window callbacks and application state ownership across destruction.
+/// Verifies window callback ordering and ownership, app-state teardown, and menu-command dispatch.
 @MainActor
 @Test func nativeOwnershipAndLifecycle() throws {
   let probe = WindowCallbackProbe()
@@ -151,7 +152,7 @@ private func withProbe(
   #expect(ZintlAppkitSupportState.shared.state == nil)
 }
 
-/// Verifies native view ownership, target/action, and Auto Layout bridging.
+/// Verifies native view ownership, button actions, Auto Layout, string values, and callback release.
 @MainActor
 @Test func nativeControlsAndAutoLayout() throws {
   let parent = zintlAppkitCreateView(frame: ZintlRect(x: 0, y: 0, width: 320, height: 200))
@@ -242,7 +243,7 @@ private func withProbe(
   zintlAppkitReleaseView(view: parent)
 }
 
-/// Verifies native split-view installation and sidebar callback ownership.
+/// Verifies sidebar layout, Source List styling, secondary selection, toolbar placement, and cleanup.
 @MainActor
 @Test func nativeSidebarLifecycle() throws {
   let probe = SidebarCallbackProbe()
