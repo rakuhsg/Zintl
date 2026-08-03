@@ -40,6 +40,8 @@ typedef void (*ZintlWindowRelease)(const void* user_data);
 typedef void (*ZintlControlAction)(const void* user_data);
 typedef void (*ZintlControlRelease)(const void* user_data);
 typedef void (*ZintlStringCallback)(void* user_data, ZintlString value);
+typedef void (*ZintlSidebarSelectionCallback)(const void* user_data, ZintlString item_id);
+typedef void (*ZintlSidebarRelease)(const void* user_data);
 
 typedef struct {
     void (*did_create)(const void* user_data);
@@ -58,6 +60,14 @@ void zintlappkit_window_set_bounds(const void* window, ZintlRect bounds);
 void zintlappkit_window_set_size(const void* window, double width, double height);
 void zintlappkit_window_set_position(const void* window, double x, double y);
 void* zintlappkit_window_content_view(const void* window);
+bool zintlappkit_window_set_sidebar(
+    const void* window,
+    ZintlString sidebar_json,
+    const void* user_data,
+    ZintlSidebarSelectionCallback callback,
+    ZintlSidebarRelease release
+);
+void zintlappkit_window_clear_sidebar(const void* window);
 void* zintlappkit_create_view(ZintlRect frame);
 void zintlappkit_release_view(const void* view);
 void zintlappkit_view_add_subview(const void* parent, const void* child);

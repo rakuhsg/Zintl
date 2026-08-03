@@ -62,10 +62,38 @@ private func zintlRect(_ rect: ZintlRect) -> NSRect {
 @_cdecl("zintlappkit_window_content_view")
 func zintlAppkitWindowContentView(window: UnsafeRawPointer) -> UnsafeMutableRawPointer? {
   let window = Unmanaged<ZintlWindow>.fromOpaque(window).takeUnretainedValue()
-  guard let contentView = window.window.contentView else {
-    return nil
+  return Unmanaged.passUnretained(window.contentController.view).toOpaque()
+}
+
+@MainActor
+@_cdecl("zintlappkit_window_set_sidebar")
+func zintlAppkitWindowSetSidebar(
+  window: UnsafeRawPointer,
+  sidebarJson: ZintlString,
+  userData: UnsafeRawPointer?,
+  callback: ZintlSidebarSelectionCallback?,
+  release: ZintlSidebarRelease?
+) -> Bool {
+  do {
+    let configuration = try zintlSidebarConfiguration(sidebarJson)
+    let controller = ZintlSidebarViewController(
+      configuration: configuration,
+      userData: userData,
+      selectionCallback: callback,
+      releaseCallback: release
+    )
+    Unmanaged<ZintlWindow>.fromOpaque(window).takeUnretainedValue().setSidebar(controller)
+    return true
+  } catch {
+    release?(userData)
+    return false
   }
-  return Unmanaged.passUnretained(contentView).toOpaque()
+}
+
+@MainActor
+@_cdecl("zintlappkit_window_clear_sidebar")
+func zintlAppkitWindowClearSidebar(window: UnsafeRawPointer) {
+  Unmanaged<ZintlWindow>.fromOpaque(window).takeUnretainedValue().clearSidebar()
 }
 
 @MainActor

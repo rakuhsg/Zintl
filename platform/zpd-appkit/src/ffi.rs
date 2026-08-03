@@ -24,6 +24,9 @@ pub type ControlAction = unsafe extern "C" fn(user_data: *const c_void);
 pub type ControlRelease = unsafe extern "C" fn(user_data: *const c_void);
 pub type CommandCallback = unsafe extern "C" fn(user_data: *const c_void, command_id: NativeString);
 pub type CommandRelease = unsafe extern "C" fn(user_data: *const c_void);
+pub type SidebarSelectionCallback =
+    unsafe extern "C" fn(user_data: *const c_void, item_id: NativeString);
+pub type SidebarRelease = unsafe extern "C" fn(user_data: *const c_void);
 
 unsafe extern "C" {
     pub fn zintlappkit_init(ud: *const c_void, cb: *const AppCallback);
@@ -39,6 +42,14 @@ unsafe extern "C" {
     pub fn zintlappkit_window_set_size(ptr: *const c_void, width: f64, height: f64);
     pub fn zintlappkit_window_set_position(ptr: *const c_void, x: f64, y: f64);
     pub fn zintlappkit_window_content_view(ptr: *const c_void) -> *mut c_void;
+    pub fn zintlappkit_window_set_sidebar(
+        window: *const c_void,
+        sidebar_json: NativeString,
+        user_data: *const c_void,
+        callback: SidebarSelectionCallback,
+        release: SidebarRelease,
+    ) -> bool;
+    pub fn zintlappkit_window_clear_sidebar(window: *const c_void);
     pub fn zintlappkit_create_view(frame: Rect) -> *mut c_void;
     pub fn zintlappkit_release_view(view: *const c_void);
     pub fn zintlappkit_view_add_subview(parent: *const c_void, child: *const c_void);
