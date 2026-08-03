@@ -24,6 +24,11 @@ impl std::fmt::Display for ViewError {
 
 impl std::error::Error for ViewError {}
 
+/// Owns a +1 retained pointer to an Objective-C `NSView` instance.
+///
+/// `raw` points directly to the `NSView` object, or one of its subclasses,
+/// rather than to a Rust or Swift bridge wrapper. Dropping this value releases
+/// that Objective-C reference without removing the view from its superview.
 pub(crate) struct OwnedView {
     raw: NonNull<c_void>,
     _main_thread: PhantomData<Rc<()>>,
