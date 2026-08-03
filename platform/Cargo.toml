@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["zpd-appkit"]
+members = ["zpd-appkit", "zpd-appkit/example"]
 
 [workspace.package]
 version = "0.1.0"

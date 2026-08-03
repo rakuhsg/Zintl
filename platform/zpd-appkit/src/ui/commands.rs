@@ -1,9 +1,10 @@
 use std::cell::RefCell;
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use crate::ffi;
+use crate::string::NativeString;
 #[derive(Clone, Debug, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandSet {
@@ -56,16 +57,12 @@ pub enum CommandRole {
 #[derive(Debug)]
 pub enum CommandError {
     Encoding(serde_json::Error),
-    InvalidJson(std::ffi::NulError),
 }
 
 impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Encoding(error) => write!(f, "failed to encode commands: {error}"),
-            Self::InvalidJson(error) => {
-                write!(f, "encoded commands contain an interior NUL byte: {error}")
-            }
         }
     }
 }
@@ -77,7 +74,6 @@ where
     F: FnMut(&str) + 'static,
 {
     let json = serde_json::to_string(commands).map_err(CommandError::Encoding)?;
-    let json = CString::new(json).map_err(CommandError::InvalidJson)?;
     let callback_state = Rc::into_raw(Rc::new(CommandCallback {
         callback: RefCell::new(callback),
     }));
@@ -86,7 +82,7 @@ where
     // until it invokes the release callback exactly once.
     unsafe {
         ffi::zintlappkit_set_commands(
-            json.as_ptr(),
+            NativeString::from_str(&json),
             callback_state.cast(),
             invoke_command::<F>,
             release_command::<F>,
@@ -113,9 +109,9 @@ unsafe fn clone_command<F>(user_data: *const c_void) -> Option<Rc<CommandCallbac
 
 unsafe extern "C" fn invoke_command<F: FnMut(&str) + 'static>(
     user_data: *const c_void,
-    command_id: *const c_char,
+    command_id: NativeString,
 ) {
-    if user_data.is_null() || command_id.is_null() {
+    if user_data.is_null() {
         return;
     }
 
@@ -124,8 +120,8 @@ unsafe extern "C" fn invoke_command<F: FnMut(&str) + 'static>(
         let Some(state) = (unsafe { clone_command::<F>(user_data) }) else {
             return;
         };
-        // SAFETY: Swift supplies a NUL-terminated command identifier.
-        let command_id = unsafe { CStr::from_ptr(command_id) }.to_string_lossy();
+        // SAFETY: Swift supplies a borrowed UTF-8 command identifier.
+        let command_id = unsafe { command_id.to_string() };
         let Ok(mut callback) = state.callback.try_borrow_mut() else {
             std::process::abort();
         };
