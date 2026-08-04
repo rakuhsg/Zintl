@@ -1,13 +1,10 @@
-use crate::{
-    Directory, FileKind, FileMetadata, FileResource, RuntimeError, RuntimeHandle, RuntimeTask,
-};
+use crate::{RuntimeError, RuntimeHandle, RuntimeTask};
 use runtime_engine::{
-    DriveBudget, EngineConfiguration, EngineError, EngineEvent, EngineNotifier, EngineObjectId,
-    EngineObjectKind, EvaluationId, EvaluationOutcome, FilesystemRequest, HostCompletion,
-    HostErrorCode, HostRequest, HostRequestId, JavaScriptEngineBackend,
+    DriveBudget, EngineConfiguration, EngineError, EngineEvent, EngineNotifier, EvaluationId,
+    EvaluationOutcome, FilesystemRequest, HostCompletion, HostErrorCode, HostRequest,
+    HostRequestId, JavaScriptEngineBackend,
 };
 use runtime_event_loop::timer::TimerQueue;
-use runtime_filesystem::FilesystemRights;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -16,28 +13,14 @@ const MAXIMUM_PENDING_HOST_REQUESTS: usize = 256;
 const MAXIMUM_SETTLED_EVALUATIONS: usize = 256;
 const MAXIMUM_CONSOLE_EVENTS: usize = 256;
 
-enum EngineResource {
-    Directory(Directory),
-    File(FileResource),
-}
-
 enum PendingHost {
     Bytes(RuntimeTask<Vec<u8>>),
-    Directory(RuntimeTask<Directory>),
-    File(RuntimeTask<FileResource>),
-    Unit(RuntimeTask<()>),
-    Metadata(RuntimeTask<FileMetadata>),
 }
 
 impl PendingHost {
     fn cancel(&self) {
-        match self {
-            Self::Bytes(task) => task.cancel(),
-            Self::Directory(task) => task.cancel(),
-            Self::File(task) => task.cancel(),
-            Self::Unit(task) => task.cancel(),
-            Self::Metadata(task) => task.cancel(),
-        }
+        let Self::Bytes(task) = self;
+        task.cancel();
     }
 }
 
@@ -62,12 +45,10 @@ pub struct DriveReport {
 pub struct EngineSession {
     backend: Box<dyn JavaScriptEngineBackend>,
     runtime: RuntimeHandle,
-    resources: HashMap<EngineObjectId, EngineResource>,
     pending: HashMap<HostRequestId, PendingHost>,
     evaluations: VecDeque<(EvaluationId, EvaluationOutcome)>,
     console: VecDeque<Vec<u8>>,
     deferred: Option<EngineEvent>,
-    next_object_id: u64,
     timers: TimerQueue,
     timer_origin: Instant,
     running: bool,
@@ -90,12 +71,10 @@ impl EngineSession {
         Ok(Self {
             backend,
             runtime,
-            resources: HashMap::new(),
             pending: HashMap::new(),
             evaluations: VecDeque::new(),
             console: VecDeque::new(),
             deferred: None,
-            next_object_id: 1,
             timers: TimerQueue::new(configuration.maximum_pending_host_requests)
                 .map_err(|_| EngineError::InvalidConfiguration)?,
             timer_origin: Instant::now(),
@@ -173,7 +152,6 @@ impl EngineSession {
         }
         self.pending.clear();
         let _ = self.timers.shutdown();
-        self.resources.clear();
         self.backend.shutdown()
     }
 
@@ -213,7 +191,7 @@ impl EngineSession {
                 version,
                 input,
             } => {
-                let task = match self.runtime.invoke(name, version, input, Vec::new(), 0) {
+                let task = match self.runtime.invoke(name, version, input) {
                     Ok(task) => task,
                     Err(error) => return self.complete_runtime_error(id, error),
                 };
@@ -239,82 +217,12 @@ impl EngineSession {
         request: FilesystemRequest,
     ) -> Result<(), EngineError> {
         match request {
-            FilesystemRequest::RequestDirectory { locator, rights } => {
-                let Ok(rights) = FilesystemRights::from_bits(rights) else {
-                    return self
-                        .complete(id, HostCompletion::Failed(HostErrorCode::InvalidRequest));
-                };
-                let task = match self.runtime.request_directory(locator, rights) {
-                    Ok(task) => task,
-                    Err(error) => return self.complete_runtime_error(id, error),
-                };
-                self.pending.insert(id, PendingHost::Directory(task));
-            }
-            FilesystemRequest::OpenRelative {
-                directory,
-                path,
-                rights,
-                create,
-                truncate,
-            } => {
-                let Some(EngineResource::Directory(directory)) = self.resources.get(&directory)
-                else {
-                    return self
-                        .complete(id, HostCompletion::Failed(HostErrorCode::InvalidRequest));
-                };
-                let Ok(rights) = FilesystemRights::from_bits(rights) else {
-                    return self
-                        .complete(id, HostCompletion::Failed(HostErrorCode::InvalidRequest));
-                };
-                let task = match directory.open_file(path, rights, create, truncate) {
-                    Ok(task) => task,
-                    Err(error) => return self.complete_runtime_error(id, error),
-                };
-                self.pending.insert(id, PendingHost::File(task));
-            }
-            FilesystemRequest::Read {
-                file,
-                maximum_bytes,
-            } => {
-                let Some(EngineResource::File(file)) = self.resources.get(&file) else {
-                    return self
-                        .complete(id, HostCompletion::Failed(HostErrorCode::InvalidRequest));
-                };
-                let task = match file.read(maximum_bytes) {
+            FilesystemRequest::ReadFile { url, maximum_bytes } => {
+                let task = match self.runtime.read_file(url, maximum_bytes) {
                     Ok(task) => task,
                     Err(error) => return self.complete_runtime_error(id, error),
                 };
                 self.pending.insert(id, PendingHost::Bytes(task));
-            }
-            FilesystemRequest::Write { file, bytes } => {
-                let Some(EngineResource::File(file)) = self.resources.get(&file) else {
-                    return self
-                        .complete(id, HostCompletion::Failed(HostErrorCode::InvalidRequest));
-                };
-                let task = match file.write(bytes) {
-                    Ok(task) => task,
-                    Err(error) => return self.complete_runtime_error(id, error),
-                };
-                self.pending.insert(id, PendingHost::Unit(task));
-            }
-            FilesystemRequest::Stat { object } => {
-                let Some(EngineResource::File(file)) = self.resources.get(&object) else {
-                    return self
-                        .complete(id, HostCompletion::Failed(HostErrorCode::InvalidRequest));
-                };
-                let task = match file.stat() {
-                    Ok(task) => task,
-                    Err(error) => return self.complete_runtime_error(id, error),
-                };
-                self.pending.insert(id, PendingHost::Metadata(task));
-            }
-            FilesystemRequest::Close { object } => {
-                let result = match self.resources.remove(&object) {
-                    Some(EngineResource::Directory(directory)) => directory.close(),
-                    Some(EngineResource::File(file)) => file.close(),
-                    None => Err(RuntimeError::InvalidResource),
-                };
-                return self.complete(id, completion_unit(result));
             }
         }
         Ok(())
@@ -327,36 +235,11 @@ impl EngineSession {
             let Some(task) = self.pending.get_mut(&id) else {
                 continue;
             };
-            let completion = match task {
-                PendingHost::Bytes(task) => task
-                    .try_take()
-                    .map_err(map_engine_error)?
-                    .map(completion_from_result),
-                PendingHost::Directory(task) => {
-                    task.try_take().map_err(map_engine_error)?.map(|result| {
-                        self.resource_completion(
-                            result.map(EngineResource::Directory),
-                            EngineObjectKind::Directory,
-                        )
-                    })
-                }
-                PendingHost::File(task) => {
-                    task.try_take().map_err(map_engine_error)?.map(|result| {
-                        self.resource_completion(
-                            result.map(EngineResource::File),
-                            EngineObjectKind::File,
-                        )
-                    })
-                }
-                PendingHost::Unit(task) => task
-                    .try_take()
-                    .map_err(map_engine_error)?
-                    .map(completion_unit),
-                PendingHost::Metadata(task) => task
-                    .try_take()
-                    .map_err(map_engine_error)?
-                    .map(|result| completion_from_result(result.map(encode_metadata))),
-            };
+            let PendingHost::Bytes(task) = task;
+            let completion = task
+                .try_take()
+                .map_err(map_engine_error)?
+                .map(completion_from_result);
             if let Some(completion) = completion {
                 ready.push((id, completion));
             }
@@ -366,35 +249,6 @@ impl EngineSession {
             self.complete(*id, completion.clone())?;
         }
         Ok(ready.len())
-    }
-
-    fn resource_completion(
-        &mut self,
-        result: Result<EngineResource, RuntimeError>,
-        kind: EngineObjectKind,
-    ) -> HostCompletion {
-        match result {
-            Ok(resource) => match self.allocate_object_id() {
-                Ok(id) => {
-                    self.resources.insert(id, resource);
-                    HostCompletion::Object { id, kind }
-                }
-                Err(error) => HostCompletion::Failed(map_host_error(error)),
-            },
-            Err(error) => HostCompletion::Failed(map_host_error(error)),
-        }
-    }
-
-    fn allocate_object_id(&mut self) -> Result<EngineObjectId, RuntimeError> {
-        if self.resources.len() >= MAXIMUM_PENDING_HOST_REQUESTS {
-            return Err(RuntimeError::QuotaExceeded);
-        }
-        let id = EngineObjectId(self.next_object_id);
-        self.next_object_id = self
-            .next_object_id
-            .checked_add(1)
-            .ok_or(RuntimeError::QuotaExceeded)?;
-        Ok(id)
     }
 
     fn fire_due_timers(&mut self, maximum: usize) -> Result<usize, EngineError> {
@@ -453,28 +307,9 @@ fn completion_from_result(result: Result<Vec<u8>, RuntimeError>) -> HostCompleti
     }
 }
 
-fn completion_unit(result: Result<(), RuntimeError>) -> HostCompletion {
-    match result {
-        Ok(()) => HostCompletion::Unit,
-        Err(error) => HostCompletion::Failed(map_host_error(error)),
-    }
-}
-
-fn encode_metadata(metadata: FileMetadata) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(9);
-    bytes.push(match metadata.kind {
-        FileKind::File => 1,
-        FileKind::Directory => 2,
-    });
-    bytes.extend_from_slice(&metadata.size.to_be_bytes());
-    bytes
-}
-
 fn map_host_error(error: RuntimeError) -> HostErrorCode {
     match error {
-        RuntimeError::PermissionDenied | RuntimeError::InvalidPermission => {
-            HostErrorCode::PermissionDenied
-        }
+        RuntimeError::PermissionDenied => HostErrorCode::PermissionDenied,
         RuntimeError::QuotaExceeded
         | RuntimeError::InputTooLarge
         | RuntimeError::OutputTooLarge => HostErrorCode::QuotaExceeded,

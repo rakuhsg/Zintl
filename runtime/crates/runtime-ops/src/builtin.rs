@@ -7,7 +7,6 @@ use crate::{
 
 pub const BUILTIN_SCHEMA_VERSION: u32 = 1;
 pub const TIMER_SLEEP_ID: u32 = 2;
-pub const FS_REQUEST_DIRECTORY_ID: u32 = 16;
 pub const FS_READ_FILE_ID: u32 = 17;
 pub const FS_WRITE_FILE_ID: u32 = 18;
 pub const FS_CREATE_DIRECTORY_ID: u32 = 19;
@@ -26,7 +25,6 @@ const SECOND_TICKS: u64 = 1_000_000_000;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuiltinKind {
     TimerSleep,
-    FsRequestDirectory,
     FsReadFile,
     FsWriteFile,
     FsCreateDirectory,
@@ -44,7 +42,6 @@ impl BuiltinKind {
     pub const fn stable_id(self) -> u32 {
         match self {
             Self::TimerSleep => TIMER_SLEEP_ID,
-            Self::FsRequestDirectory => FS_REQUEST_DIRECTORY_ID,
             Self::FsReadFile => FS_READ_FILE_ID,
             Self::FsWriteFile => FS_WRITE_FILE_ID,
             Self::FsCreateDirectory => FS_CREATE_DIRECTORY_ID,
@@ -78,7 +75,7 @@ struct BuiltinSpec {
     timeout_ticks: u64,
 }
 
-const BUILTINS: [BuiltinSpec; 12] = [
+const BUILTINS: [BuiltinSpec; 11] = [
     BuiltinSpec {
         kind: BuiltinKind::TimerSleep,
         name: "zintl.builtin.timer.sleep",
@@ -87,15 +84,6 @@ const BUILTINS: [BuiltinSpec; 12] = [
         permission: "zintl.permission.timer.use",
         execution: OpExecution::Runtime,
         timeout_ticks: 86_400 * SECOND_TICKS,
-    },
-    BuiltinSpec {
-        kind: BuiltinKind::FsRequestDirectory,
-        name: "zintl.builtin.fs.request-directory",
-        max_input_bytes: 4 * KIB,
-        max_output_bytes: 64,
-        permission: "zintl.permission.fs.directory",
-        execution: OpExecution::HostExecutor,
-        timeout_ticks: 300 * SECOND_TICKS,
     },
     BuiltinSpec {
         kind: BuiltinKind::FsReadFile,
@@ -250,7 +238,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (2, "zintl.builtin.timer.sleep"),
-                (16, "zintl.builtin.fs.request-directory"),
                 (17, "zintl.builtin.fs.read-file"),
                 (18, "zintl.builtin.fs.write-file"),
                 (19, "zintl.builtin.fs.create-directory"),

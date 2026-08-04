@@ -6,7 +6,6 @@ uses operation version 1 and schema version 1.
 | Stable ID | Name | Execution |
 | ---: | --- | --- |
 | 2 | `zintl.builtin.timer.sleep` | runtime |
-| 16 | `zintl.builtin.fs.request-directory` | host executor |
 | 17 | `zintl.builtin.fs.read-file` | filesystem worker |
 | 18 | `zintl.builtin.fs.write-file` | filesystem worker |
 | 19 | `zintl.builtin.fs.create-directory` | filesystem worker |

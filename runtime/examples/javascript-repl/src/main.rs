@@ -1,4 +1,4 @@
-use javascript_repl::{JavaScriptRepl, ReplError, TerminalPermissionPrompt};
+use javascript_repl::{JavaScriptRepl, ReplError, TerminalFsAuthority};
 use std::io::{self, IsTerminal, Read, Write};
 use std::sync::Arc;
 
@@ -19,7 +19,7 @@ fn run() -> Result<(), ReplError> {
 fn run_batch() -> Result<(), ReplError> {
     let mut source = String::new();
     io::stdin().read_to_string(&mut source)?;
-    let mut repl = JavaScriptRepl::new(Arc::new(TerminalPermissionPrompt))?;
+    let mut repl = JavaScriptRepl::new(Arc::new(TerminalFsAuthority))?;
     let evaluation = repl.evaluate_batch(&source);
     let shutdown = repl.shutdown();
     evaluation?;
@@ -28,7 +28,7 @@ fn run_batch() -> Result<(), ReplError> {
 }
 
 fn run_interactive() -> Result<(), ReplError> {
-    let mut repl = JavaScriptRepl::new(Arc::new(TerminalPermissionPrompt))?;
+    let mut repl = JavaScriptRepl::new(Arc::new(TerminalFsAuthority))?;
     println!("Zintl Rust JavaScript REPL");
     println!("Type .help for host APIs and .exit to quit.");
     let mut line = String::new();
@@ -63,8 +63,5 @@ fn print_help() {
     println!("Host APIs:");
     println!("  await Zintl.sleep(milliseconds)");
     println!("  await Zintl.invoke('dev.zintl.echo', new Uint8Array([1, 2]))");
-    println!("  const dir = await Zintl.requestDirectory('/absolute/path', {{read:true}})");
-    println!("  const file = await dir.openRelative('file.txt', {{read:true}})");
-    println!("  await file.read({{maxBytes: 65536}}); await file.readString({{maxBytes: 65536}})");
-    println!("  await file.stat(); await file.close()");
+    println!("  await Zintl.readFile('fs://Cargo.toml', 'utf8')");
 }
