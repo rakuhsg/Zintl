@@ -201,6 +201,10 @@ private final class JSCFFIEngine: @unchecked Sendable {
     let check: Check = { [weak self] value, kind in
       self?.readObject(value, expectedKind: UInt32(kind)) != nil
     }
+    typealias Console = @convention(block) (NSString) -> Void
+    let console: Console = { [weak self] message in
+      self?.emitConsole(message as String)
+    }
     context.setObject(evaluationDone, forKeyedSubscript: "__zintlEvaluationDone" as NSString)
     context.setObject(invoke, forKeyedSubscript: "__zintlInvoke" as NSString)
     context.setObject(sleep, forKeyedSubscript: "__zintlSleep" as NSString)
@@ -211,6 +215,22 @@ private final class JSCFFIEngine: @unchecked Sendable {
     context.setObject(stat, forKeyedSubscript: "__zintlStat" as NSString)
     context.setObject(close, forKeyedSubscript: "__zintlClose" as NSString)
     context.setObject(check, forKeyedSubscript: "__zintlCheck" as NSString)
+    context.setObject(console, forKeyedSubscript: "__zintlConsole" as NSString)
+  }
+
+  private func emitConsole(_ message: String) {
+    let bytes = Data(message.utf8)
+    guard bytes.count <= maximumEventBytes, let length = UInt32(exactly: bytes.count) else {
+      return
+    }
+    var event = Data()
+    event.append(contentsOf: [0x5A, 0x4A, 0x45, 0x31])
+    appendUInt16(1, to: &event)
+    appendUInt16(5, to: &event)
+    appendUInt64(0, to: &event)
+    appendUInt32(length, to: &event)
+    event.append(bytes)
+    enqueue(event)
   }
 
   private func evaluate(evaluationID: UInt64, source: String) {
@@ -523,9 +543,10 @@ private final class JSCFFIEngine: @unchecked Sendable {
       const statNative = globalThis.__zintlStat;
       const closeNative = globalThis.__zintlClose;
       const checkNative = globalThis.__zintlCheck;
+      const consoleNative = globalThis.__zintlConsole;
       for (const name of ["__zintlEvaluationDone", "__zintlInvoke", "__zintlSleep",
         "__zintlRequestDirectory", "__zintlOpen", "__zintlRead", "__zintlWrite",
-        "__zintlStat", "__zintlClose", "__zintlCheck"]) delete globalThis[name];
+        "__zintlStat", "__zintlClose", "__zintlCheck", "__zintlConsole"]) delete globalThis[name];
       const error = (message, code) => Object.assign(new Error(message), { code });
       const rights = Object.freeze({read:1, write:2, create:4, metadata:8, enumerate:16, truncate:32});
       const encodeRights = (options, includeMutationRights = false) => {
@@ -590,6 +611,15 @@ private final class JSCFFIEngine: @unchecked Sendable {
         return Object.freeze(object);
       };
       Object.defineProperty(globalThis, "Zintl", {value:Object.freeze({invoke, sleep, requestDirectory}), configurable:false});
+      const formatConsoleValue = value => {
+        if (typeof value === "string") return value;
+        try { const encoded = JSON.stringify(value); if (encoded !== undefined) return encoded; } catch (_) {}
+        try { return String(value); } catch (_) { return "<unprintable>"; }
+      };
+      const emitConsole = (...values) => consoleNative(values.map(formatConsoleValue).join(" "));
+      Object.defineProperty(globalThis, "console", {value:Object.freeze({
+        debug:emitConsole, log:emitConsole, info:emitConsole, warn:emitConsole, error:emitConsole
+      }), configurable:false});
       const encode = value => JSON.stringify(value instanceof Uint8Array
         ? {type:"bytes", value:Array.from(value)} : {type:"value", value:value === undefined ? null : value});
       const evaluate = (id, source) => {

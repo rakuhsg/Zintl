@@ -1,5 +1,5 @@
 use javascript_repl::{JavaScriptRepl, ReplError, TerminalPermissionPrompt};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::sync::Arc;
 
 fn main() {
@@ -10,6 +10,24 @@ fn main() {
 }
 
 fn run() -> Result<(), ReplError> {
+    if !io::stdin().is_terminal() {
+        return run_batch();
+    }
+    run_interactive()
+}
+
+fn run_batch() -> Result<(), ReplError> {
+    let mut source = String::new();
+    io::stdin().read_to_string(&mut source)?;
+    let mut repl = JavaScriptRepl::new(Arc::new(TerminalPermissionPrompt))?;
+    let evaluation = repl.evaluate_batch(&source);
+    let shutdown = repl.shutdown();
+    evaluation?;
+    shutdown?;
+    Ok(())
+}
+
+fn run_interactive() -> Result<(), ReplError> {
     let mut repl = JavaScriptRepl::new(Arc::new(TerminalPermissionPrompt))?;
     println!("Zintl Rust JavaScript REPL");
     println!("Type .help for host APIs and .exit to quit.");

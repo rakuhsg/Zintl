@@ -14,6 +14,6 @@ Directory and file objects are allocated by `RuntimeJSCShim` with private
 runtime ID, object ID and kind slots. Every method validates its receiver; no ID
 or pointer is stored in a writable JavaScript property.
 
-Evaluation settlement and host requests are bounded events. Rust drains them in
-finite turns. Worker, reactor, notifier and permission callback threads never
-enter JavaScriptCore.
+Evaluation settlement, console output and host requests are bounded events.
+Rust drains them in finite turns. Worker, reactor, notifier and permission
+callback threads never enter JavaScriptCore.

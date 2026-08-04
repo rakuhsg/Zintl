@@ -1,35 +1,38 @@
 # Rust JavaScript REPL
 
-This example embeds Swift JavaScriptCore behind the engine-neutral Rust API. It keeps a
-single JavaScript realm alive and exposes a frozen, synchronous `Zintl` host API.
-Filesystem access is deny-by-default.
+This example runs Swift JavaScriptCore behind the engine-neutral Rust embedding
+API. The JavaScript realm persists in interactive mode, while filesystem access
+is deny-by-default and mediated by a Rust permission callback.
 
-Run it from `runtime`:
+Run interactively from `runtime`:
 
 ```console
 cargo run -p javascript-repl
 ```
 
-Request a directory from JavaScript:
+The interactive prompt evaluates one complete line at a time. For a multiline
+script, pipe the complete source to the binary:
 
-```javascript
-Zintl.requestDirectory("/absolute/path", "read,metadata")
+```console
+cat a.js | ./target/debug/javascript-repl
 ```
 
-The terminal displays the exact operation, rights, and directory, then asks
-`Allow once? [y/N]`. Only an explicit `y` installs the directory in opaque Rust
-host state. Terminal input stays on the REPL thread; a one-shot gate requires
-the runtime permission request to match the displayed operation, directory, and
-rights exactly. JavaScript receives no descriptor, resource ID, canonical path,
-or permission blob.
+Batch input is read completely before evaluation and supports top-level
+`await`. When stdin is a pipe, permission answers are read from `/dev/tty`, so
+the script bytes cannot be consumed as an approval response.
 
 ```javascript
-Zintl.readTextFile("notes.txt")
-Zintl.stat("notes.txt")
-Zintl.closeDirectory()
+const directory = await Zintl.requestDirectory("/absolute/path", {
+  read: true,
+  metadata: true,
+});
+const bytes = await directory.readRelative("notes.txt", { maxBytes: 65536 });
+console.log(bytes);
+await directory.close();
 ```
 
-`writeTextFile` requires a grant containing both `write` and `truncate`. File
-payloads and source input are limited to 1 MiB; recursion and loop iterations
-are also bounded. `.help` prints the available APIs and `.exit` shuts the engine
-down before the runtime.
+The terminal displays the operation, requested rights and directory. Only an
+explicit `y` grants attenuated authority. JavaScript receives opaque directory
+and file objects, never a descriptor, resource ID, native pointer or permission
+blob. `console.debug`, `log`, `info`, `warn` and `error` are forwarded through
+the bounded engine event queue.

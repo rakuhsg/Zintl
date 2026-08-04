@@ -12,7 +12,7 @@ use runtime_engine::{
 };
 use runtime_jsc::JavaScriptCoreBackend;
 use std::fmt;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -47,10 +47,24 @@ impl PermissionPrompt for TerminalPermissionPrompt {
             return false;
         }
         let mut answer = String::new();
-        if io::stdin().lock().read_line(&mut answer).is_err() {
+        if read_permission_answer(&mut answer).is_err() {
             return false;
         }
         matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes")
+    }
+}
+
+fn read_permission_answer(answer: &mut String) -> io::Result<usize> {
+    if io::stdin().is_terminal() {
+        return io::stdin().lock().read_line(answer);
+    }
+    #[cfg(unix)]
+    {
+        io::BufReader::new(std::fs::File::open("/dev/tty")?).read_line(answer)
+    }
+    #[cfg(not(unix))]
+    {
+        io::stdin().lock().read_line(answer)
     }
 }
 
@@ -166,10 +180,19 @@ impl JavaScriptRepl {
         let mut wake_generation = 0;
         loop {
             self.session.drive(DRIVE_BUDGET)?;
+            let mut settled = None;
             while let Some((settled_id, outcome)) = self.session.take_evaluation() {
                 if settled_id != id {
                     continue;
                 }
+                settled = Some(outcome);
+            }
+            while let Some(output) = self.session.take_console_output() {
+                if let Ok(output) = String::from_utf8(output) {
+                    eprintln!("{output}");
+                }
+            }
+            if let Some(outcome) = settled {
                 return match outcome {
                     EvaluationOutcome::Value(bytes) => {
                         String::from_utf8(bytes).map_err(|_| ReplError::Protocol)
@@ -181,13 +204,17 @@ impl JavaScriptRepl {
                     EvaluationOutcome::Cancelled => Err(ReplError::Cancelled),
                 };
             }
-            while let Some(output) = self.session.take_console_output() {
-                if let Ok(output) = String::from_utf8(output) {
-                    eprintln!("{output}");
-                }
-            }
             self.wake.wait_briefly(&mut wake_generation);
         }
+    }
+
+    /// Evaluates a complete piped script with top-level `await` support.
+    ///
+    /// # Errors
+    ///
+    /// Reports the same bounded runtime and JavaScript failures as [`Self::evaluate`].
+    pub fn evaluate_batch(&mut self, source: &str) -> Result<String, ReplError> {
+        self.evaluate(&format!("(async () => {{\n{source}\n}})()"))
     }
 
     /// Releases JSC before terminating the Rust runtime.
@@ -293,6 +320,17 @@ mod tests {
             repl.evaluate("[typeof process, typeof require, typeof Deno, typeof fetch]")
                 .expect("no ambient operating-system APIs"),
             r#"{"type":"value","value":["undefined","undefined","undefined","undefined"]}"#
+        );
+        assert_eq!(
+            repl.evaluate_batch(
+                "const batchValue = await Promise.resolve(43); globalThis.batchValue = batchValue;"
+            )
+            .expect("batch top-level await"),
+            r#"{"type":"value","value":null}"#
+        );
+        assert_eq!(
+            repl.evaluate("batchValue").expect("batch context persists"),
+            r#"{"type":"value","value":43}"#
         );
         repl.shutdown().expect("shutdown");
     }

@@ -382,4 +382,33 @@ mod tests {
         );
         backend.shutdown().expect("shutdown");
     }
+
+    #[test]
+    // Verifies JavaScript console output crosses the bounded engine event protocol.
+    fn emits_console_output_through_swift_ffi() {
+        let mut backend = JavaScriptCoreBackend::new();
+        backend
+            .start(EngineConfiguration::default(), Arc::new(NoopNotifier))
+            .expect("start");
+        backend
+            .submit_evaluation(EvaluationRequest {
+                id: EvaluationId(1),
+                source: "console.debug('hello', {value: 42}); 7".to_owned(),
+            })
+            .expect("submit");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut console = None;
+        let mut settled = false;
+        while !settled {
+            match backend.next_event().expect("event") {
+                Some(EngineEvent::ConsoleOutput(bytes)) => console = Some(bytes),
+                Some(EngineEvent::EvaluationSettled { .. }) => settled = true,
+                Some(EngineEvent::HostRequest { .. }) | None => {}
+            }
+            assert!(Instant::now() < deadline, "evaluation timed out");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(console, Some(br#"hello {"value":42}"#.to_vec()));
+        backend.shutdown().expect("shutdown");
+    }
 }

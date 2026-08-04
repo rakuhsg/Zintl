@@ -49,6 +49,7 @@ pub fn decode_event(bytes: &[u8]) -> Result<EngineEvent, EngineError> {
                 request: decode_host_request(operation, payload)?,
             }
         }
+        5 if id == 0 => EngineEvent::ConsoleOutput(cursor.length_prefixed()?.to_vec()),
         _ => return Err(EngineError::Backend),
     };
     if cursor.is_empty() {
@@ -193,5 +194,18 @@ mod tests {
         );
         bytes.push(0);
         assert!(decode_event(&bytes).is_err());
+    }
+
+    #[test]
+    // Verifies console events require the reserved zero identity and canonical framing.
+    fn canonical_console_vector_decodes() {
+        let bytes = b"ZJE1\0\x01\0\x05\0\0\0\0\0\0\0\0\0\0\0\x05hello";
+        assert_eq!(
+            decode_event(bytes),
+            Ok(EngineEvent::ConsoleOutput(b"hello".to_vec()))
+        );
+        let mut invalid = bytes.to_vec();
+        invalid[15] = 1;
+        assert!(decode_event(&invalid).is_err());
     }
 }
