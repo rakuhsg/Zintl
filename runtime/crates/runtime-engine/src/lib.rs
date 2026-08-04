@@ -96,49 +96,12 @@ pub enum EngineObjectKind {
 /// Filesystem host operations emitted by JavaScript.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FilesystemRequest {
-    /// Requests directory authority after an embedder permission decision.
-    RequestDirectory {
-        /// Untrusted display locator resolved only after approval.
-        locator: String,
-        /// Requested portable filesystem-right bits.
-        rights: u64,
-    },
-    /// Opens a file relative to an existing directory capability.
-    OpenRelative {
-        /// Existing opaque directory object.
-        directory: EngineObjectId,
-        /// Validated relative path text.
-        path: String,
-        /// Requested attenuated file rights.
-        rights: u64,
-        /// Whether a missing file may be created.
-        create: bool,
-        /// Whether an existing file may be truncated.
-        truncate: bool,
-    },
-    /// Reads at most `maximum_bytes` from an opened file.
-    Read {
-        /// Existing opaque file object.
-        file: EngineObjectId,
+    /// Reads a file through a host-registered virtual filesystem URL.
+    ReadFile {
+        /// VFS URL containing no operating-system path.
+        url: String,
         /// Mandatory finite read limit.
         maximum_bytes: usize,
-    },
-    /// Writes owned bytes to an opened file.
-    Write {
-        /// Existing opaque file object.
-        file: EngineObjectId,
-        /// Owned bounded write payload.
-        bytes: Vec<u8>,
-    },
-    /// Reads metadata from a directory or file object.
-    Stat {
-        /// Existing opaque resource object.
-        object: EngineObjectId,
-    },
-    /// Closes a directory or file object.
-    Close {
-        /// Existing opaque resource object.
-        object: EngineObjectId,
     },
 }
 
@@ -218,12 +181,7 @@ impl EngineEvent {
                 HostRequest::Invoke { name, input, .. } => name.len() + input.len(),
                 HostRequest::Sleep { .. } => 8,
                 HostRequest::Filesystem(request) => match request {
-                    FilesystemRequest::RequestDirectory { locator, .. } => locator.len(),
-                    FilesystemRequest::OpenRelative { path, .. } => path.len(),
-                    FilesystemRequest::Write { bytes, .. } => bytes.len(),
-                    FilesystemRequest::Read { .. }
-                    | FilesystemRequest::Stat { .. }
-                    | FilesystemRequest::Close { .. } => 0,
+                    FilesystemRequest::ReadFile { url, .. } => url.len(),
                 },
             },
             Self::ConsoleOutput(bytes) => bytes.len(),

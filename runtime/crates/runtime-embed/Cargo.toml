@@ -12,7 +12,6 @@ runtime-engine = { path = "../runtime-engine" }
 runtime-event-loop = { path = "../runtime-event-loop" }
 runtime-filesystem = { path = "../runtime-filesystem" }
 runtime-ops = { path = "../runtime-ops" }
-runtime-permission = { path = "../runtime-permission" }
 runtime-resource = { path = "../runtime-resource" }
 
 [lints]

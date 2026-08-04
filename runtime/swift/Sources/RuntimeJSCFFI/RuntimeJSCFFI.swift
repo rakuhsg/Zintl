@@ -10,8 +10,6 @@ private let invalidState: UInt32 = 4
 private let quotaExceeded: UInt32 = 5
 private let backendError: UInt32 = 255
 
-private let directoryKind: UInt32 = 3
-private let fileKind: UInt32 = 4
 private let maximumSafeInteger: UInt64 = 9_007_199_254_740_991
 
 public typealias NotifyFunction = @convention(c) (UnsafeMutableRawPointer?) -> Void
@@ -173,33 +171,9 @@ private final class JSCFFIEngine: @unchecked Sendable {
     let sleep: Sleep = { [weak self] milliseconds, resolve, reject in
       self?.submitSleep(milliseconds: milliseconds, resolve: resolve, reject: reject)
     }
-    typealias RequestDirectory = @convention(block) (NSString, Double, JSValue, JSValue) -> Void
-    let requestDirectory: RequestDirectory = { [weak self] path, rights, resolve, reject in
-      self?.submitDirectory(path: path as String, rights: rights, resolve: resolve, reject: reject)
-    }
-    typealias Open =
-      @convention(block) (JSValue, NSString, Double, Double, JSValue, JSValue) -> Void
-    let open: Open = { [weak self] receiver, path, rights, flags, resolve, reject in
-      self?.submitOpen(receiver, path as String, rights, flags, resolve, reject)
-    }
-    typealias Read = @convention(block) (JSValue, Double, JSValue, JSValue) -> Void
-    let read: Read = { [weak self] receiver, maximum, resolve, reject in
-      self?.submitRead(receiver, maximum, resolve, reject)
-    }
-    typealias Write = @convention(block) (JSValue, JSValue, JSValue, JSValue) -> Void
-    let write: Write = { [weak self] receiver, bytes, resolve, reject in
-      self?.submitWrite(receiver, bytes, resolve, reject)
-    }
-    typealias ObjectOperation = @convention(block) (JSValue, JSValue, JSValue) -> Void
-    let stat: ObjectOperation = { [weak self] receiver, resolve, reject in
-      self?.submitObjectOperation(14, receiver, resolve, reject)
-    }
-    let close: ObjectOperation = { [weak self] receiver, resolve, reject in
-      self?.submitObjectOperation(15, receiver, resolve, reject)
-    }
-    typealias Check = @convention(block) (JSValue, Double) -> Bool
-    let check: Check = { [weak self] value, kind in
-      self?.readObject(value, expectedKind: UInt32(kind)) != nil
+    typealias ReadFile = @convention(block) (NSString, Double, JSValue, JSValue) -> Void
+    let readFile: ReadFile = { [weak self] url, maximum, resolve, reject in
+      self?.submitVfsRead(url: url as String, maximum: maximum, resolve: resolve, reject: reject)
     }
     typealias Console = @convention(block) (NSString) -> Void
     let console: Console = { [weak self] message in
@@ -208,13 +182,7 @@ private final class JSCFFIEngine: @unchecked Sendable {
     context.setObject(evaluationDone, forKeyedSubscript: "__zintlEvaluationDone" as NSString)
     context.setObject(invoke, forKeyedSubscript: "__zintlInvoke" as NSString)
     context.setObject(sleep, forKeyedSubscript: "__zintlSleep" as NSString)
-    context.setObject(requestDirectory, forKeyedSubscript: "__zintlRequestDirectory" as NSString)
-    context.setObject(open, forKeyedSubscript: "__zintlOpen" as NSString)
-    context.setObject(read, forKeyedSubscript: "__zintlRead" as NSString)
-    context.setObject(write, forKeyedSubscript: "__zintlWrite" as NSString)
-    context.setObject(stat, forKeyedSubscript: "__zintlStat" as NSString)
-    context.setObject(close, forKeyedSubscript: "__zintlClose" as NSString)
-    context.setObject(check, forKeyedSubscript: "__zintlCheck" as NSString)
+    context.setObject(readFile, forKeyedSubscript: "__zintlReadFile" as NSString)
     context.setObject(console, forKeyedSubscript: "__zintlConsole" as NSString)
   }
 
@@ -303,78 +271,18 @@ private final class JSCFFIEngine: @unchecked Sendable {
     submitHost(kind: 2, payload: payload, resolve: resolve, reject: reject)
   }
 
-  private func submitDirectory(path: String, rights: Double, resolve: JSValue, reject: JSValue) {
-    guard path.utf8.count <= 4096, let rights = exactUInt64(rights), rights > 0, rights & ~0x3F == 0
-    else {
-      rejectNow(reject, "Invalid directory request", code: "InvalidRequest")
-      return
-    }
-    var payload = Data()
-    appendUInt64(rights, to: &payload)
-    payload.append(Data(path.utf8))
-    submitHost(kind: 10, payload: payload, resolve: resolve, reject: reject)
-  }
-
-  private func submitOpen(
-    _ receiver: JSValue, _ path: String, _ rightsValue: Double, _ flagsValue: Double,
-    _ resolve: JSValue, _ reject: JSValue
+  private func submitVfsRead(
+    url: String, maximum: Double, resolve: JSValue, reject: JSValue
   ) {
-    guard let directory = readObject(receiver, expectedKind: directoryKind),
-      let rights = exactUInt64(rightsValue), let flags = exactUInt64(flagsValue), flags <= 3
+    guard url.utf8.count <= 4096, let maximum = exactUInt64(maximum), maximum > 0
     else {
-      rejectNow(reject, "Invalid directory receiver", code: "InvalidRequest")
+      rejectNow(reject, "Invalid virtual filesystem request", code: "InvalidRequest")
       return
     }
     var payload = Data()
-    appendUInt64(directory, to: &payload)
-    appendUInt64(rights, to: &payload)
-    payload.append(UInt8(flags))
-    payload.append(Data(path.utf8))
-    submitHost(kind: 11, payload: payload, resolve: resolve, reject: reject)
-  }
-
-  private func submitRead(
-    _ receiver: JSValue, _ maximumValue: Double, _ resolve: JSValue, _ reject: JSValue
-  ) {
-    guard let file = readObject(receiver, expectedKind: fileKind),
-      let maximum = exactUInt64(maximumValue)
-    else {
-      rejectNow(reject, "Invalid file receiver", code: "InvalidRequest")
-      return
-    }
-    var payload = Data()
-    appendUInt64(file, to: &payload)
     appendUInt64(maximum, to: &payload)
-    submitHost(kind: 12, payload: payload, resolve: resolve, reject: reject)
-  }
-
-  private func submitWrite(
-    _ receiver: JSValue, _ value: JSValue, _ resolve: JSValue, _ reject: JSValue
-  ) {
-    guard let file = readObject(receiver, expectedKind: fileKind), let bytes = byteArray(value)
-    else {
-      rejectNow(reject, "Invalid file write", code: "InvalidRequest")
-      return
-    }
-    var payload = Data()
-    appendUInt64(file, to: &payload)
-    payload.append(bytes)
-    submitHost(kind: 13, payload: payload, resolve: resolve, reject: reject)
-  }
-
-  private func submitObjectOperation(
-    _ operation: UInt16, _ receiver: JSValue, _ resolve: JSValue, _ reject: JSValue
-  ) {
-    guard
-      let object = readObject(receiver, expectedKind: directoryKind)
-        ?? readObject(receiver, expectedKind: fileKind)
-    else {
-      rejectNow(reject, "Invalid resource receiver", code: "InvalidRequest")
-      return
-    }
-    var payload = Data()
-    appendUInt64(object, to: &payload)
-    submitHost(kind: operation, payload: payload, resolve: resolve, reject: reject)
+    payload.append(Data(url.utf8))
+    submitHost(kind: 10, payload: payload, resolve: resolve, reject: reject)
   }
 
   private func submitHost(kind: UInt16, payload body: Data, resolve: JSValue, reject: JSValue) {
@@ -406,7 +314,8 @@ private final class JSCFFIEngine: @unchecked Sendable {
     }
   }
 
-  private func finishHostRequest(requestID: UInt64, kind: UInt32, objectID: UInt64, payload: Data) {
+  private func finishHostRequest(requestID: UInt64, kind: UInt32, objectID _: UInt64, payload: Data)
+  {
     stateLock.lock()
     pendingHostIDs.remove(requestID)
     stateLock.unlock()
@@ -416,32 +325,10 @@ private final class JSCFFIEngine: @unchecked Sendable {
       _ = promise.resolve.call(withArguments: [])
     case 1:
       _ = promise.resolve.call(withArguments: [Array(payload)])
-    case 2, 3:
-      let hostKind = kind == 2 ? directoryKind : fileKind
-      guard let context,
-        let object = rtjsc_host_object_make(
-          context.jsGlobalContextRef, runtimeID, objectID, hostKind),
-        let value = JSValue(jsValueRef: object, in: context), let bridge
-      else {
-        rejectNow(promise.reject, "Host object creation failed", code: "Backend")
-        return
-      }
-      let decorated = bridge.invokeMethod("decorate", withArguments: [value, Double(hostKind)])
-      _ = promise.resolve.call(withArguments: [decorated as Any])
     default:
       let code = String(data: payload, encoding: .utf8) ?? "OperationFailed"
       rejectNow(promise.reject, "Host operation failed", code: code)
     }
-  }
-
-  private func readObject(_ value: JSValue, expectedKind: UInt32) -> UInt64? {
-    guard let context else { return nil }
-    var objectID: UInt64 = 0
-    guard
-      rtjsc_host_object_read(
-        context.jsGlobalContextRef, value.jsValueRef, runtimeID, expectedKind, &objectID) == 0
-    else { return nil }
-    return objectID
   }
 
   private func byteArray(_ value: JSValue) -> Data? {
@@ -536,42 +423,16 @@ private final class JSCFFIEngine: @unchecked Sendable {
       const evaluationDone = globalThis.__zintlEvaluationDone;
       const invokeNative = globalThis.__zintlInvoke;
       const sleepNative = globalThis.__zintlSleep;
-      const directoryNative = globalThis.__zintlRequestDirectory;
-      const openNative = globalThis.__zintlOpen;
-      const readNative = globalThis.__zintlRead;
-      const writeNative = globalThis.__zintlWrite;
-      const statNative = globalThis.__zintlStat;
-      const closeNative = globalThis.__zintlClose;
-      const checkNative = globalThis.__zintlCheck;
+      const readFileNative = globalThis.__zintlReadFile;
       const consoleNative = globalThis.__zintlConsole;
       for (const name of ["__zintlEvaluationDone", "__zintlInvoke", "__zintlSleep",
-        "__zintlRequestDirectory", "__zintlOpen", "__zintlRead", "__zintlWrite",
-        "__zintlStat", "__zintlClose", "__zintlCheck", "__zintlConsole"]) delete globalThis[name];
+        "__zintlReadFile", "__zintlConsole"]) delete globalThis[name];
       const error = (message, code) => Object.assign(new Error(message), { code });
-      const rights = Object.freeze({read:1, write:2, create:4, metadata:8, enumerate:16, truncate:32});
-      const encodeRights = (options, includeMutationRights = false) => {
-        if (!options || typeof options !== "object") throw error("Invalid rights", "InvalidRequest");
-        let bits = 0;
-        for (const key of Object.keys(options)) {
-          if (key === "create" || key === "truncate") {
-            if (typeof options[key] !== "boolean") throw error("Invalid rights", "InvalidRequest");
-            if (includeMutationRights && options[key]) bits |= rights[key];
-            continue;
-          }
-          if (!(key in rights) || typeof options[key] !== "boolean") throw error("Invalid rights", "InvalidRequest");
-          if (options[key]) bits |= rights[key];
-        }
-        if (!bits) throw error("Empty rights", "InvalidRequest");
-        return bits;
-      };
       const invoke = (name, input = new Uint8Array()) => new Promise((resolve, reject) => {
         if (typeof name !== "string" || !(input instanceof Uint8Array)) return reject(error("Invalid input", "InvalidRequest"));
         invokeNative(name, Array.from(input), resolve, reject);
       }).then(bytes => new Uint8Array(bytes));
       const sleep = ms => new Promise((resolve, reject) => sleepNative(ms, resolve, reject));
-      const requestDirectory = (path, options) => new Promise((resolve, reject) => {
-        try { directoryNative(path, encodeRights(options, true), resolve, reject); } catch (e) { reject(e); }
-      });
       const decodeUtf8 = bytes => {
         let output = "";
         let codePoints = [];
@@ -610,49 +471,16 @@ private final class JSCFFIEngine: @unchecked Sendable {
         if (codePoints.length) output += String.fromCodePoint(...codePoints);
         return output;
       };
-      const decorate = (object, kind) => {
-        const check = self => checkNative(self, kind);
-        if (kind === 3) Object.defineProperties(object, {
-          openRelative: { value(path, options) { return new Promise((resolve, reject) => {
-            if (!check(this)) return reject(error("Invalid receiver", "InvalidRequest"));
-            try { const flags = (options?.create ? 1 : 0) | (options?.truncate ? 2 : 0);
-              openNative(this, path, encodeRights(options), flags, resolve, reject); } catch (e) { reject(e); }
-          }); }},
-          readRelative: { value(path, options = {}) {
-            return this.openRelative(path, {read:true}).then(async file => {
-              try { return await file.read(options); } finally { await file.close(); }
-            });
-          }},
-          writeRelative: { value(path, bytes, options = {}) {
-            if (!(bytes instanceof Uint8Array)) return Promise.reject(error("Invalid bytes", "InvalidRequest"));
-            return this.openRelative(path, {write:true, create:options.create === true,
-              truncate:options.truncate === true}).then(async file => {
-              try { await file.write(bytes); } finally { await file.close(); }
-            });
-          }},
-          statRelative: { value(path) {
-            return this.openRelative(path, {metadata:true}).then(async file => {
-              try { return await file.stat(); } finally { await file.close(); }
-            });
-          }},
-          close: { value() { return new Promise((resolve, reject) => closeNative(this, resolve, reject)); }}
-        });
-        if (kind === 4) Object.defineProperties(object, {
-          read: { value(options = {}) { return new Promise((resolve, reject) => readNative(this, options.maxBytes ?? 65536, resolve, reject)).then(x => new Uint8Array(x)); }},
-          readString: { value(options = {}) {
-            if (!check(this)) return Promise.reject(error("Invalid receiver", "InvalidRequest"));
-            return this.read(options).then(decodeUtf8);
-          }},
-          write: { value(bytes) { return new Promise((resolve, reject) => writeNative(this, Array.from(bytes), resolve, reject)); }},
-          stat: { value() { return new Promise((resolve, reject) => statNative(this, resolve, reject)).then(bytes => {
-            let size = 0; for (let i = 1; i < 9; i++) size = size * 256 + bytes[i];
-            return Object.freeze({kind: bytes[0] === 1 ? "file" : "directory", size});
-          }); }},
-          close: { value() { return new Promise((resolve, reject) => closeNative(this, resolve, reject)); }}
-        });
-        return Object.freeze(object);
-      };
-      Object.defineProperty(globalThis, "Zintl", {value:Object.freeze({invoke, sleep, requestDirectory}), configurable:false});
+      const readFile = (url, encoding) => new Promise((resolve, reject) => {
+        if (typeof url !== "string" || (encoding !== undefined && encoding !== "utf8")) {
+          return reject(error("Invalid virtual filesystem URL or encoding", "InvalidRequest"));
+        }
+        readFileNative(url, 4 * 1024 * 1024, resolve, reject);
+      }).then(bytes => {
+        const value = new Uint8Array(bytes);
+        return encoding === "utf8" ? decodeUtf8(value) : value;
+      });
+      Object.defineProperty(globalThis, "Zintl", {value:Object.freeze({invoke, sleep, readFile}), configurable:false});
       const formatConsoleValue = value => {
         if (typeof value === "string") return value;
         try { const encoded = JSON.stringify(value); if (encoded !== undefined) return encoded; } catch (_) {}
@@ -669,7 +497,7 @@ private final class JSCFFIEngine: @unchecked Sendable {
         Promise.resolve(result).then(value => evaluationDone(id, true, encode(value)),
           e => evaluationDone(id, false, `${e?.name ?? "Error"}: ${e?.message ?? e}`));
       };
-      return Object.freeze({evaluate, decorate});
+      return Object.freeze({evaluate});
     })()
     """#
 }

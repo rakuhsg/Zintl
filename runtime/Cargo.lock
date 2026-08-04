@@ -96,7 +96,6 @@ dependencies = [
  "runtime-event-loop",
  "runtime-filesystem",
  "runtime-ops",
- "runtime-permission",
  "runtime-resource",
 ]
 

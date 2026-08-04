@@ -2,8 +2,9 @@
 
 ## Ownership
 
-Rust owns runtime state, permission policy, capability/resource tables, timers,
-I/O workers, reactor registrations and OS resources. Swift owns only the
+The application owns VFS authorization policy. Rust owns runtime state, policy
+enforcement, capability/resource tables, timers, I/O workers, reactor
+registrations and OS resources. Swift owns only the
 JavaScriptCore context, values, Promise roots and private host-object slots.
 Untrusted JavaScript receives opaque runtime-local object identities, never an
 OS descriptor, native pointer or platform API.
@@ -41,6 +42,6 @@ notifier conveys only that work may be available. It never enters JSC. The host
 schedules finite `EngineSession::drive` turns; there is no public resident loop
 or main-thread blocking poll.
 
-Shutdown rejects new work, cancels permission/host/timer/I/O requests, drains
+Shutdown rejects new work, cancels host/timer/I/O requests, drains
 terminal completions, deregisters the reactor, closes Rust resources, releases
 JSC values on the Swift serial queue and finally frees the opaque engine.

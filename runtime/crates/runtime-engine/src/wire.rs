@@ -1,8 +1,8 @@
 //! Canonical `ZJE1` engine-event decoder.
 
 use crate::{
-    EngineError, EngineEvent, EngineObjectId, EvaluationId, EvaluationOutcome, FilesystemRequest,
-    HostRequest, HostRequestId, JavaScriptException,
+    EngineError, EngineEvent, EvaluationId, EvaluationOutcome, FilesystemRequest, HostRequest,
+    HostRequestId, JavaScriptException,
 };
 
 /// Decodes one complete canonical engine event.
@@ -77,39 +77,10 @@ fn decode_host_request(kind: u16, payload: &[u8]) -> Result<HostRequest, EngineE
         2 => HostRequest::Sleep {
             nanoseconds: cursor.u64()?,
         },
-        10 => HostRequest::Filesystem(FilesystemRequest::RequestDirectory {
-            rights: cursor.u64()?,
-            locator: utf8_remaining(&mut cursor)?,
-        }),
-        11 => {
-            let directory = EngineObjectId(cursor.u64()?);
-            let rights = cursor.u64()?;
-            let flags = cursor.u8()?;
-            if flags & !3 != 0 {
-                return Err(EngineError::Backend);
-            }
-            HostRequest::Filesystem(FilesystemRequest::OpenRelative {
-                directory,
-                rights,
-                create: flags & 1 != 0,
-                truncate: flags & 2 != 0,
-                path: utf8_remaining(&mut cursor)?,
-            })
-        }
-        12 => HostRequest::Filesystem(FilesystemRequest::Read {
-            file: EngineObjectId(cursor.u64()?),
+        10 => HostRequest::Filesystem(FilesystemRequest::ReadFile {
             maximum_bytes: usize::try_from(cursor.u64()?)
                 .map_err(|_| EngineError::QuotaExceeded)?,
-        }),
-        13 => HostRequest::Filesystem(FilesystemRequest::Write {
-            file: EngineObjectId(cursor.u64()?),
-            bytes: cursor.take_remaining().to_vec(),
-        }),
-        14 => HostRequest::Filesystem(FilesystemRequest::Stat {
-            object: EngineObjectId(cursor.u64()?),
-        }),
-        15 => HostRequest::Filesystem(FilesystemRequest::Close {
-            object: EngineObjectId(cursor.u64()?),
+            url: utf8_remaining(&mut cursor)?,
         }),
         _ => return Err(EngineError::Backend),
     };
@@ -143,9 +114,6 @@ impl<'a> Cursor<'a> {
             .ok_or(EngineError::Backend)?;
         self.offset = end;
         Ok(value)
-    }
-    fn u8(&mut self) -> Result<u8, EngineError> {
-        Ok(self.take(1)?[0])
     }
     fn u16(&mut self) -> Result<u16, EngineError> {
         Ok(u16::from_be_bytes(

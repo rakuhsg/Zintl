@@ -3,8 +3,8 @@
 #![forbid(unsafe_code)]
 
 use runtime_embed::{
-    EmbeddedRuntime, EngineSession, HostOpContext, OpLimits, PermissionDecision, PermissionRequest,
-    PermissionResponder, RuntimeBuilder, RuntimeError,
+    Authority, AuthorizationRequest, AuthorizationResult, EmbeddedRuntime, EngineSession,
+    HostOpContext, OpLimits, RuntimeBuilder, RuntimeError, Source, VfsConfig,
 };
 use runtime_engine::{
     DriveBudget, EngineConfiguration, EngineError, EngineNotifier, EvaluationId, EvaluationOutcome,
@@ -16,45 +16,41 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-const DIRECTORY_QUOTA: u64 = 64 * 1024 * 1024;
 const DRIVE_BUDGET: DriveBudget = DriveBudget {
     maximum_events: 64,
     maximum_bytes: 1024 * 1024,
 };
 
-/// Trusted terminal policy consulted for every requested authority grant.
-pub trait PermissionPrompt: Send + Sync + 'static {
-    /// Returns true only for an explicit approval of this exact request.
-    fn approve(&self, request: &PermissionRequest) -> bool;
-}
-
-/// Deny-by-default interactive terminal permission prompt.
+/// Deny-by-default authority for the REPL's `fs` virtual filesystem.
 #[derive(Default)]
-pub struct TerminalPermissionPrompt;
+pub struct TerminalFsAuthority;
 
-impl PermissionPrompt for TerminalPermissionPrompt {
-    fn approve(&self, request: &PermissionRequest) -> bool {
-        let directory = request.requested_directory.as_deref().unwrap_or("<none>");
+impl Authority for TerminalFsAuthority {
+    fn authorization_requested(&self, request: &AuthorizationRequest<'_>) -> AuthorizationResult {
         let mut stderr = io::stderr().lock();
         if writeln!(
             stderr,
-            "Permission request:\n  operation: {}\n  kind: {}\n  directory: {}\n  rights: 0x{:x}\nAllow? [y/N] ",
-            request.operation, request.kind, directory, request.requested_rights
+            "Filesystem authorization request:\n  vfs: {}\n  operation: {:?}\n  path: {}\nAllow? [y/N] ",
+            request.vfs, request.operation, request.path
         )
         .and_then(|()| stderr.flush())
         .is_err()
         {
-            return false;
+            return AuthorizationResult::Deny;
         }
         let mut answer = String::new();
-        if read_permission_answer(&mut answer).is_err() {
-            return false;
+        if read_authorization_answer(&mut answer).is_err() {
+            return AuthorizationResult::Deny;
         }
-        matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes")
+        if matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes") {
+            AuthorizationResult::Allow
+        } else {
+            AuthorizationResult::Deny
+        }
     }
 }
 
-fn read_permission_answer(answer: &mut String) -> io::Result<usize> {
+fn read_authorization_answer(answer: &mut String) -> io::Result<usize> {
     if io::stdin().is_terminal() {
         return io::stdin().lock().read_line(answer);
     }
@@ -115,26 +111,20 @@ impl JavaScriptRepl {
     /// # Errors
     ///
     /// Returns sanitized runtime or `JavaScriptCore` initialization failures.
-    pub fn new(prompt: Arc<dyn PermissionPrompt>) -> Result<Self, ReplError> {
+    pub fn new(authority: Arc<dyn Authority>) -> Result<Self, ReplError> {
+        let current_directory = std::env::current_dir()?;
         let runtime = RuntimeBuilder::new()
-            .permission_callback(
-                move |request: PermissionRequest, responder: PermissionResponder| {
-                    let decision = if prompt.approve(&request) {
-                        PermissionDecision::Allow {
-                            rights: request.requested_rights,
-                            quota: DIRECTORY_QUOTA,
-                        }
-                    } else {
-                        PermissionDecision::Deny
-                    };
-                    let _ = responder.respond(decision);
+            .add_vfs(VfsConfig {
+                name: "fs".into(),
+                source: Source::LoadDir {
+                    path: current_directory,
                 },
-            )
+                authority: Some(authority),
+            })?
             .register_op(
                 "dev.zintl.echo",
                 1,
                 OpLimits::new(1024 * 1024, 1024 * 1024, 30_000_000_000)?,
-                "dev.zintl.permission.echo",
                 |_context: HostOpContext, input: Vec<u8>| Ok(input),
             )?
             .build()?;
@@ -281,25 +271,29 @@ impl From<io::Error> for ReplError {
 
 #[cfg(test)]
 mod tests {
-    use super::{JavaScriptRepl, PermissionPrompt};
-    use runtime_embed::PermissionRequest;
-    use std::fs;
+    use super::JavaScriptRepl;
+    use runtime_embed::{Authority, AuthorizationRequest, AuthorizationResult};
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct Deny;
 
-    impl PermissionPrompt for Deny {
-        fn approve(&self, _request: &PermissionRequest) -> bool {
-            false
+    impl Authority for Deny {
+        fn authorization_requested(
+            &self,
+            _request: &AuthorizationRequest<'_>,
+        ) -> AuthorizationResult {
+            AuthorizationResult::Deny
         }
     }
 
     struct Allow;
 
-    impl PermissionPrompt for Allow {
-        fn approve(&self, _request: &PermissionRequest) -> bool {
-            true
+    impl Authority for Allow {
+        fn authorization_requested(
+            &self,
+            _request: &AuthorizationRequest<'_>,
+        ) -> AuthorizationResult {
+            AuthorizationResult::Allow
         }
     }
 
@@ -336,11 +330,11 @@ mod tests {
     }
 
     #[test]
-    // Verifies absence of explicit approval rejects directory authority.
-    fn permission_callback_denies_by_default() {
+    // Verifies absence of explicit approval rejects virtual filesystem reads.
+    fn vfs_authority_denies_by_default() {
         let mut repl = JavaScriptRepl::new(Arc::new(Deny)).expect("repl");
         let error = repl
-            .evaluate("Zintl.requestDirectory('/tmp', {read:true})")
+            .evaluate("Zintl.readFile('fs://Cargo.toml', 'utf8')")
             .expect_err("denied");
         assert!(error.to_string().contains("Host operation failed"));
         let unknown = repl
@@ -351,62 +345,19 @@ mod tests {
     }
 
     #[test]
-    // Verifies the public Promise API reaches Rust-owned permission and filesystem resources.
-    fn approved_directory_uses_opaque_rust_resources() {
-        let root = std::env::temp_dir().join(format!(
-            "zintl-jsc-repl-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        fs::create_dir(&root).expect("directory");
-        let root = root.canonicalize().expect("canonical test directory");
-        fs::write(root.join("sample.txt"), b"runtime").expect("sample");
-        fs::write(root.join("utf8.txt"), "こんにちは").expect("UTF-8 sample");
-        fs::write(root.join("invalid.txt"), [0xf0, 0x28, 0x8c, 0x28]).expect("invalid UTF-8");
+    // Verifies VFS URLs reach files without exposing an absolute path to JavaScript.
+    fn approved_vfs_reads_use_virtual_urls() {
         let mut repl = JavaScriptRepl::new(Arc::new(Allow)).expect("repl");
-        let source = format!(
-            "(async () => {{ const d = await Zintl.requestDirectory({path:?}, {{read:true, metadata:true}}); globalThis.savedOpen = d.openRelative; const f = await d.openRelative('sample.txt', {{read:true, metadata:true}}); globalThis.savedReadString = f.readString; const b = await f.read({{maxBytes:64}}); await f.close(); await d.close(); return b; }})()",
-            path = root.to_string_lossy()
-        );
-        assert_eq!(
-            repl.evaluate(&source).expect("evaluate"),
-            r#"{"type":"bytes","value":[114,117,110,116,105,109,101]}"#
-        );
-        let write_source = format!(
-            "(async () => {{ const d = await Zintl.requestDirectory({path:?}, {{read:true, write:true, create:true, truncate:true, metadata:true}}); await d.writeRelative('fresh.txt', new Uint8Array([1,2,3]), {{create:true, truncate:true}}); const metadata = await d.statRelative('fresh.txt'); const bytes = await d.readRelative('fresh.txt', {{maxBytes:8}}); await d.close(); return {{size:metadata.size, bytes:Array.from(bytes)}}; }})()",
-            path = root.to_string_lossy()
-        );
-        assert_eq!(
-            repl.evaluate(&write_source).expect("write, stat and read"),
-            r#"{"type":"value","value":{"size":3,"bytes":[1,2,3]}}"#
-        );
-        let string_source = format!(
-            "(async () => {{ const d = await Zintl.requestDirectory({path:?}, {{read:true}}); const f = await d.openRelative('utf8.txt', {{read:true}}); const value = await f.readString({{maxBytes:64}}); await f.close(); await d.close(); return value; }})()",
-            path = root.to_string_lossy()
-        );
-        assert_eq!(
-            repl.evaluate(&string_source).expect("read UTF-8 string"),
-            r#"{"type":"value","value":"こんにちは"}"#
-        );
-        let invalid_source = format!(
-            "(async () => {{ const d = await Zintl.requestDirectory({path:?}, {{read:true}}); const f = await d.openRelative('invalid.txt', {{read:true}}); try {{ return await f.readString({{maxBytes:64}}); }} finally {{ await f.close(); await d.close(); }} }})()",
-            path = root.to_string_lossy()
-        );
-        let invalid = repl
-            .evaluate(&invalid_source)
-            .expect_err("invalid UTF-8 rejected");
-        assert!(invalid.to_string().contains("Invalid UTF-8"));
-        let forged_string = repl
-            .evaluate("savedReadString.call({})")
-            .expect_err("forged string receiver");
-        assert!(forged_string.to_string().contains("Invalid receiver"));
-        let forged = repl
-            .evaluate("savedOpen.call({}, 'sample.txt', {read:true})")
-            .expect_err("forged receiver");
-        assert!(forged.to_string().contains("Invalid receiver"));
+        let value = repl
+            .evaluate(
+                "Zintl.readFile('fs://Cargo.toml', 'utf8').then(x => x.includes('[package]'))",
+            )
+            .expect("read workspace manifest");
+        assert_eq!(value, r#"{"type":"value","value":true}"#);
+        let absolute = repl
+            .evaluate("Zintl.readFile('/etc/passwd', 'utf8')")
+            .expect_err("absolute path rejected");
+        assert!(absolute.to_string().contains("Host operation failed"));
         assert_eq!(
             repl.evaluate("Zintl.sleep(1)").expect("sleep"),
             r#"{"type":"value","value":null}"#
@@ -417,6 +368,5 @@ mod tests {
             r#"{"type":"bytes","value":[7,8]}"#
         );
         repl.shutdown().expect("shutdown");
-        fs::remove_dir_all(root).expect("cleanup");
     }
 }
