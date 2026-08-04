@@ -1,0 +1,5 @@
+[package]
+name = "zintl"
+edition = "2024"
+
+[dependencies]

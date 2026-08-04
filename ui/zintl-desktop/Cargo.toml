@@ -1,0 +1,6 @@
+[package]
+name = "zintl-desktop"
+edition = "2024"
+
+[dependencies]
+zintl = { path = "../zintl" }
