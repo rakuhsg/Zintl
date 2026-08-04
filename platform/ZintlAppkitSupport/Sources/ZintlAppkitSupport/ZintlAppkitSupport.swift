@@ -451,9 +451,6 @@ class ZintlWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
     sidebarItem.minimumThickness = 180
     sidebarItem.maximumThickness = 360
     sidebarItem.canCollapse = true
-    if #available(macOS 11.0, *) {
-      sidebarItem.allowsFullHeightLayout = true
-    }
     splitViewController.addSplitViewItem(sidebarItem)
     splitViewController.addSplitViewItem(
       NSSplitViewItem(viewController: self.contentController)
