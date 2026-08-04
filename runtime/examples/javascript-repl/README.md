@@ -28,6 +28,9 @@ const directory = await Zintl.requestDirectory("/absolute/path", {
 });
 const bytes = await directory.readRelative("notes.txt", { maxBytes: 65536 });
 console.log(bytes);
+const file = await directory.openRelative("notes.txt", { read: true });
+console.log(await file.readString({ maxBytes: 65536 }));
+await file.close();
 await directory.close();
 ```
 
@@ -35,4 +38,5 @@ The terminal displays the operation, requested rights and directory. Only an
 explicit `y` grants attenuated authority. JavaScript receives opaque directory
 and file objects, never a descriptor, resource ID, native pointer or permission
 blob. `console.debug`, `log`, `info`, `warn` and `error` are forwarded through
-the bounded engine event queue.
+the bounded engine event queue. `file.readString()` performs strict UTF-8
+decoding and rejects malformed input rather than replacing invalid bytes.

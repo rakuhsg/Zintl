@@ -572,6 +572,44 @@ private final class JSCFFIEngine: @unchecked Sendable {
       const requestDirectory = (path, options) => new Promise((resolve, reject) => {
         try { directoryNative(path, encodeRights(options, true), resolve, reject); } catch (e) { reject(e); }
       });
+      const decodeUtf8 = bytes => {
+        let output = "";
+        let codePoints = [];
+        const append = value => {
+          codePoints.push(value);
+          if (codePoints.length === 1024) {
+            output += String.fromCodePoint(...codePoints);
+            codePoints = [];
+          }
+        };
+        const continuation = value => (value & 0xc0) === 0x80;
+        for (let index = 0; index < bytes.length;) {
+          const first = bytes[index++];
+          if (first <= 0x7f) { append(first); continue; }
+          if (first >= 0xc2 && first <= 0xdf && index < bytes.length) {
+            const second = bytes[index++];
+            if (continuation(second)) { append(((first & 0x1f) << 6) | (second & 0x3f)); continue; }
+          } else if (first >= 0xe0 && first <= 0xef && index + 1 < bytes.length) {
+            const second = bytes[index++], third = bytes[index++];
+            const validSecond = continuation(second) && (first !== 0xe0 || second >= 0xa0)
+              && (first !== 0xed || second <= 0x9f);
+            if (validSecond && continuation(third)) {
+              append(((first & 0x0f) << 12) | ((second & 0x3f) << 6) | (third & 0x3f)); continue;
+            }
+          } else if (first >= 0xf0 && first <= 0xf4 && index + 2 < bytes.length) {
+            const second = bytes[index++], third = bytes[index++], fourth = bytes[index++];
+            const validSecond = continuation(second) && (first !== 0xf0 || second >= 0x90)
+              && (first !== 0xf4 || second <= 0x8f);
+            if (validSecond && continuation(third) && continuation(fourth)) {
+              append(((first & 0x07) << 18) | ((second & 0x3f) << 12)
+                | ((third & 0x3f) << 6) | (fourth & 0x3f)); continue;
+            }
+          }
+          throw error("Invalid UTF-8", "InvalidData");
+        }
+        if (codePoints.length) output += String.fromCodePoint(...codePoints);
+        return output;
+      };
       const decorate = (object, kind) => {
         const check = self => checkNative(self, kind);
         if (kind === 3) Object.defineProperties(object, {
@@ -601,6 +639,10 @@ private final class JSCFFIEngine: @unchecked Sendable {
         });
         if (kind === 4) Object.defineProperties(object, {
           read: { value(options = {}) { return new Promise((resolve, reject) => readNative(this, options.maxBytes ?? 65536, resolve, reject)).then(x => new Uint8Array(x)); }},
+          readString: { value(options = {}) {
+            if (!check(this)) return Promise.reject(error("Invalid receiver", "InvalidRequest"));
+            return this.read(options).then(decodeUtf8);
+          }},
           write: { value(bytes) { return new Promise((resolve, reject) => writeNative(this, Array.from(bytes), resolve, reject)); }},
           stat: { value() { return new Promise((resolve, reject) => statNative(this, resolve, reject)).then(bytes => {
             let size = 0; for (let i = 1; i < 9; i++) size = size * 256 + bytes[i];

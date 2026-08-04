@@ -364,9 +364,11 @@ mod tests {
         fs::create_dir(&root).expect("directory");
         let root = root.canonicalize().expect("canonical test directory");
         fs::write(root.join("sample.txt"), b"runtime").expect("sample");
+        fs::write(root.join("utf8.txt"), "こんにちは").expect("UTF-8 sample");
+        fs::write(root.join("invalid.txt"), [0xf0, 0x28, 0x8c, 0x28]).expect("invalid UTF-8");
         let mut repl = JavaScriptRepl::new(Arc::new(Allow)).expect("repl");
         let source = format!(
-            "(async () => {{ const d = await Zintl.requestDirectory({path:?}, {{read:true, metadata:true}}); globalThis.savedOpen = d.openRelative; const f = await d.openRelative('sample.txt', {{read:true, metadata:true}}); const b = await f.read({{maxBytes:64}}); await f.close(); await d.close(); return b; }})()",
+            "(async () => {{ const d = await Zintl.requestDirectory({path:?}, {{read:true, metadata:true}}); globalThis.savedOpen = d.openRelative; const f = await d.openRelative('sample.txt', {{read:true, metadata:true}}); globalThis.savedReadString = f.readString; const b = await f.read({{maxBytes:64}}); await f.close(); await d.close(); return b; }})()",
             path = root.to_string_lossy()
         );
         assert_eq!(
@@ -381,6 +383,26 @@ mod tests {
             repl.evaluate(&write_source).expect("write, stat and read"),
             r#"{"type":"value","value":{"size":3,"bytes":[1,2,3]}}"#
         );
+        let string_source = format!(
+            "(async () => {{ const d = await Zintl.requestDirectory({path:?}, {{read:true}}); const f = await d.openRelative('utf8.txt', {{read:true}}); const value = await f.readString({{maxBytes:64}}); await f.close(); await d.close(); return value; }})()",
+            path = root.to_string_lossy()
+        );
+        assert_eq!(
+            repl.evaluate(&string_source).expect("read UTF-8 string"),
+            r#"{"type":"value","value":"こんにちは"}"#
+        );
+        let invalid_source = format!(
+            "(async () => {{ const d = await Zintl.requestDirectory({path:?}, {{read:true}}); const f = await d.openRelative('invalid.txt', {{read:true}}); try {{ return await f.readString({{maxBytes:64}}); }} finally {{ await f.close(); await d.close(); }} }})()",
+            path = root.to_string_lossy()
+        );
+        let invalid = repl
+            .evaluate(&invalid_source)
+            .expect_err("invalid UTF-8 rejected");
+        assert!(invalid.to_string().contains("Invalid UTF-8"));
+        let forged_string = repl
+            .evaluate("savedReadString.call({})")
+            .expect_err("forged string receiver");
+        assert!(forged_string.to_string().contains("Invalid receiver"));
         let forged = repl
             .evaluate("savedOpen.call({}, 'sample.txt', {read:true})")
             .expect_err("forged receiver");

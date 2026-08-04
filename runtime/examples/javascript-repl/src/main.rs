@@ -65,5 +65,6 @@ fn print_help() {
     println!("  await Zintl.invoke('dev.zintl.echo', new Uint8Array([1, 2]))");
     println!("  const dir = await Zintl.requestDirectory('/absolute/path', {{read:true}})");
     println!("  const file = await dir.openRelative('file.txt', {{read:true}})");
-    println!("  await file.read({{maxBytes: 65536}}); await file.stat(); await file.close()");
+    println!("  await file.read({{maxBytes: 65536}}); await file.readString({{maxBytes: 65536}})");
+    println!("  await file.stat(); await file.close()");
 }
