@@ -1,0 +1,5 @@
+module CRuntimeFFI [system] {
+  header "include/runtime_ffi.h"
+  export *
+}
+

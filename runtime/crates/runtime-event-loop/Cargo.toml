@@ -1,0 +1,13 @@
+[package]
+name = "runtime-event-loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+reactor-api = { path = "../reactor-api" }
+
+[lints]
+workspace = true
+

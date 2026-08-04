@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/reactor-api",
+    "crates/reactor-kqueue",
+    "crates/runtime-core",
+    "crates/runtime-event-loop",
+    "crates/runtime-filesystem",
+    "crates/runtime-ffi",
+    "crates/runtime-ops",
+    "crates/runtime-permission",
+    "crates/runtime-resource",
+]
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[workspace.dependencies]
+rustix = { version = "1.0", features = ["fs"] }
+unicode-normalization = "0.1"
