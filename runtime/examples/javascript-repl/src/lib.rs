@@ -13,6 +13,7 @@ use runtime_engine::{
 use runtime_jsc::JavaScriptCoreBackend;
 use std::fmt;
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -23,10 +24,22 @@ const DRIVE_BUDGET: DriveBudget = DriveBudget {
 
 /// Deny-by-default authority for the REPL's `fs` virtual filesystem.
 #[derive(Default)]
-pub struct TerminalFsAuthority;
+pub struct TerminalFsAuthority {
+    allowed: AtomicBool,
+    prompt: Mutex<()>,
+}
 
 impl Authority for TerminalFsAuthority {
     fn authorization_requested(&self, request: &AuthorizationRequest<'_>) -> AuthorizationResult {
+        if self.allowed.load(Ordering::Acquire) {
+            return AuthorizationResult::Allow;
+        }
+        let Ok(_prompt) = self.prompt.lock() else {
+            return AuthorizationResult::Deny;
+        };
+        if self.allowed.load(Ordering::Acquire) {
+            return AuthorizationResult::Allow;
+        }
         let mut stderr = io::stderr().lock();
         if writeln!(
             stderr,
@@ -43,6 +56,7 @@ impl Authority for TerminalFsAuthority {
             return AuthorizationResult::Deny;
         }
         if matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes") {
+            self.allowed.store(true, Ordering::Release);
             AuthorizationResult::Allow
         } else {
             AuthorizationResult::Deny
@@ -271,9 +285,12 @@ impl From<io::Error> for ReplError {
 
 #[cfg(test)]
 mod tests {
-    use super::JavaScriptRepl;
-    use runtime_embed::{Authority, AuthorizationRequest, AuthorizationResult};
-    use std::sync::Arc;
+    use super::{JavaScriptRepl, TerminalFsAuthority};
+    use runtime_embed::{
+        Authority, AuthorizationOperation, AuthorizationRequest, AuthorizationResult,
+    };
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
 
     struct Deny;
 
@@ -295,6 +312,23 @@ mod tests {
         ) -> AuthorizationResult {
             AuthorizationResult::Allow
         }
+    }
+
+    #[test]
+    // Verifies a remembered approval bypasses subsequent terminal prompts for every path.
+    fn terminal_authority_remembers_approval() {
+        let authority = TerminalFsAuthority {
+            allowed: AtomicBool::new(true),
+            prompt: Mutex::new(()),
+        };
+        assert_eq!(
+            authority.authorization_requested(&AuthorizationRequest {
+                vfs: "fs",
+                path: "another-file.txt",
+                operation: AuthorizationOperation::ReadFile,
+            }),
+            AuthorizationResult::Allow
+        );
     }
 
     #[test]

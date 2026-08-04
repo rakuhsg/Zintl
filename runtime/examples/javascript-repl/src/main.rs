@@ -19,7 +19,7 @@ fn run() -> Result<(), ReplError> {
 fn run_batch() -> Result<(), ReplError> {
     let mut source = String::new();
     io::stdin().read_to_string(&mut source)?;
-    let mut repl = JavaScriptRepl::new(Arc::new(TerminalFsAuthority))?;
+    let mut repl = JavaScriptRepl::new(Arc::new(TerminalFsAuthority::default()))?;
     let evaluation = repl.evaluate_batch(&source);
     let shutdown = repl.shutdown();
     evaluation?;
@@ -28,7 +28,7 @@ fn run_batch() -> Result<(), ReplError> {
 }
 
 fn run_interactive() -> Result<(), ReplError> {
-    let mut repl = JavaScriptRepl::new(Arc::new(TerminalFsAuthority))?;
+    let mut repl = JavaScriptRepl::new(Arc::new(TerminalFsAuthority::default()))?;
     println!("Zintl Rust JavaScript REPL");
     println!("Type .help for host APIs and .exit to quit.");
     let mut line = String::new();

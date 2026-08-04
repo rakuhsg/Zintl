@@ -30,7 +30,8 @@ console.log(bytes);
 ```
 
 The terminal displays the VFS, operation and relative path. Only an explicit
-`y` grants access. JavaScript cannot provide an absolute OS path, and the
+`y` grants access; after approval, the REPL authority allows every `fs` access
+until the process exits. JavaScript cannot provide an absolute OS path, and the
 runtime does not cache the application's decision. `console.debug`, `log`,
 `info`, `warn` and `error` are forwarded through the bounded engine event queue.
 The `utf8` mode performs strict decoding and rejects malformed input.
