@@ -102,6 +102,14 @@ name = "reactor-api"
 version = "0.1.0"
 
 [[package]]
+name = "reactor-kqueue"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "reactor-api",
+]
+
+[[package]]
 name = "runtime-core"
 version = "0.1.0"
 dependencies = [
@@ -113,21 +121,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-engine"
+version = "0.1.0"
+
+[[package]]
 name = "runtime-event-loop"
 version = "0.1.0"
 dependencies = [
  "reactor-api",
-]
-
-[[package]]
-name = "runtime-ffi"
-version = "0.1.0"
-dependencies = [
- "runtime-core",
- "runtime-event-loop",
- "runtime-filesystem",
- "runtime-ops",
- "runtime-resource",
+ "reactor-kqueue",
 ]
 
 [[package]]
@@ -146,7 +148,7 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "runtime-core",
- "runtime-ffi",
+ "runtime-engine",
  "runtime-filesystem",
  "runtime-resource",
 ]

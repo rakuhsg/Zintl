@@ -73,6 +73,25 @@ impl<T> RuntimeTask<T> {
         result
     }
 
+    /// Takes a terminal result without blocking, or returns `None` while pending.
+    ///
+    /// # Errors
+    ///
+    /// Reports poisoned task state or timer teardown failure.
+    pub fn try_take(&mut self) -> Result<Option<Result<T, RuntimeError>>, RuntimeError> {
+        let result = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| RuntimeError::Internal)?
+            .result
+            .take();
+        if result.is_some() {
+            self.join_timer()?;
+        }
+        Ok(result)
+    }
+
     /// Cooperatively requests cancellation. Exactly one terminal result is retained.
     pub fn cancel(&self) {
         self.shared.cancelled.store(true, Ordering::Release);

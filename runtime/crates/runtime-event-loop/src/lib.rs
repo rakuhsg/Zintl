@@ -3,9 +3,138 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::time::Instant;
+
+use reactor_api::{Interest, Reactor, ReactorError, ReactorEvent, SourceRef};
 
 pub mod timer;
 pub mod worker;
+
+/// Compile-time selected native readiness backend.
+#[cfg(target_os = "macos")]
+pub type NativeReactor = reactor_kqueue::KqueueReactor;
+
+/// Compile-time fallback for targets without a native readiness backend yet.
+#[cfg(not(target_os = "macos"))]
+pub type NativeReactor = reactor_api::UnsupportedReactor;
+
+/// Event loop monomorphized with the compile-time selected platform reactor.
+pub type NativeEventLoop = EventLoop<NativeReactor>;
+
+/// A backend-generic, bounded readiness event loop.
+///
+/// `R` is monomorphized at compile time; the runtime never allocates a
+/// dynamic reactor dispatch. Blocking polls belong on a dedicated driver thread.
+pub struct EventLoop<R: Reactor> {
+    reactor: R,
+    maximum_events_per_poll: usize,
+}
+
+impl<R: Reactor> EventLoop<R> {
+    /// Creates an event loop with a mandatory finite poll budget.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a zero event budget.
+    pub fn new(reactor: R, maximum_events_per_poll: usize) -> Result<Self, ReactorError> {
+        if maximum_events_per_poll == 0 {
+            return Err(ReactorError::InvalidRegistration);
+        }
+        Ok(Self {
+            reactor,
+            maximum_events_per_poll,
+        })
+    }
+
+    /// Registers an opaque runtime-owned source.
+    ///
+    /// # Errors
+    ///
+    /// Returns a sanitized backend registration failure.
+    pub fn register(
+        &mut self,
+        source: SourceRef,
+        interest: Interest,
+    ) -> Result<R::Registration, ReactorError> {
+        self.reactor.register(source, interest)
+    }
+
+    /// Changes readiness interest for a live registration.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale registrations or backend failure.
+    pub fn reregister(
+        &mut self,
+        registration: &R::Registration,
+        interest: Interest,
+    ) -> Result<(), ReactorError> {
+        self.reactor.reregister(registration, interest)
+    }
+
+    /// Removes a live registration.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale registrations or backend failure.
+    pub fn deregister(&mut self, registration: R::Registration) -> Result<(), ReactorError> {
+        self.reactor.deregister(registration)
+    }
+
+    /// Performs one bounded poll and appends portable events to `output`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a sanitized backend poll failure.
+    pub fn poll_once(
+        &mut self,
+        deadline: Option<Instant>,
+        output: &mut Vec<ReactorEvent>,
+    ) -> Result<(), ReactorError> {
+        let mut polled = Vec::with_capacity(self.maximum_events_per_poll);
+        self.reactor.poll(deadline, &mut polled)?;
+        output.extend(polled.into_iter().take(self.maximum_events_per_poll));
+        Ok(())
+    }
+
+    /// Wakes a pending backend poll. Wakeups may be coalesced.
+    ///
+    /// # Errors
+    ///
+    /// Returns a sanitized backend wake failure.
+    pub fn wake(&self) -> Result<(), ReactorError> {
+        self.reactor.wake()
+    }
+
+    /// Returns the concrete backend for trusted platform setup.
+    pub fn backend_mut(&mut self) -> &mut R {
+        &mut self.reactor
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl EventLoop<reactor_kqueue::KqueueReactor> {
+    /// Creates the macOS native event loop backed by an owned kqueue.
+    ///
+    /// # Errors
+    ///
+    /// Returns a sanitized backend error when kqueue setup fails or the event
+    /// budget is zero.
+    pub fn new_native(maximum_events_per_poll: usize) -> Result<Self, ReactorError> {
+        Self::new(
+            reactor_kqueue::KqueueReactor::new()?,
+            maximum_events_per_poll,
+        )
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl EventLoop<reactor_api::UnsupportedReactor> {
+    /// Creates the compile-time unsupported placeholder for non-macOS targets.
+    pub fn new_native(maximum_events_per_poll: usize) -> Result<Self, ReactorError> {
+        Self::new(reactor_api::UnsupportedReactor, maximum_events_per_poll)
+    }
+}
 
 /// Thread-safe notification only; implementations must not call an engine API.
 pub trait CompletionNotifier: Send + Sync + 'static {
@@ -243,7 +372,88 @@ pub enum TrackerError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CallbackError, CallbackTracker, HostCompletion, TrackerError, TransitionResult};
+    use super::{
+        CallbackError, CallbackTracker, EventLoop, HostCompletion, TrackerError, TransitionResult,
+    };
+    use reactor_api::{EventFlags, Interest, Reactor, ReactorError, ReactorEvent, SourceRef};
+    use std::time::Instant;
+
+    struct FakeReactor {
+        event: Option<ReactorEvent>,
+    }
+
+    impl Reactor for FakeReactor {
+        type Registration = SourceRef;
+
+        fn register(
+            &mut self,
+            source: SourceRef,
+            _interest: Interest,
+        ) -> Result<Self::Registration, ReactorError> {
+            Ok(source)
+        }
+
+        fn reregister(
+            &mut self,
+            _registration: &Self::Registration,
+            _interest: Interest,
+        ) -> Result<(), ReactorError> {
+            Ok(())
+        }
+
+        fn deregister(&mut self, _registration: Self::Registration) -> Result<(), ReactorError> {
+            Ok(())
+        }
+
+        fn poll(
+            &mut self,
+            _deadline: Option<Instant>,
+            output: &mut Vec<ReactorEvent>,
+        ) -> Result<(), ReactorError> {
+            if let Some(event) = self.event.take() {
+                output.push(event);
+            }
+            Ok(())
+        }
+
+        fn wake(&self) -> Result<(), ReactorError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    // Verifies a concrete generic reactor is selected without dynamic dispatch.
+    fn generic_event_loop_drains_portable_events() {
+        let source = SourceRef::new(7);
+        let reactor = FakeReactor {
+            event: Some(ReactorEvent {
+                source,
+                flags: EventFlags::READABLE,
+            }),
+        };
+        let mut event_loop = EventLoop::new(reactor, 1).expect("event loop");
+        let registration = event_loop
+            .register(
+                source,
+                Interest {
+                    readable: true,
+                    writable: false,
+                },
+            )
+            .expect("registration");
+        let mut output = Vec::new();
+        event_loop.poll_once(None, &mut output).expect("poll");
+        assert_eq!(output.len(), 1);
+        event_loop.deregister(registration).expect("deregister");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    // Verifies the compile-time native alias constructs the kqueue backend on macOS.
+    fn native_event_loop_selects_kqueue_at_compile_time() {
+        let event_loop = super::NativeEventLoop::new_native(64).expect("native kqueue loop");
+        drop(event_loop);
+    }
 
     #[test]
     // Verifies completion wins once and a duplicate completion is late.

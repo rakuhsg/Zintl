@@ -1,6 +1,6 @@
 # Rust JavaScript REPL
 
-This example embeds the pure-Rust Boa engine behind `runtime-embed`. It keeps a
+This example embeds Swift JavaScriptCore behind the engine-neutral Rust API. It keeps a
 single JavaScript realm alive and exposes a frozen, synchronous `Zintl` host API.
 Filesystem access is deny-by-default.
 

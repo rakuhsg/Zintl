@@ -6,9 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-boa_engine = { version = "0.20", default-features = false }
-boa_gc = "0.20"
 runtime-embed = { path = "../../crates/runtime-embed" }
+runtime-engine = { path = "../../crates/runtime-engine" }
+runtime-jsc = { path = "../../crates/runtime-jsc" }
 
 [lints]
 workspace = true

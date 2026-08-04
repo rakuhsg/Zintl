@@ -10,13 +10,13 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 runtime-core = { path = "../crates/runtime-core" }
-runtime-ffi = { path = "../crates/runtime-ffi" }
+runtime-engine = { path = "../crates/runtime-engine" }
 runtime-filesystem = { path = "../crates/runtime-filesystem" }
 runtime-resource = { path = "../crates/runtime-resource" }
 
 [[bin]]
-name = "ffi_op_decoder"
-path = "fuzz_targets/ffi_op_decoder.rs"
+name = "engine_event_decoder"
+path = "fuzz_targets/engine_event_decoder.rs"
 test = false
 doc = false
 bench = false

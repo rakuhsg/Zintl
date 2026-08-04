@@ -71,6 +71,50 @@ pub enum ReactorError {
     Backend,
 }
 
+/// Compile-time fallback used on platforms without a selected readiness backend.
+#[derive(Debug, Default)]
+pub struct UnsupportedReactor;
+
+/// Registration type for [`UnsupportedReactor`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnsupportedRegistration;
+
+impl Reactor for UnsupportedReactor {
+    type Registration = UnsupportedRegistration;
+
+    fn register(
+        &mut self,
+        _source: SourceRef,
+        _interest: Interest,
+    ) -> Result<Self::Registration, ReactorError> {
+        Err(ReactorError::Unsupported)
+    }
+
+    fn reregister(
+        &mut self,
+        _registration: &Self::Registration,
+        _interest: Interest,
+    ) -> Result<(), ReactorError> {
+        Err(ReactorError::Unsupported)
+    }
+
+    fn deregister(&mut self, _registration: Self::Registration) -> Result<(), ReactorError> {
+        Err(ReactorError::Unsupported)
+    }
+
+    fn poll(
+        &mut self,
+        _deadline: Option<Instant>,
+        _output: &mut Vec<ReactorEvent>,
+    ) -> Result<(), ReactorError> {
+        Err(ReactorError::Unsupported)
+    }
+
+    fn wake(&self) -> Result<(), ReactorError> {
+        Err(ReactorError::Unsupported)
+    }
+}
+
 /// Readiness reactor contract. `poll` is called only by a dedicated reactor thread.
 pub trait Reactor: Send + 'static {
     type Registration: Send;

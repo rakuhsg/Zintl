@@ -10,7 +10,7 @@ fn main() {
 }
 
 fn run() -> Result<(), ReplError> {
-    let mut repl = JavaScriptRepl::new(Arc::new(TerminalPermissionPrompt::default()))?;
+    let mut repl = JavaScriptRepl::new(Arc::new(TerminalPermissionPrompt))?;
     println!("Zintl Rust JavaScript REPL");
     println!("Type .help for host APIs and .exit to quit.");
     let mut line = String::new();
@@ -43,10 +43,9 @@ fn run() -> Result<(), ReplError> {
 
 fn print_help() {
     println!("Host APIs:");
-    println!("  Zintl.requestDirectory('/absolute/path', 'read,metadata')");
-    println!("  Zintl.readTextFile('relative.txt')");
-    println!("  Zintl.stat('relative.txt')");
-    println!("  Zintl.writeTextFile('relative.txt', 'text')");
-    println!("  Zintl.closeDirectory()");
-    println!("Rights: read, write, create, metadata, enumerate, truncate");
+    println!("  await Zintl.sleep(milliseconds)");
+    println!("  await Zintl.invoke('dev.zintl.echo', new Uint8Array([1, 2]))");
+    println!("  const dir = await Zintl.requestDirectory('/absolute/path', {{read:true}})");
+    println!("  const file = await dir.openRelative('file.txt', {{read:true}})");
+    println!("  await file.read({{maxBytes: 65536}}); await file.stat(); await file.close()");
 }

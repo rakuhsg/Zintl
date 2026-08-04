@@ -1,16 +1,64 @@
 //! Safe, engine-neutral Rust embedding API for the Zintl runtime.
+//!
+//! The embedder configures finite limits, a permission callback and optional
+//! custom operations before starting the runtime. JavaScript engines attach
+//! through [`EngineSession`], which exchanges typed events and owned bytes; it
+//! never exposes an engine value, OS descriptor, native pointer or resource
+//! table handle.
+//!
+//! Permission is deny-by-default. [`PermissionCallback::request_permission`]
+//! receives descriptive request data and a one-shot [`PermissionResponder`].
+//! An allow response can only attenuate requested rights and quota. The scope
+//! remains Rust-owned, and a directory is opened only after approval.
+//!
+//! # Lifecycle
+//!
+//! ```no_run
+//! use runtime_embed::{
+//!     PermissionDecision, PermissionRequest, PermissionResponder, RuntimeBuilder,
+//! };
+//!
+//! let runtime = RuntimeBuilder::new()
+//!     .permission_callback(
+//!         |request: PermissionRequest, responder: PermissionResponder| {
+//!             // A real host should ask its user. This example denies by default.
+//!             let decision = if request.operation == "dev.example.read-only" {
+//!                 PermissionDecision::Allow {
+//!                     rights: request.requested_rights,
+//!                     quota: 64 * 1024,
+//!                 }
+//!             } else {
+//!                 PermissionDecision::Deny
+//!             };
+//!             let _ = responder.respond(decision);
+//!         },
+//!     )
+//!     .build()?;
+//! runtime.start()?;
+//! // Attach a JavaScriptEngineBackend with EngineSession, then schedule bounded
+//! // EngineSession::drive turns from the host's executor.
+//! runtime.shutdown()?;
+//! # Ok::<(), runtime_embed::RuntimeError>(())
+//! ```
+//!
+//! [`RuntimeTask`] implements `Future`. Its blocking `wait` helper is only for
+//! trusted CLI/background threads; UI and engine executors should await tasks
+//! or use bounded [`EngineSession::drive`] turns.
 
 #![forbid(unsafe_code)]
 
+mod engine;
 mod executor;
 mod filesystem;
 mod persistence;
 mod task;
 
+pub use engine::{DriveReport, EngineSession};
 pub use filesystem::{Directory, FileKind, FileMetadata, FileResource};
 pub use persistence::{
     DirectoryScopeCodec, ExactPathScopeCodec, PersistenceConfiguration, ScopeCodecError,
 };
+pub use runtime_engine;
 pub use task::RuntimeTask;
 
 use executor::HostExecutor;
@@ -29,7 +77,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::time::Duration;
 
 const DIRECTORY_PERMISSION: &str = "zintl.permission.fs.directory";
@@ -180,23 +228,44 @@ pub struct PermissionRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PermissionDecision {
     Deny,
-    Allow {
-        scope: Vec<u8>,
-        rights: u64,
-        quota: u64,
-    },
+    Allow { rights: u64, quota: u64 },
 }
 
-pub trait PermissionResolver: Send + Sync + 'static {
-    fn resolve(&self, request: PermissionRequest) -> PermissionDecision;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PermissionResponseError {
+    RequestExpired,
 }
 
-impl<F> PermissionResolver for F
+/// One-shot authority response. It contains no resource or OS handle.
+pub struct PermissionResponder {
+    sender: Option<mpsc::SyncSender<PermissionDecision>>,
+}
+
+impl PermissionResponder {
+    /// Completes one permission request. Consuming `self` prevents duplicate replies.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RequestExpired` after timeout, cancellation, or shutdown wins.
+    pub fn respond(mut self, decision: PermissionDecision) -> Result<(), PermissionResponseError> {
+        self.sender
+            .take()
+            .ok_or(PermissionResponseError::RequestExpired)?
+            .try_send(decision)
+            .map_err(|_| PermissionResponseError::RequestExpired)
+    }
+}
+
+pub trait PermissionCallback: Send + Sync + 'static {
+    fn request_permission(&self, request: PermissionRequest, responder: PermissionResponder);
+}
+
+impl<F> PermissionCallback for F
 where
-    F: Fn(PermissionRequest) -> PermissionDecision + Send + Sync + 'static,
+    F: Fn(PermissionRequest, PermissionResponder) + Send + Sync + 'static,
 {
-    fn resolve(&self, request: PermissionRequest) -> PermissionDecision {
-        self(request)
+    fn request_permission(&self, request: PermissionRequest, responder: PermissionResponder) {
+        self(request, responder);
     }
 }
 
@@ -250,7 +319,7 @@ impl OpHandler for PendingHandler {
 
 pub struct RuntimeBuilder {
     configuration: RuntimeConfiguration,
-    permission_resolver: Option<Arc<dyn PermissionResolver>>,
+    permission_callback: Option<Arc<dyn PermissionCallback>>,
     persistence: Option<PersistenceConfiguration>,
     registry: OpRegistryBuilder,
     operations: HashMap<(String, u32), RegisteredHostOp>,
@@ -268,7 +337,7 @@ impl RuntimeBuilder {
     pub fn new() -> Self {
         Self {
             configuration: RuntimeConfiguration::default(),
-            permission_resolver: None,
+            permission_callback: None,
             persistence: None,
             registry: OpRegistryBuilder::new(),
             operations: HashMap::new(),
@@ -282,9 +351,10 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Installs the only callback capable of approving new authority.
     #[must_use]
-    pub fn permission_resolver(mut self, resolver: impl PermissionResolver) -> Self {
-        self.permission_resolver = Some(Arc::new(resolver));
+    pub fn permission_callback(mut self, callback: impl PermissionCallback) -> Self {
+        self.permission_callback = Some(Arc::new(callback));
         self
     }
 
@@ -379,7 +449,7 @@ impl RuntimeBuilder {
             host,
             registry: self.registry.freeze(),
             operations: self.operations,
-            permission_resolver: self.permission_resolver,
+            permission_callback: self.permission_callback,
             persistence,
             next_request: AtomicU64::new(1),
             live_resources: Mutex::new(HashSet::new()),
@@ -718,81 +788,6 @@ impl RuntimeHandle {
     }
 }
 
-/// Engine-specific crates implement lifecycle only; concrete evaluation/result
-/// APIs remain on the adapter type and receive a safe `RuntimeHandle`.
-pub trait EngineAdapter {
-    type Error;
-
-    /// Attaches the adapter to the safe, weak runtime callback surface.
-    ///
-    /// # Errors
-    ///
-    /// Returns an adapter-defined startup failure.
-    fn start(&mut self, runtime: RuntimeHandle) -> Result<(), Self::Error>;
-
-    /// Releases all engine-owned contexts and callbacks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an adapter-defined teardown failure.
-    fn shutdown(&mut self) -> Result<(), Self::Error>;
-}
-
-pub struct EngineLease<A: EngineAdapter> {
-    adapter: A,
-    active: bool,
-}
-
-impl<A: EngineAdapter> EngineLease<A> {
-    /// Starts and owns an adapter attached to a running runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns runtime state or adapter startup failure.
-    pub fn attach(runtime: &EmbeddedRuntime, mut adapter: A) -> Result<Self, A::Error>
-    where
-        A::Error: From<RuntimeError>,
-    {
-        if let Err(error) = adapter.start(runtime.handle().map_err(A::Error::from)?) {
-            let _ = adapter.shutdown();
-            return Err(error);
-        }
-        Ok(Self {
-            adapter,
-            active: true,
-        })
-    }
-
-    #[must_use]
-    pub fn adapter(&self) -> &A {
-        &self.adapter
-    }
-
-    pub fn adapter_mut(&mut self) -> &mut A {
-        &mut self.adapter
-    }
-
-    /// Explicitly shuts down the owned adapter.
-    ///
-    /// # Errors
-    ///
-    /// Returns the adapter-defined teardown failure.
-    pub fn shutdown(mut self) -> Result<(), A::Error> {
-        let result = self.adapter.shutdown();
-        self.active = false;
-        result
-    }
-}
-
-impl<A: EngineAdapter> Drop for EngineLease<A> {
-    fn drop(&mut self) {
-        if self.active {
-            let _ = self.adapter.shutdown();
-            self.active = false;
-        }
-    }
-}
-
 struct Control {
     state: Mutex<RuntimeState>,
     audit: Mutex<VecDeque<AuditEvent>>,
@@ -831,7 +826,7 @@ pub(crate) struct Services {
     host: HostExecutor,
     registry: OpRegistry,
     operations: HashMap<(String, u32), RegisteredHostOp>,
-    permission_resolver: Option<Arc<dyn PermissionResolver>>,
+    permission_callback: Option<Arc<dyn PermissionCallback>>,
     persistence: Option<persistence::PersistenceState>,
     next_request: AtomicU64,
     live_resources: Mutex<HashSet<ResourceHandle>>,
@@ -893,15 +888,7 @@ impl Services {
             requested_directory: Some(locator_text.to_string()),
             reason: Some("Host requested directory access".to_string()),
         };
-        let Some(resolver) = &self.permission_resolver else {
-            self.record_denied(
-                DIRECTORY_OPERATION,
-                request_id,
-                AuditCategory::DirectoryPermission,
-            );
-            return Err(RuntimeError::PermissionDenied);
-        };
-        let decision = resolver.resolve(request);
+        let decision = self.resolve_permission(request, cancellation)?;
         if cancellation.is_cancelled() {
             self.control.record(
                 AuditCategory::DirectoryPermission,
@@ -913,7 +900,6 @@ impl Services {
         }
         self.ensure_running()?;
         let PermissionDecision::Allow {
-            scope: granted_scope,
             rights: granted_rights,
             quota,
         } = decision
@@ -925,7 +911,7 @@ impl Services {
             );
             return Err(RuntimeError::PermissionDenied);
         };
-        if granted_scope != scope || granted_rights != rights.bits() || quota == 0 {
+        if granted_rights == 0 || granted_rights & !rights.bits() != 0 || quota == 0 {
             self.record_denied(
                 DIRECTORY_OPERATION,
                 request_id,
@@ -933,7 +919,9 @@ impl Services {
             );
             return Err(RuntimeError::PermissionDenied);
         }
-        let approved = ApprovedDirectory::from_trusted_approval(locator, rights)
+        let granted_rights =
+            FilesystemRights::from_bits(granted_rights).map_err(RuntimeError::from_filesystem)?;
+        let approved = ApprovedDirectory::from_trusted_approval(locator, granted_rights)
             .map_err(RuntimeError::from_filesystem)?;
         let handle = self
             .filesystem
@@ -950,7 +938,13 @@ impl Services {
             DIRECTORY_OPERATION,
             Some(request_id),
         );
-        Ok(Directory::new(weak, handle, scope, rights.bits(), quota))
+        Ok(Directory::new(
+            weak,
+            handle,
+            scope,
+            granted_rights.bits(),
+            quota,
+        ))
     }
 
     fn invoke(
@@ -977,22 +971,13 @@ impl Services {
             requested_directory: None,
             reason: None,
         };
-        let Some(resolver) = &self.permission_resolver else {
-            self.record_denied(name, request_id, AuditCategory::CustomOperation);
-            return Err(RuntimeError::PermissionDenied);
-        };
-        let decision = resolver.resolve(request);
+        let decision = self.resolve_permission(request, &cancellation)?;
         self.ensure_running()?;
-        let PermissionDecision::Allow {
-            scope,
-            rights,
-            quota,
-        } = decision
-        else {
+        let PermissionDecision::Allow { rights, quota } = decision else {
             self.record_denied(name, request_id, AuditCategory::CustomOperation);
             return Err(RuntimeError::PermissionDenied);
         };
-        if scope != requested_scope || rights != requested_rights || quota == 0 {
+        if rights != requested_rights || quota == 0 {
             self.record_denied(name, request_id, AuditCategory::CustomOperation);
             return Err(RuntimeError::PermissionDenied);
         }
@@ -1043,6 +1028,32 @@ impl Services {
             Some(request_id),
         );
         Ok(output)
+    }
+
+    fn resolve_permission(
+        &self,
+        request: PermissionRequest,
+        cancellation: &task::Cancellation,
+    ) -> Result<PermissionDecision, RuntimeError> {
+        let Some(callback) = &self.permission_callback else {
+            return Err(RuntimeError::PermissionDenied);
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let responder = PermissionResponder {
+            sender: Some(sender),
+        };
+        let callback_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            callback.request_permission(request, responder);
+        }));
+        if callback_result.is_err() || cancellation.is_cancelled() {
+            return Err(RuntimeError::PermissionDenied);
+        }
+        match receiver.recv_timeout(self.permission_timeout) {
+            Ok(decision) if !cancellation.is_cancelled() => Ok(decision),
+            Ok(_) => Err(RuntimeError::Cancelled),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(RuntimeError::TimedOut),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(RuntimeError::PermissionDenied),
+        }
     }
 
     pub(crate) fn track_resource(&self, handle: ResourceHandle) -> Result<(), RuntimeError> {
@@ -1247,19 +1258,21 @@ mod tests {
         path
     }
 
-    fn allowing_resolver(request: PermissionRequest) -> PermissionDecision {
-        PermissionDecision::Allow {
-            scope: request.requested_scope,
-            rights: request.requested_rights,
-            quota: 64 * 1_024,
-        }
+    #[allow(clippy::needless_pass_by_value)]
+    fn allowing_callback(request: PermissionRequest, responder: PermissionResponder) {
+        responder
+            .respond(PermissionDecision::Allow {
+                rights: request.requested_rights,
+                quota: 64 * 1_024,
+            })
+            .expect("live permission response");
     }
 
     #[test]
     // Verifies builder/start/invoke/shutdown form a complete permission-guarded host lifecycle.
     fn custom_operation_lifecycle_is_available_from_rust() {
         let runtime = RuntimeBuilder::new()
-            .permission_resolver(allowing_resolver)
+            .permission_callback(allowing_callback)
             .register_op(
                 "dev.zintl.test.reverse",
                 1,
@@ -1291,7 +1304,7 @@ mod tests {
         let root = temporary_directory("filesystem");
         fs::write(root.join("sample.txt"), b"runtime").expect("sample");
         let runtime = RuntimeBuilder::new()
-            .permission_resolver(allowing_resolver)
+            .permission_callback(allowing_callback)
             .build()
             .expect("runtime");
         runtime.start().expect("start");
@@ -1338,41 +1351,61 @@ mod tests {
         fs::remove_dir_all(root).expect("cleanup");
     }
 
-    struct FakeEngine {
-        host: Option<RuntimeHandle>,
-        stopped: bool,
-    }
-
-    impl EngineAdapter for FakeEngine {
-        type Error = RuntimeError;
-
-        fn start(&mut self, runtime: RuntimeHandle) -> Result<(), Self::Error> {
-            self.host = Some(runtime);
-            Ok(())
-        }
-
-        fn shutdown(&mut self) -> Result<(), Self::Error> {
-            self.stopped = true;
-            Ok(())
-        }
-    }
-
     #[test]
-    // Verifies an engine adapter receives only the safe Rust host surface, never internal handles.
-    fn engine_adapter_attaches_to_safe_runtime_handle() {
+    // Verifies an asynchronous one-shot callback may attenuate rights but cannot broaden scope.
+    fn permission_callback_is_one_shot_and_attenuating() {
+        let root = temporary_directory("callback-attenuation");
         let runtime = RuntimeBuilder::new()
-            .permission_resolver(allowing_resolver)
+            .permission_callback(
+                |_request: PermissionRequest, responder: PermissionResponder| {
+                    thread::spawn(move || {
+                        responder
+                            .respond(PermissionDecision::Allow {
+                                rights: FilesystemRights::READ.bits(),
+                                quota: 1024,
+                            })
+                            .expect("live response");
+                    });
+                },
+            )
             .build()
             .expect("runtime");
         runtime.start().expect("start");
-        let engine = FakeEngine {
-            host: None,
-            stopped: false,
-        };
-        let lease = EngineLease::attach(&runtime, engine).expect("attach");
-        assert!(lease.adapter().host.is_some());
-        lease.shutdown().expect("engine shutdown");
-        runtime.shutdown().expect("runtime shutdown");
+        let directory = runtime
+            .request_directory(
+                &root,
+                FilesystemRights::READ.union(FilesystemRights::METADATA),
+            )
+            .expect("submitted")
+            .wait()
+            .expect("directory");
+        assert_eq!(directory.rights(), FilesystemRights::READ.bits());
+        runtime.shutdown().expect("shutdown");
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    // Verifies a panicking permission callback fails closed without unwinding across the runtime.
+    fn permission_callback_panic_denies_authority() {
+        let root = temporary_directory("callback-panic");
+        let runtime = RuntimeBuilder::new()
+            .permission_callback(
+                |_request: PermissionRequest, _responder: PermissionResponder| {
+                    panic!("untrusted callback panic");
+                },
+            )
+            .build()
+            .expect("runtime");
+        runtime.start().expect("start");
+        assert!(matches!(
+            runtime
+                .request_directory(&root, FilesystemRights::READ)
+                .expect("submitted")
+                .wait(),
+            Err(RuntimeError::PermissionDenied)
+        ));
+        runtime.shutdown().expect("shutdown");
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -1404,7 +1437,7 @@ mod tests {
     // Verifies a non-cooperative host callback settles its public task at the declared timeout.
     fn custom_operation_timeout_is_enforced_outside_the_handler() {
         let runtime = RuntimeBuilder::new()
-            .permission_resolver(allowing_resolver)
+            .permission_callback(allowing_callback)
             .register_op(
                 "dev.zintl.test.slow",
                 1,
@@ -1434,14 +1467,15 @@ mod tests {
     fn shutdown_prevents_late_permission_authority() {
         let root = temporary_directory("shutdown-permission");
         let runtime = RuntimeBuilder::new()
-            .permission_resolver(|request: PermissionRequest| {
-                thread::sleep(Duration::from_millis(25));
-                PermissionDecision::Allow {
-                    scope: request.requested_scope,
-                    rights: request.requested_rights,
-                    quota: 64 * 1_024,
-                }
-            })
+            .permission_callback(
+                |request: PermissionRequest, responder: PermissionResponder| {
+                    thread::sleep(Duration::from_millis(25));
+                    let _ = responder.respond(PermissionDecision::Allow {
+                        rights: request.requested_rights,
+                        quota: 64 * 1_024,
+                    });
+                },
+            )
             .build()
             .expect("runtime");
         runtime.start().expect("start");
@@ -1503,7 +1537,7 @@ mod tests {
         )
         .expect("persistence");
         let runtime = RuntimeBuilder::new()
-            .permission_resolver(allowing_resolver)
+            .permission_callback(allowing_callback)
             .permission_persistence(persistence)
             .build()
             .expect("runtime");
@@ -1551,7 +1585,7 @@ mod tests {
         let root = temporary_directory("cross-runtime");
         let make_runtime = || {
             RuntimeBuilder::new()
-                .permission_resolver(allowing_resolver)
+                .permission_callback(allowing_callback)
                 .permission_persistence(
                     PersistenceConfiguration::new(
                         "dev.zintl.test",

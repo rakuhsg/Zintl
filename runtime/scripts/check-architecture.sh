@@ -39,6 +39,27 @@ if grep -Eiq 'JavaScriptCore|\bJSC\b|\bV8\b' \
   exit 1
 fi
 
+if grep -Eiq 'AsRawFd|IntoRawFd|RawFd|OwnedFd|BorrowedFd|std::os::fd|libc::' \
+  "$runtime_root/crates/runtime-embed/src/"*.rs \
+  "$runtime_root/crates/runtime-engine/src/"*.rs; then
+  echo "public embedding crates expose or consume raw OS descriptor APIs" >&2
+  exit 1
+fi
+
+if grep -Eiq 'Box<dyn[[:space:]]+Reactor|dyn[[:space:]]+Reactor' \
+  "$runtime_root/crates/runtime-event-loop/src/"*.rs \
+  "$runtime_root/crates/reactor-api/src/"*.rs; then
+  echo "reactor selection must remain compile-time generic" >&2
+  exit 1
+fi
+
+if grep -Eiq 'boa_engine|boa_gc|CRuntimeFFI|rt_runtime_|PermissionReplDemo|EmbeddingLifecycleExample' \
+  "$runtime_root/Cargo.toml" "$runtime_root/crates"/*/Cargo.toml \
+  "$runtime_root/swift/Package.swift"; then
+  echo "removed runtime implementations remain referenced" >&2
+  exit 1
+fi
+
 if find "$runtime_root/crates" -name Cargo.toml -exec \
   grep -Eiq 'reqwest|hyper|tokio|async-process|std::process|libloading|dlopen' {} +; then
   echo "network, process, or native-loading dependency is forbidden in the initial runtime" >&2
