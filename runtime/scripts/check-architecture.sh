@@ -14,8 +14,14 @@ if [ -e "$repo_root/rust-toolchain.toml" ] || [ -e "$repo_root/rust-toolchain" ]
   exit 1
 fi
 
-if find "$runtime_root" -path '*/src/main.rs' -o -name 'rust-toolchain.toml' -o -name 'rust-toolchain' | grep -q .; then
-  echo "CLI targets and nested Rust toolchain overrides are forbidden" >&2
+if find "$runtime_root" \( -name 'rust-toolchain.toml' -o -name 'rust-toolchain' \) | grep -q .; then
+  echo "nested Rust toolchain overrides are forbidden" >&2
+  exit 1
+fi
+
+if find "$runtime_root" -path '*/src/main.rs' \
+  ! -path "$runtime_root/examples/javascript-repl/src/main.rs" | grep -q .; then
+  echo "unexpected CLI target outside the explicit JavaScript REPL example" >&2
   exit 1
 fi
 

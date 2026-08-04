@@ -4,12 +4,14 @@ members = [
     "crates/reactor-api",
     "crates/reactor-kqueue",
     "crates/runtime-core",
+    "crates/runtime-embed",
     "crates/runtime-event-loop",
     "crates/runtime-filesystem",
     "crates/runtime-ffi",
     "crates/runtime-ops",
     "crates/runtime-permission",
     "crates/runtime-resource",
+    "examples/javascript-repl",
 ]
 exclude = ["fuzz"]
 

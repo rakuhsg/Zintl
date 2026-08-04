@@ -18,6 +18,10 @@ The reactor owns readiness registrations.
 ```text
 RuntimeEmbed -> RuntimeJSC -> CRuntimeFFI
                               |
+javascript-repl -> Boa + runtime-embed
+runtime-embed -> runtime-core -> runtime-ops -> runtime-permission
+      |       -> runtime-filesystem -> runtime-resource
+      `----------------------------> runtime-event-loop
 runtime-ffi -> runtime-core -> runtime-ops -> runtime-permission
                     |              |        -> runtime-resource
                     |              `------> runtime-event-loop -> reactor-api
@@ -30,6 +34,13 @@ reactor-kqueue -----------------------------------------------> reactor-api
 `runtime-core` cannot depend on JSC, Swift, V8, kqueue types, or OS event flags.
 `runtime-permission` cannot depend on an engine value. `runtime-resource` cannot
 depend on a JS object. CI checks these forbidden edges.
+
+Executable hosts remain outside `runtime/crates`. `runtime-embed` is a reusable
+library, not an executable or engine backend. The single Rust CLI target at
+`runtime/examples/javascript-repl` is an explicitly allowlisted host: it keeps
+the pure-Rust Boa engine and terminal I/O at the outer edge and depends inward
+on the public embedding contracts. Production runtime crates never depend on
+the REPL, terminal I/O, or an engine.
 
 ## Threads and ownership
 
