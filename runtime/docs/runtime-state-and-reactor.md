@@ -1,6 +1,6 @@
 # Runtime state, scheduling, and reactor
 
-The M3 core state is `Configured → Running → ShuttingDown → Terminated`.
+The core state is `Configured → Running → ShuttingDown → Terminated`.
 Submissions require `Running`; shutdown rejects new work and queues one terminal
 completion for each pending request. A request ID remains live until its
 completion is drained, preventing reuse against an unsettled Promise. Complete,
@@ -8,15 +8,15 @@ cancel, timeout, and shutdown remove pending state only after the bounded
 completion enqueue succeeds.
 
 Shutdown completion order is sorted by request identity rather than depending
-on randomized map iteration. Real concurrent C ABI tests verify cancel versus
+on randomized map iteration. Concurrent core tests verify cancel versus
 complete has one winner, and notifier reentrancy verifies no core lock crosses
 an embedder callback.
 
-Completion polling is always non-blocking. The FFI reports empty or required
-caller-buffer size without consuming data. The configured in-flight bound counts
-pending and undrained completions together, so queue growth and total completion
-bytes remain bounded. Notifiers run after core locks are released and may only
-schedule a bounded drain on the host JS executor.
+Completion polling is always non-blocking. Length inspection does not consume a
+completion. The configured in-flight bound counts pending and undrained
+completions together, so queue growth and total completion bytes remain bounded.
+Notifiers run after core locks are released and may only schedule a bounded
+drain on the host JS executor.
 
 `KqueueReactor` owns its queue and attached sources through `OwnedFd`. The
 backend uses level-triggered semantic read/write interests and maps kernel EOF

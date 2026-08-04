@@ -31,7 +31,7 @@ pub enum PermissionDecision {
     },
 }
 
-/// Asynchronous resolver boundary. M2 defines invocation and cancellation.
+/// Asynchronous resolver boundary with explicit invocation and cancellation.
 pub trait PermissionResolver: Send + Sync + 'static {
     /// Starts an asynchronous decision without blocking the caller.
     ///

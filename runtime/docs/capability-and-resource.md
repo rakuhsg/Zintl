@@ -13,6 +13,5 @@ before invoking resource code. Close advances the generation, cleanup runs once,
 and wraparound retires a slot. Dropping the table closes every live resource.
 
 Both crates forbid unsafe code and have no JSC, Swift, reactor, or OS backend
-dependency. M5 will place opened filesystem objects behind the resource trait;
+dependency. Opened filesystem objects remain behind the resource trait;
 filesystem methods do not become generic resource-table methods.
-

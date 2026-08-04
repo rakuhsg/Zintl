@@ -2,8 +2,9 @@
 
 Status: Accepted
 
-M5 uses `rustix` for safe owned-descriptor wrappers around `openat`, `statat`,
-`mkdirat`, `unlinkat`, `renameat`, directory iteration, `dup`, and `fstat`.
+The filesystem backend uses `rustix` for safe owned-descriptor wrappers around
+`openat`, `statat`, `mkdirat`, `unlinkat`, `renameat`, directory iteration,
+`dup`, and `fstat`.
 `unicode-normalization` enforces NFC operation paths. This keeps unsafe code out
 of the policy/resource/filesystem crates while retaining descriptor-relative
 macOS primitives. Both dependencies are version-locked by `Cargo.lock`, built
