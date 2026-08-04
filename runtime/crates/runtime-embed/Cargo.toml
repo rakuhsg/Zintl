@@ -1,0 +1,19 @@
+[package]
+name = "runtime-embed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+getrandom = "0.3"
+runtime-core = { path = "../runtime-core" }
+runtime-engine = { path = "../runtime-engine" }
+runtime-event-loop = { path = "../runtime-event-loop" }
+runtime-filesystem = { path = "../runtime-filesystem" }
+runtime-ops = { path = "../runtime-ops" }
+runtime-permission = { path = "../runtime-permission" }
+runtime-resource = { path = "../runtime-resource" }
+
+[lints]
+workspace = true

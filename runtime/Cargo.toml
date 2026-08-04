@@ -1,7 +1,34 @@
 [workspace]
 resolver = "3"
-members = ["zintl", "zintl-app", "zintl-deno", "zintl-native", "zintl-render", "zintl-wgpu"]
+members = [
+    "crates/reactor-api",
+    "crates/reactor-kqueue",
+    "crates/runtime-core",
+    "crates/runtime-embed",
+    "crates/runtime-engine",
+    "crates/runtime-event-loop",
+    "crates/runtime-jsc",
+    "crates/runtime-filesystem",
+    "crates/runtime-ops",
+    "crates/runtime-permission",
+    "crates/runtime-resource",
+    "examples/javascript-repl",
+]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"
+edition = "2024"
 license = "Apache-2.0 OR MIT"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[workspace.dependencies]
+rustix = { version = "1.0", features = ["fs"] }
+unicode-normalization = "0.1"
