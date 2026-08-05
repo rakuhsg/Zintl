@@ -1,7 +1,0 @@
-[package]
-name = "zintl"
-edition = "2024"
-version.workspace = true
-license.workspace = true
-
-[dependencies]
