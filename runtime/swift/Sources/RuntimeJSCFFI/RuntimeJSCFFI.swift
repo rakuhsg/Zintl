@@ -395,7 +395,7 @@ private final class JSCFFIEngine: @unchecked Sendable {
     }
   }
 
-  private let queue = DispatchQueue(label: "dev.zintl.runtime-jsc-ffi")
+  private let queue = DispatchQueue(label: "org.zintl.app.runtime-jsc-ffi")
   private let eventLock = NSLock()
   private let stateLock = NSLock()
   private let maximumEvaluations: Int
