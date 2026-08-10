@@ -1,4 +1,0 @@
-interface:
-  display_name: "Upgrade Zintl Deno"
-  short_description: "Upgrade and validate Zintl vendored Deno"
-  default_prompt: "Use $upgrade-zintl-deno to upgrade Zintl to a newer Deno release and validate its local patches."
