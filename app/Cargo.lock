@@ -9486,10 +9486,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zintl"
-version = "0.1.0"
-
-[[package]]
 name = "zintl-app"
 version = "0.1.0"
 dependencies = [

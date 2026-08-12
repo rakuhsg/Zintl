@@ -6,9 +6,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-runtime-embed = { path = "../../crates/runtime-embed" }
+messageloop-core.workspace = true
+messageloop-io.workspace = true
 runtime-engine = { path = "../../crates/runtime-engine" }
 runtime-jsc = { path = "../../crates/runtime-jsc" }
+zintl-host = { path = "../../crates/zintl-host" }
+zintl-io-mounts.workspace = true
 
 [lints]
 workspace = true

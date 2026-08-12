@@ -1,8 +1,8 @@
 //! Canonical `ZJE1` engine-event decoder.
 
 use crate::{
-    EngineError, EngineEvent, EvaluationId, EvaluationOutcome, FilesystemRequest, HostRequest,
-    HostRequestId, JavaScriptException,
+    EngineError, EngineEvent, EvaluationId, EvaluationOutcome, HostRequest, HostRequestId,
+    JavaScriptException, MountRequest,
 };
 
 /// Decodes one complete canonical engine event.
@@ -77,7 +77,7 @@ fn decode_host_request(kind: u16, payload: &[u8]) -> Result<HostRequest, EngineE
         2 => HostRequest::Sleep {
             nanoseconds: cursor.u64()?,
         },
-        10 => HostRequest::Filesystem(FilesystemRequest::ReadFile {
+        10 => HostRequest::Mount(MountRequest::ReadFile {
             maximum_bytes: usize::try_from(cursor.u64()?)
                 .map_err(|_| EngineError::QuotaExceeded)?,
             url: utf8_remaining(&mut cursor)?,

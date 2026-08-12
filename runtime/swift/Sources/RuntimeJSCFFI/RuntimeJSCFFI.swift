@@ -38,19 +38,17 @@ private final class JSCFFIEngine: @unchecked Sendable {
   }
 
   func start() -> UInt32 {
-    queue.sync {
-      guard context == nil, !shuttingDown else { return invalidState }
-      guard let context = JSContext() else { return backendError }
-      self.context = context
-      installCallbacks(in: context)
-      guard let bridge = context.evaluateScript(Self.bootstrap), context.exception == nil else {
-        context.exception = nil
-        self.context = nil
-        return backendError
-      }
-      self.bridge = bridge
-      return ok
+    guard context == nil, !shuttingDown else { return invalidState }
+    guard let context = JSContext() else { return backendError }
+    self.context = context
+    installCallbacks(in: context)
+    guard let bridge = context.evaluateScript(Self.bootstrap), context.exception == nil else {
+      context.exception = nil
+      self.context = nil
+      return backendError
     }
+    self.bridge = bridge
+    return ok
   }
 
   func submit(evaluationID: UInt64, source: Data) -> UInt32 {
@@ -78,7 +76,7 @@ private final class JSCFFIEngine: @unchecked Sendable {
       return quotaExceeded
     }
     stateLock.unlock()
-    queue.async { [weak self] in self?.evaluate(evaluationID: evaluationID, source: source) }
+    evaluate(evaluationID: evaluationID, source: source)
     return ok
   }
 
@@ -113,9 +111,18 @@ private final class JSCFFIEngine: @unchecked Sendable {
     let canAccept = !shuttingDown && pendingHostIDs.contains(requestID)
     stateLock.unlock()
     guard canAccept else { return invalidArgument }
-    queue.async { [weak self] in
-      self?.finishHostRequest(
-        requestID: requestID, kind: kind, objectID: objectID, payload: payload)
+    finishHostRequest(requestID: requestID, kind: kind, objectID: objectID, payload: payload)
+    return ok
+  }
+
+  func microtaskCheckpoint() -> UInt32 {
+    guard let context, !shuttingDown else { return invalidState }
+    // JavaScriptCore drains Promise jobs at the end of a host entry. A no-op
+    // entry gives jobs queued by native Promise settlement an explicit checkpoint.
+    _ = context.evaluateScript("void 0")
+    if context.exception != nil {
+      context.exception = nil
+      return backendError
     }
     return ok
   }
@@ -139,16 +146,14 @@ private final class JSCFFIEngine: @unchecked Sendable {
     }
     shuttingDown = true
     stateLock.unlock()
-    queue.sync {
-      for promise in promises.values {
-        _ = promise.reject.call(withArguments: [
-          Self.errorObject("Runtime is shutting down", code: "ShuttingDown", context: context)
-        ])
-      }
-      promises.removeAll()
-      bridge = nil
-      context = nil
+    for promise in promises.values {
+      _ = promise.reject.call(withArguments: [
+        Self.errorObject("Runtime is shutting down", code: "ShuttingDown", context: context)
+      ])
     }
+    promises.removeAll()
+    bridge = nil
+    context = nil
     stateLock.lock()
     pendingHostIDs.removeAll()
     pendingEvaluations.removeAll()
@@ -173,7 +178,7 @@ private final class JSCFFIEngine: @unchecked Sendable {
     }
     typealias ReadFile = @convention(block) (NSString, Double, JSValue, JSValue) -> Void
     let readFile: ReadFile = { [weak self] url, maximum, resolve, reject in
-      self?.submitVfsRead(url: url as String, maximum: maximum, resolve: resolve, reject: reject)
+      self?.submitMountRead(url: url as String, maximum: maximum, resolve: resolve, reject: reject)
     }
     typealias Console = @convention(block) (NSString) -> Void
     let console: Console = { [weak self] message in
@@ -271,7 +276,7 @@ private final class JSCFFIEngine: @unchecked Sendable {
     submitHost(kind: 2, payload: payload, resolve: resolve, reject: reject)
   }
 
-  private func submitVfsRead(
+  private func submitMountRead(
     url: String, maximum: Double, resolve: JSValue, reject: JSValue
   ) {
     guard url.utf8.count <= 4096, let maximum = exactUInt64(maximum), maximum > 0
@@ -395,7 +400,6 @@ private final class JSCFFIEngine: @unchecked Sendable {
     }
   }
 
-  private let queue = DispatchQueue(label: "org.zintl.app.runtime-jsc-ffi")
   private let eventLock = NSLock()
   private let stateLock = NSLock()
   private let maximumEvaluations: Int
@@ -569,6 +573,11 @@ public func zjscEngineComplete(
 public func zjscEngineCancel(_ pointer: UnsafeMutableRawPointer?, _ evaluationID: UInt64) -> UInt32
 {
   engine(pointer)?.cancel(evaluationID: evaluationID) ?? invalidArgument
+}
+
+@_cdecl("zjsc_engine_microtask_checkpoint")
+public func zjscEngineMicrotaskCheckpoint(_ pointer: UnsafeMutableRawPointer?) -> UInt32 {
+  engine(pointer)?.microtaskCheckpoint() ?? invalidArgument
 }
 
 @_cdecl("zjsc_engine_shutdown")

@@ -95,10 +95,10 @@ pub enum EngineObjectKind {
 
 /// Filesystem host operations emitted by JavaScript.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FilesystemRequest {
-    /// Reads a file through a host-registered virtual filesystem URL.
+pub enum MountRequest {
+    /// Reads a file through a host-registered mount URI.
     ReadFile {
-        /// VFS URL containing no operating-system path.
+        /// Mount URI containing no operating-system path.
         url: String,
         /// Mandatory finite read limit.
         maximum_bytes: usize,
@@ -122,8 +122,8 @@ pub enum HostRequest {
         /// Finite monotonic delay in nanoseconds.
         nanoseconds: u64,
     },
-    /// Performs a capability-checked filesystem operation.
-    Filesystem(FilesystemRequest),
+    /// Performs an operation through an IO-side mount service.
+    Mount(MountRequest),
 }
 
 /// Sanitized JavaScript exception information.
@@ -180,8 +180,8 @@ impl EngineEvent {
             Self::HostRequest { request, .. } => match request {
                 HostRequest::Invoke { name, input, .. } => name.len() + input.len(),
                 HostRequest::Sleep { .. } => 8,
-                HostRequest::Filesystem(request) => match request {
-                    FilesystemRequest::ReadFile { url, .. } => url.len(),
+                HostRequest::Mount(request) => match request {
+                    MountRequest::ReadFile { url, .. } => url.len(),
                 },
             },
             Self::ConsoleOutput(bytes) => bytes.len(),
@@ -233,7 +233,7 @@ pub trait EngineNotifier: Send + Sync + 'static {
 }
 
 /// JavaScript-engine-neutral lifecycle and event contract.
-pub trait JavaScriptEngineBackend: Send {
+pub trait JavaScriptEngineBackend {
     /// Starts the backend with finite limits and a wake-only notifier.
     ///
     /// # Errors
@@ -269,6 +269,15 @@ pub trait JavaScriptEngineBackend: Send {
         request_id: HostRequestId,
         completion: HostCompletion,
     ) -> Result<(), EngineError>;
+
+    /// Runs the engine's Promise jobs and host microtasks to a checkpoint.
+    ///
+    /// The caller must invoke this on the same thread as all other JavaScript
+    /// entry points, before dispatching the next ordinary message.
+    ///
+    /// # Errors
+    /// Reports an unavailable engine state or backend checkpoint failure.
+    fn perform_microtask_checkpoint(&mut self) -> Result<(), EngineError>;
 
     /// Cancels one pending evaluation.
     ///
