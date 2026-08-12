@@ -1,0 +1,13 @@
+[package]
+name = "messageloop-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+messageloop-core = { path = "../messageloop-core" }
+mio = { version = "1.0", features = ["os-poll", "os-ext"] }
+
+[lints]
+workspace = true

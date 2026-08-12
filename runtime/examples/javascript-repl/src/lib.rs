@@ -1,406 +1,442 @@
-//! Rust CLI host built exclusively on the public Zintl embedding contracts.
+//! REPL composed from a main-thread JS loop and a separate mount IO loop.
 
 #![forbid(unsafe_code)]
 
-use runtime_embed::{
-    Authority, AuthorizationRequest, AuthorizationResult, EmbeddedRuntime, EngineSession,
-    HostOpContext, OpLimits, RuntimeBuilder, RuntimeError, Source, VfsConfig,
+use messageloop_core::Sender;
+#[cfg(unix)]
+use messageloop_io::SourceFd;
+use messageloop_io::{
+    Event, Interest, IoContext, IoMessageHandler, IoSender, MessageLoopIo, Token,
 };
 use runtime_engine::{
-    DriveBudget, EngineConfiguration, EngineError, EngineNotifier, EvaluationId, EvaluationOutcome,
-    EvaluationRequest,
+    EngineEvent, EngineNotifier, EvaluationId, EvaluationOutcome, EvaluationRequest,
+    HostCompletion, HostErrorCode, HostRequest, HostRequestId, MountRequest,
 };
 use runtime_jsc::JavaScriptCoreBackend;
 use std::fmt;
-use std::io::{self, BufRead, IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::io::{self, IsTerminal, Read, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
-
-const DRIVE_BUDGET: DriveBudget = DriveBudget {
-    maximum_events: 64,
-    maximum_bytes: 1024 * 1024,
+use zintl_host::{ZjsHost, ZjsHostBuilder};
+use zintl_io_mounts::{
+    BoundaryResolve, DirResolve, MountConfig, MountError, MountService, Source as MountSource,
+    SymlinkPolicy,
 };
 
-/// Deny-by-default authority for the REPL's `fs` virtual filesystem.
-#[derive(Default)]
-pub struct TerminalFsAuthority {
-    allowed: AtomicBool,
-    prompt: Mutex<()>,
+enum MainMessage {
+    EngineReady,
+    MountCreated(Result<(), MountError>),
+    IoCompleted {
+        request_id: HostRequestId,
+        completion: HostCompletion,
+    },
 }
 
-impl Authority for TerminalFsAuthority {
-    fn authorization_requested(&self, request: &AuthorizationRequest<'_>) -> AuthorizationResult {
-        if self.allowed.load(Ordering::Acquire) {
-            return AuthorizationResult::Allow;
-        }
-        let Ok(_prompt) = self.prompt.lock() else {
-            return AuthorizationResult::Deny;
-        };
-        if self.allowed.load(Ordering::Acquire) {
-            return AuthorizationResult::Allow;
-        }
-        let mut stderr = io::stderr().lock();
-        if writeln!(
-            stderr,
-            "Filesystem authorization request:\n  vfs: {}\n  operation: {:?}\n  path: {}\nAllow? [y/N] ",
-            request.vfs, request.operation, request.path
-        )
-        .and_then(|()| stderr.flush())
-        .is_err()
-        {
-            return AuthorizationResult::Deny;
-        }
-        let mut answer = String::new();
-        if read_authorization_answer(&mut answer).is_err() {
-            return AuthorizationResult::Deny;
-        }
-        if matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes") {
-            self.allowed.store(true, Ordering::Release);
-            AuthorizationResult::Allow
-        } else {
-            AuthorizationResult::Deny
-        }
-    }
+enum IoMessage {
+    ReadFile {
+        request_id: HostRequestId,
+        uri: String,
+        maximum_bytes: usize,
+    },
+    Sleep {
+        request_id: HostRequestId,
+        duration: Duration,
+    },
+    WorkerCompleted {
+        request_id: HostRequestId,
+        result: Result<Vec<u8>, MountError>,
+    },
+    Stop,
 }
 
-fn read_authorization_answer(answer: &mut String) -> io::Result<usize> {
-    if io::stdin().is_terminal() {
-        return io::stdin().lock().read_line(answer);
-    }
-    #[cfg(unix)]
-    {
-        io::BufReader::new(std::fs::File::open("/dev/tty")?).read_line(answer)
-    }
-    #[cfg(not(unix))]
-    {
-        io::stdin().lock().read_line(answer)
-    }
-}
-
-#[derive(Default)]
-struct WakeState {
-    generation: Mutex<u64>,
-    ready: Condvar,
-}
-
-impl WakeState {
-    fn wait_briefly(&self, observed: &mut u64) {
-        let Ok(generation) = self.generation.lock() else {
-            return;
-        };
-        if *generation != *observed {
-            *observed = *generation;
-            return;
-        }
-        if let Ok((generation, _)) = self
-            .ready
-            .wait_timeout(generation, Duration::from_millis(2))
-        {
-            *observed = *generation;
-        }
-    }
-}
-
-impl EngineNotifier for WakeState {
+struct LoopNotifier(IoSender<MainMessage>);
+impl EngineNotifier for LoopNotifier {
     fn notify(&self) {
-        if let Ok(mut generation) = self.generation.lock() {
-            *generation = generation.wrapping_add(1);
-            self.ready.notify_all();
-        }
+        let _ = self.0.send(MainMessage::EngineReady);
     }
 }
 
-/// A persistent `JavaScriptCore` REPL attached to one Rust-owned runtime.
-pub struct JavaScriptRepl {
-    session: EngineSession,
-    runtime: EmbeddedRuntime,
-    wake: Arc<WakeState>,
-    next_evaluation: u64,
+type Job = Box<dyn FnOnce() + Send + 'static>;
+struct WorkerPool {
+    sender: Option<mpsc::Sender<Job>>,
+    workers: Vec<JoinHandle<()>>,
 }
-
-impl JavaScriptRepl {
-    /// Builds and starts a Rust-owned runtime with callback-mediated authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns sanitized runtime or `JavaScriptCore` initialization failures.
-    pub fn new(authority: Arc<dyn Authority>) -> Result<Self, ReplError> {
-        let current_directory = std::env::current_dir()?;
-        let runtime = RuntimeBuilder::new()
-            .add_vfs(VfsConfig {
-                name: "fs".into(),
-                source: Source::LoadDir {
-                    path: current_directory,
-                },
-                authority: Some(authority),
-            })?
-            .register_op(
-                "dev.zintl.echo",
-                1,
-                OpLimits::new(1024 * 1024, 1024 * 1024, 30_000_000_000)?,
-                |_context: HostOpContext, input: Vec<u8>| Ok(input),
-            )?
-            .build()?;
-        runtime.start()?;
-        let wake = Arc::new(WakeState::default());
-        let session = match EngineSession::attach(
-            runtime.handle()?,
-            Box::new(JavaScriptCoreBackend::new()),
-            EngineConfiguration::default(),
-            wake.clone(),
-        ) {
-            Ok(session) => session,
-            Err(error) => {
-                let _ = runtime.shutdown();
-                return Err(error.into());
-            }
-        };
+impl WorkerPool {
+    fn new(count: usize) -> io::Result<Self> {
+        let (sender, receiver) = mpsc::channel::<Job>();
+        let receiver = Arc::new(Mutex::new(receiver));
+        let mut workers = Vec::new();
+        for index in 0..count {
+            let receiver = receiver.clone();
+            workers.push(
+                thread::Builder::new()
+                    .name(format!("zintl-io-worker-{index}"))
+                    .spawn(move || {
+                        loop {
+                            let job = receiver
+                                .lock()
+                                .ok()
+                                .and_then(|receiver| receiver.recv().ok());
+                            let Some(job) = job else { break };
+                            job();
+                        }
+                    })?,
+            );
+        }
         Ok(Self {
-            session,
-            runtime,
-            wake,
-            next_evaluation: 1,
+            sender: Some(sender),
+            workers,
         })
     }
-
-    /// Evaluates one script and drives bounded runtime turns until it settles.
-    ///
-    /// # Errors
-    ///
-    /// Reports sanitized JavaScript, runtime, quota, cancellation, or backend failures.
-    pub fn evaluate(&mut self, source: &str) -> Result<String, ReplError> {
-        let id = EvaluationId(self.next_evaluation);
-        self.next_evaluation = self
-            .next_evaluation
-            .checked_add(1)
-            .ok_or(ReplError::Engine(EngineError::QuotaExceeded))?;
-        self.session
-            .backend_mut()
-            .submit_evaluation(EvaluationRequest {
-                id,
-                source: source.to_owned(),
-            })?;
-        let mut wake_generation = 0;
-        loop {
-            self.session.drive(DRIVE_BUDGET)?;
-            let mut settled = None;
-            while let Some((settled_id, outcome)) = self.session.take_evaluation() {
-                if settled_id != id {
-                    continue;
-                }
-                settled = Some(outcome);
-            }
-            while let Some(output) = self.session.take_console_output() {
-                if let Ok(output) = String::from_utf8(output) {
-                    eprintln!("{output}");
-                }
-            }
-            if let Some(outcome) = settled {
-                return match outcome {
-                    EvaluationOutcome::Value(bytes) => {
-                        String::from_utf8(bytes).map_err(|_| ReplError::Protocol)
-                    }
-                    EvaluationOutcome::Exception(error) => Err(ReplError::JavaScript(format!(
-                        "{}: {}",
-                        error.name, error.message
-                    ))),
-                    EvaluationOutcome::Cancelled => Err(ReplError::Cancelled),
-                };
-            }
-            self.wake.wait_briefly(&mut wake_generation);
+    fn submit(&self, job: impl FnOnce() + Send + 'static) -> io::Result<()> {
+        self.sender
+            .as_ref()
+            .ok_or_else(|| io::Error::other("worker pool stopped"))?
+            .send(Box::new(job))
+            .map_err(|_| io::Error::other("worker pool stopped"))
+    }
+}
+impl Drop for WorkerPool {
+    fn drop(&mut self) {
+        self.sender.take();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
         }
     }
+}
 
-    /// Evaluates a complete piped script with top-level `await` support.
-    ///
-    /// # Errors
-    ///
-    /// Reports the same bounded runtime and JavaScript failures as [`Self::evaluate`].
-    pub fn evaluate_batch(&mut self, source: &str) -> Result<String, ReplError> {
-        self.evaluate(&format!("(async () => {{\n{source}\n}})()"))
+struct IoHandler {
+    main_sender: IoSender<MainMessage>,
+    mounts: Arc<Mutex<MountService>>,
+    workers: WorkerPool,
+    root: std::path::PathBuf,
+}
+
+impl IoMessageHandler<IoMessage> for IoHandler {
+    fn init(&mut self, _cx: &mut IoContext<'_, IoMessage>) -> io::Result<()> {
+        let result = self
+            .mounts
+            .lock()
+            .map_err(|_| io::Error::other("mount lock poisoned"))?
+            .create_mount(MountConfig {
+                name: "project".into(),
+                source: MountSource::Directory {
+                    root_path: self.root.clone(),
+                    readonly: false,
+                    resolve: DirResolve {
+                        boundary: BoundaryResolve::InRoot,
+                        symlinks: SymlinkPolicy::Allow,
+                    },
+                },
+            })
+            .map(|_| ());
+        self.main_sender
+            .send(MainMessage::MountCreated(result))
+            .map_err(|_| io::Error::other("JS loop closed"))
     }
 
-    /// Releases JSC before terminating the Rust runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns sanitized engine or runtime teardown failures.
-    pub fn shutdown(mut self) -> Result<(), ReplError> {
-        self.session.shutdown()?;
-        self.runtime.shutdown()?;
+    fn on(&mut self, cx: &mut IoContext<'_, IoMessage>, message: IoMessage) -> io::Result<()> {
+        match message {
+            IoMessage::ReadFile {
+                request_id,
+                uri,
+                maximum_bytes,
+            } => {
+                let mounts = self.mounts.clone();
+                let sender = cx.sender();
+                self.workers.submit(move || {
+                    let result = mounts
+                        .lock()
+                        .map_err(|_| MountError::Io)
+                        .and_then(|mut mounts| mounts.read_uri(&uri, maximum_bytes));
+                    let _ = sender.send(IoMessage::WorkerCompleted { request_id, result });
+                })?;
+            }
+            IoMessage::Sleep {
+                request_id,
+                duration,
+            } => {
+                let sender = cx.sender();
+                self.workers.submit(move || {
+                    thread::sleep(duration);
+                    let _ = sender.send(IoMessage::WorkerCompleted {
+                        request_id,
+                        result: Ok(Vec::new()),
+                    });
+                })?;
+            }
+            IoMessage::WorkerCompleted { request_id, result } => {
+                let completion = match result {
+                    Ok(bytes) if bytes.is_empty() => HostCompletion::Unit,
+                    Ok(bytes) => HostCompletion::Bytes(bytes),
+                    Err(_) => HostCompletion::Failed(HostErrorCode::OperationFailed),
+                };
+                let _ = self.main_sender.send(MainMessage::IoCompleted {
+                    request_id,
+                    completion,
+                });
+            }
+            IoMessage::Stop => cx.request_termination(),
+        }
         Ok(())
     }
 }
 
-/// Stable errors printed by the CLI without native implementation details.
-#[derive(Debug)]
-pub enum ReplError {
-    /// Rust runtime failure.
-    Runtime(RuntimeError),
-    /// JavaScript engine boundary failure.
-    Engine(EngineError),
-    /// Sanitized JavaScript exception.
-    JavaScript(String),
-    /// Evaluation was cancelled.
-    Cancelled,
-    /// Engine returned malformed UTF-8 or protocol data.
-    Protocol,
-    /// Terminal I/O failed.
-    Io(io::Error),
+struct MainHandler {
+    io_sender: Arc<Mutex<Option<IoSender<IoMessage>>>>,
+    js: Option<ZjsHost>,
+    stdin_token: Option<Token>,
+    next_evaluation: u64,
+    input: Vec<u8>,
+    interactive: bool,
+    eof: bool,
+    pending_evaluations: usize,
 }
 
+impl MainHandler {
+    fn send_io(&self, message: IoMessage) -> io::Result<()> {
+        self.io_sender
+            .lock()
+            .map_err(|_| io::Error::other("IO sender lock poisoned"))?
+            .as_ref()
+            .ok_or_else(|| io::Error::other("IO loop unavailable"))?
+            .send(message)
+            .map_err(|_| io::Error::other("IO loop closed"))
+    }
+
+    fn process_engine(&mut self, cx: &mut IoContext<'_, MainMessage>) -> io::Result<()> {
+        let Some(js) = self.js.as_mut() else {
+            return Ok(());
+        };
+        let turn = js.drain_events(64, 4 * 1024 * 1024).map_err(engine_io)?;
+        while let Some(event) = self.js.as_mut().and_then(ZjsHost::next_event) {
+            match event {
+                EngineEvent::EvaluationSettled { outcome, .. } => {
+                    self.pending_evaluations = self.pending_evaluations.saturating_sub(1);
+                    match outcome {
+                        EvaluationOutcome::Value(bytes) => {
+                            println!("{}", String::from_utf8_lossy(&bytes));
+                        }
+                        EvaluationOutcome::Exception(error) => {
+                            eprintln!("Uncaught {}: {}", error.name, error.message);
+                        }
+                        EvaluationOutcome::Cancelled => eprintln!("evaluation cancelled"),
+                    }
+                    if self.interactive {
+                        print!("js> ");
+                        io::stdout().flush()?;
+                    }
+                    if self.eof && self.pending_evaluations == 0 {
+                        let _ = self.send_io(IoMessage::Stop);
+                        cx.request_termination();
+                    }
+                }
+                EngineEvent::ConsoleOutput(bytes) => {
+                    eprintln!("{}", String::from_utf8_lossy(&bytes));
+                }
+                EngineEvent::HostRequest { id, request } => match request {
+                    HostRequest::Mount(MountRequest::ReadFile { url, maximum_bytes }) => {
+                        self.send_io(IoMessage::ReadFile {
+                            request_id: id,
+                            uri: url,
+                            maximum_bytes,
+                        })?;
+                    }
+                    HostRequest::Sleep { nanoseconds } => {
+                        self.send_io(IoMessage::Sleep {
+                            request_id: id,
+                            duration: Duration::from_nanos(nanoseconds),
+                        })?;
+                    }
+                    HostRequest::Invoke { name, input, .. } if name == "dev.zintl.echo" => self
+                        .js
+                        .as_mut()
+                        .unwrap()
+                        .complete_host_request(id, HostCompletion::Bytes(input))
+                        .map_err(engine_io)?,
+                    HostRequest::Invoke { .. } => self
+                        .js
+                        .as_mut()
+                        .unwrap()
+                        .complete_host_request(
+                            id,
+                            HostCompletion::Failed(HostErrorCode::InvalidRequest),
+                        )
+                        .map_err(engine_io)?,
+                },
+            }
+        }
+        if turn.has_more {
+            let _ = cx.sender().send(MainMessage::EngineReady);
+        }
+        Ok(())
+    }
+
+    fn evaluate(&mut self, source: String) -> io::Result<()> {
+        let id = EvaluationId(self.next_evaluation);
+        self.next_evaluation = self
+            .next_evaluation
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("evaluation IDs exhausted"))?;
+        self.js
+            .as_mut()
+            .ok_or_else(|| io::Error::other("JavaScript host unavailable"))?
+            .evaluate(EvaluationRequest { id, source })
+            .map_err(engine_io)?;
+        self.pending_evaluations += 1;
+        Ok(())
+    }
+
+    fn consume_input(&mut self, cx: &mut IoContext<'_, MainMessage>, eof: bool) -> io::Result<()> {
+        while let Some(newline) = self.input.iter().position(|byte| *byte == b'\n') {
+            let line = self.input.drain(..=newline).collect::<Vec<_>>();
+            self.consume_line(cx, &String::from_utf8_lossy(&line))?;
+        }
+        if eof && !self.input.is_empty() {
+            let line = std::mem::take(&mut self.input);
+            self.consume_line(cx, &String::from_utf8_lossy(&line))?;
+        }
+        if eof {
+            self.eof = true;
+            if self.pending_evaluations == 0 {
+                let _ = self.send_io(IoMessage::Stop);
+                cx.request_termination();
+            }
+        }
+        Ok(())
+    }
+
+    fn consume_line(&mut self, cx: &mut IoContext<'_, MainMessage>, line: &str) -> io::Result<()> {
+        let source = line.trim();
+        match source {
+            "" => Ok(()),
+            ".exit" | ".quit" => {
+                let _ = self.send_io(IoMessage::Stop);
+                cx.request_termination();
+                Ok(())
+            }
+            ".help" => {
+                println!("await Zintl.readFile('mount://project/Cargo.toml', 'utf8')");
+                Ok(())
+            }
+            _ => self.evaluate(source.to_owned()),
+        }
+    }
+}
+
+impl IoMessageHandler<MainMessage> for MainHandler {
+    fn init(&mut self, cx: &mut IoContext<'_, MainMessage>) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            let fd = io::stdin().as_raw_fd();
+            self.stdin_token = Some(cx.register(&mut SourceFd(&fd), Interest::READABLE)?);
+        }
+        let notifier = Arc::new(LoopNotifier(cx.sender()));
+        self.js = Some(
+            ZjsHostBuilder::new(Box::new(JavaScriptCoreBackend::new()), notifier)
+                .build()
+                .map_err(engine_io)?,
+        );
+        if self.interactive {
+            println!("Zintl JavaScript REPL\nType .help or .exit.");
+            print!("js> ");
+            io::stdout().flush()?;
+        }
+        Ok(())
+    }
+    fn on(&mut self, cx: &mut IoContext<'_, MainMessage>, message: MainMessage) -> io::Result<()> {
+        match message {
+            MainMessage::EngineReady => self.process_engine(cx),
+            MainMessage::MountCreated(Ok(())) => Ok(()),
+            MainMessage::MountCreated(Err(error)) => Err(io::Error::other(error)),
+            MainMessage::IoCompleted {
+                request_id,
+                completion,
+            } => {
+                self.js
+                    .as_mut()
+                    .ok_or_else(|| io::Error::other("JavaScript host unavailable"))?
+                    .complete_host_request(request_id, completion)
+                    .map_err(engine_io)?;
+                self.process_engine(cx)
+            }
+        }
+    }
+    fn on_ready(&mut self, cx: &mut IoContext<'_, MainMessage>, event: &Event) -> io::Result<()> {
+        if Some(event.token()) != self.stdin_token {
+            return Ok(());
+        }
+        let mut chunk = [0; 4096];
+        let count = io::stdin().read(&mut chunk)?;
+        self.input.extend_from_slice(&chunk[..count]);
+        self.consume_input(cx, count == 0)
+    }
+    fn terminate(&mut self, _cx: &mut IoContext<'_, MainMessage>) -> io::Result<()> {
+        if let Some(js) = self.js.as_mut() {
+            js.shutdown().map_err(engine_io)?;
+        }
+        Ok(())
+    }
+}
+
+fn engine_io(error: runtime_engine::EngineError) -> io::Error {
+    io::Error::other(error)
+}
+
+/// Runs both message loops until stdin reaches EOF or `.exit` is entered.
+///
+/// # Errors
+/// Returns terminal, engine, mount startup, or message-loop failures.
+pub fn run() -> Result<(), ReplError> {
+    let interactive = io::stdin().is_terminal();
+    let io_slot = Arc::new(Mutex::new(None));
+    let main_loop = MessageLoopIo::new(MainHandler {
+        io_sender: io_slot.clone(),
+        js: None,
+        stdin_token: None,
+        next_evaluation: 1,
+        input: Vec::new(),
+        interactive,
+        eof: false,
+        pending_evaluations: 0,
+    })?;
+    let main_sender = main_loop.sender();
+    let io_loop = MessageLoopIo::new(IoHandler {
+        main_sender,
+        mounts: Arc::new(Mutex::new(MountService::default())),
+        workers: WorkerPool::new(2)?,
+        root: std::env::current_dir()?,
+    })?;
+    let io_sender = io_loop.sender();
+    *io_slot
+        .lock()
+        .map_err(|_| io::Error::other("IO sender lock poisoned"))? = Some(io_sender);
+    let io_thread = thread::Builder::new()
+        .name("zintl-io-loop".into())
+        .spawn(move || io_loop.run())?;
+    let main_result = main_loop.run();
+    let io_result = io_thread
+        .join()
+        .map_err(|_| io::Error::other("IO loop panicked"))?;
+    main_result?;
+    io_result?;
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct ReplError(io::Error);
 impl fmt::Display for ReplError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Runtime(error) => write!(formatter, "runtime: {error}"),
-            Self::Engine(error) => write!(formatter, "engine: {error}"),
-            Self::JavaScript(error) => formatter.write_str(error),
-            Self::Cancelled => formatter.write_str("evaluation cancelled"),
-            Self::Protocol => formatter.write_str("invalid engine protocol"),
-            Self::Io(error) => write!(formatter, "terminal I/O: {error}"),
-        }
+        self.0.fmt(formatter)
     }
 }
-
 impl std::error::Error for ReplError {}
-
-impl From<RuntimeError> for ReplError {
-    fn from(error: RuntimeError) -> Self {
-        Self::Runtime(error)
-    }
-}
-
-impl From<EngineError> for ReplError {
-    fn from(error: EngineError) -> Self {
-        Self::Engine(error)
-    }
-}
-
 impl From<io::Error> for ReplError {
     fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{JavaScriptRepl, TerminalFsAuthority};
-    use runtime_embed::{
-        Authority, AuthorizationOperation, AuthorizationRequest, AuthorizationResult,
-    };
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{Arc, Mutex};
-
-    struct Deny;
-
-    impl Authority for Deny {
-        fn authorization_requested(
-            &self,
-            _request: &AuthorizationRequest<'_>,
-        ) -> AuthorizationResult {
-            AuthorizationResult::Deny
-        }
-    }
-
-    struct Allow;
-
-    impl Authority for Allow {
-        fn authorization_requested(
-            &self,
-            _request: &AuthorizationRequest<'_>,
-        ) -> AuthorizationResult {
-            AuthorizationResult::Allow
-        }
-    }
-
-    #[test]
-    // Verifies a remembered approval bypasses subsequent terminal prompts for every path.
-    fn terminal_authority_remembers_approval() {
-        let authority = TerminalFsAuthority {
-            allowed: AtomicBool::new(true),
-            prompt: Mutex::new(()),
-        };
-        assert_eq!(
-            authority.authorization_requested(&AuthorizationRequest {
-                vfs: "fs",
-                path: "another-file.txt",
-                operation: AuthorizationOperation::ReadFile,
-            }),
-            AuthorizationResult::Allow
-        );
-    }
-
-    #[test]
-    // Verifies the Rust REPL evaluates persistent Promise-aware JavaScript through JSC.
-    fn evaluates_javascript_with_jsc_backend() {
-        let mut repl = JavaScriptRepl::new(Arc::new(Deny)).expect("repl");
-        assert_eq!(
-            repl.evaluate("globalThis.answer = 40; Promise.resolve(answer + 2)")
-                .expect("evaluate"),
-            r#"{"type":"value","value":42}"#
-        );
-        assert_eq!(
-            repl.evaluate("answer + 1").expect("persistent context"),
-            r#"{"type":"value","value":41}"#
-        );
-        assert_eq!(
-            repl.evaluate("[typeof process, typeof require, typeof Deno, typeof fetch]")
-                .expect("no ambient operating-system APIs"),
-            r#"{"type":"value","value":["undefined","undefined","undefined","undefined"]}"#
-        );
-        assert_eq!(
-            repl.evaluate_batch(
-                "const batchValue = await Promise.resolve(43); globalThis.batchValue = batchValue;"
-            )
-            .expect("batch top-level await"),
-            r#"{"type":"value","value":null}"#
-        );
-        assert_eq!(
-            repl.evaluate("batchValue").expect("batch context persists"),
-            r#"{"type":"value","value":43}"#
-        );
-        repl.shutdown().expect("shutdown");
-    }
-
-    #[test]
-    // Verifies absence of explicit approval rejects virtual filesystem reads.
-    fn vfs_authority_denies_by_default() {
-        let mut repl = JavaScriptRepl::new(Arc::new(Deny)).expect("repl");
-        let error = repl
-            .evaluate("Zintl.readFile('fs://Cargo.toml', 'utf8')")
-            .expect_err("denied");
-        assert!(error.to_string().contains("Host operation failed"));
-        let unknown = repl
-            .evaluate("Zintl.invoke('dev.zintl.unknown', new Uint8Array())")
-            .expect_err("unknown operation");
-        assert!(unknown.to_string().contains("Host operation failed"));
-        repl.shutdown().expect("shutdown");
-    }
-
-    #[test]
-    // Verifies VFS URLs reach files without exposing an absolute path to JavaScript.
-    fn approved_vfs_reads_use_virtual_urls() {
-        let mut repl = JavaScriptRepl::new(Arc::new(Allow)).expect("repl");
-        let value = repl
-            .evaluate(
-                "Zintl.readFile('fs://Cargo.toml', 'utf8').then(x => x.includes('[package]'))",
-            )
-            .expect("read workspace manifest");
-        assert_eq!(value, r#"{"type":"value","value":true}"#);
-        let absolute = repl
-            .evaluate("Zintl.readFile('/etc/passwd', 'utf8')")
-            .expect_err("absolute path rejected");
-        assert!(absolute.to_string().contains("Host operation failed"));
-        assert_eq!(
-            repl.evaluate("Zintl.sleep(1)").expect("sleep"),
-            r#"{"type":"value","value":null}"#
-        );
-        assert_eq!(
-            repl.evaluate("Zintl.invoke('dev.zintl.echo', new Uint8Array([7,8]))")
-                .expect("custom op"),
-            r#"{"type":"bytes","value":[7,8]}"#
-        );
-        repl.shutdown().expect("shutdown");
+        Self(error)
     }
 }

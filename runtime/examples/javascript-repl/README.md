@@ -1,9 +1,9 @@
 # Rust JavaScript REPL
 
-This example runs Swift JavaScriptCore behind the engine-neutral Rust embedding
-API. The JavaScript realm persists in interactive mode. The host mounts its
-current directory as the `fs` virtual filesystem and mediates each read through
-an application-owned Rust `Authority`.
+This example runs Swift JavaScriptCore through `ZjsHost` on the main-thread
+`MessageLoopIo`. The JavaScript realm persists in interactive mode. A separate
+IO thread mounts the current directory as `project` and owns every real
+filesystem descriptor.
 
 Run interactively from `runtime`:
 
@@ -18,20 +18,17 @@ script, pipe the complete source to the binary:
 cat a.js | ./target/debug/javascript-repl
 ```
 
-Batch input is read completely before evaluation and supports top-level
-`await`. When stdin is a pipe, authorization answers are read from `/dev/tty`, so
-the script bytes cannot be consumed as an approval response.
+Each input line is evaluated as one task and supports Promise results.
 
 ```javascript
-const text = await Zintl.readFile("fs://notes.txt", "utf8");
+const text = await Zintl.readFile("mount://project/notes.txt", "utf8");
 console.log(text);
-const bytes = await Zintl.readFile("fs://image.bin");
+const bytes = await Zintl.readFile("mount://project/image.bin");
 console.log(bytes);
 ```
 
-The terminal displays the VFS, operation and relative path. Only an explicit
-`y` grants access; after approval, the REPL authority allows every `fs` access
-until the process exits. JavaScript cannot provide an absolute OS path, and the
-runtime does not cache the application's decision. `console.debug`, `log`,
-`info`, `warn` and `error` are forwarded through the bounded engine event queue.
-The `utf8` mode performs strict decoding and rejects malformed input.
+The IO service resolves the mount name and relative path with capability-based
+fd-relative operations. JavaScript receives logical mount/file IDs only and
+cannot provide an absolute OS path. `console.debug`, `log`, `info`, `warn` and
+`error` are forwarded through the bounded engine event queue. The `utf8` mode
+performs strict decoding and rejects malformed input.

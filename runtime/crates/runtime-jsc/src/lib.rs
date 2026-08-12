@@ -21,11 +21,6 @@ pub struct JavaScriptCoreBackend {
 }
 
 #[cfg(target_os = "macos")]
-// SAFETY: the opaque Swift object is thread-safe at its C boundary and confines
-// JavaScriptCore to its own serial queue. This Rust wrapper is used mutably.
-unsafe impl Send for JavaScriptCoreBackend {}
-
-#[cfg(target_os = "macos")]
 struct NotifierState {
     notifier: Arc<dyn EngineNotifier>,
 }
@@ -153,6 +148,13 @@ impl JavaScriptEngineBackend for JavaScriptCoreBackend {
         })
     }
 
+    fn perform_microtask_checkpoint(&mut self) -> Result<(), EngineError> {
+        let engine = self.engine.ok_or(EngineError::InvalidState)?;
+        // SAFETY: engine is live and the host calls every engine entry point on
+        // its owning message-loop thread.
+        status_result(unsafe { ffi::zjsc_engine_microtask_checkpoint(engine.as_ptr()) })
+    }
+
     fn cancel_evaluation(&mut self, evaluation_id: EvaluationId) -> Result<(), EngineError> {
         let engine = self.engine.ok_or(EngineError::InvalidState)?;
         // SAFETY: engine is live and evaluation ID is an inert scalar.
@@ -224,6 +226,9 @@ impl JavaScriptEngineBackend for JavaScriptCoreBackend {
         _: HostRequestId,
         _: HostCompletion,
     ) -> Result<(), EngineError> {
+        Err(EngineError::Unsupported)
+    }
+    fn perform_microtask_checkpoint(&mut self) -> Result<(), EngineError> {
         Err(EngineError::Unsupported)
     }
     fn cancel_evaluation(&mut self, _: EvaluationId) -> Result<(), EngineError> {
@@ -330,6 +335,7 @@ mod ffi {
             payload: *const u8,
             payload_len: usize,
         ) -> u32;
+        pub fn zjsc_engine_microtask_checkpoint(engine: *mut c_void) -> u32;
         pub fn zjsc_engine_cancel(engine: *mut c_void, evaluation_id: u64) -> u32;
         pub fn zjsc_engine_shutdown(engine: *mut c_void) -> u32;
         pub fn zjsc_engine_free(engine: *mut c_void);

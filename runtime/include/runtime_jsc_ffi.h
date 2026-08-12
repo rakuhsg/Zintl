@@ -35,6 +35,7 @@ uint32_t zjsc_engine_next_event(
 uint32_t zjsc_engine_complete(
     zjsc_engine_t *engine, uint64_t request_id, uint32_t completion_kind,
     uint64_t object_id, const uint8_t *payload, size_t payload_len);
+uint32_t zjsc_engine_microtask_checkpoint(zjsc_engine_t *engine);
 uint32_t zjsc_engine_cancel(zjsc_engine_t *engine, uint64_t evaluation_id);
 uint32_t zjsc_engine_shutdown(zjsc_engine_t *engine);
 void zjsc_engine_free(zjsc_engine_t *engine);
