@@ -252,7 +252,18 @@ fn encode_completion(completion: HostCompletion) -> (u32, u64, Vec<u8>) {
             id.0,
             Vec::new(),
         ),
-        HostCompletion::Failed(error) => (4, 0, host_error_name(error).as_bytes().to_vec()),
+        HostCompletion::Failed(error) => {
+            let code = host_error_name(error.code).as_bytes();
+            let mut payload = Vec::with_capacity(2 + code.len() + error.message.len());
+            payload.extend_from_slice(
+                &u16::try_from(code.len())
+                    .expect("host error names fit in u16")
+                    .to_be_bytes(),
+            );
+            payload.extend_from_slice(code);
+            payload.extend_from_slice(error.message.as_bytes());
+            (4, 0, payload)
+        }
     }
 }
 
@@ -347,7 +358,7 @@ mod tests {
     use super::JavaScriptCoreBackend;
     use runtime_engine::{
         EngineConfiguration, EngineEvent, EngineNotifier, EvaluationId, EvaluationOutcome,
-        EvaluationRequest, JavaScriptEngineBackend,
+        EvaluationRequest, HostCompletion, HostErrorCode, HostFailure, JavaScriptEngineBackend,
     };
     use std::sync::Arc;
     use std::thread;
@@ -415,6 +426,57 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(console, Some(br#"hello {"value":42}"#.to_vec()));
+        backend.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    // Verifies the Swift bridge reconstructs a host failure's stable code and sanitized message.
+    fn exposes_structured_host_failure_through_swift_ffi() {
+        let mut backend = JavaScriptCoreBackend::new();
+        backend
+            .start(EngineConfiguration::default(), Arc::new(NoopNotifier))
+            .expect("start");
+        backend
+            .submit_evaluation(EvaluationRequest {
+                id: EvaluationId(1),
+                source: "Zintl.invoke('dev.zintl.fail').catch(error => ({ code: error.code, message: error.message }))".to_owned(),
+            })
+            .expect("submit");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let request_id = loop {
+            if let Some(EngineEvent::HostRequest { id, .. }) = backend.next_event().expect("event")
+            {
+                break id;
+            }
+            assert!(Instant::now() < deadline, "host request timed out");
+            thread::sleep(Duration::from_millis(1));
+        };
+        backend
+            .complete_host_request(
+                request_id,
+                HostCompletion::Failed(HostFailure {
+                    code: HostErrorCode::InvalidRequest,
+                    message: "Mount not found".to_owned(),
+                }),
+            )
+            .expect("complete");
+        backend.perform_microtask_checkpoint().expect("checkpoint");
+        let outcome = loop {
+            if let Some(EngineEvent::EvaluationSettled { outcome, .. }) =
+                backend.next_event().expect("event")
+            {
+                break outcome;
+            }
+            assert!(Instant::now() < deadline, "evaluation timed out");
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(
+            outcome,
+            EvaluationOutcome::Value(
+                br#"{"type":"value","value":{"code":"InvalidRequest","message":"Mount not found"}}"#
+                    .to_vec(),
+            )
+        );
         backend.shutdown().expect("shutdown");
     }
 }

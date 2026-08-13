@@ -242,6 +242,15 @@ pub enum HostErrorCode {
     OperationFailed,
 }
 
+/// Sanitized failure returned by a trusted host operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostFailure {
+    /// Stable failure category available to JavaScript as `error.code`.
+    pub code: HostErrorCode,
+    /// Sanitized description with no native path or handle disclosure.
+    pub message: String,
+}
+
 /// Result returned to a pending JavaScript host Promise.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostCompletion {
@@ -256,8 +265,8 @@ pub enum HostCompletion {
         /// Resource kind used for private engine branding.
         kind: EngineObjectKind,
     },
-    /// Operation failed with a stable category.
-    Failed(HostErrorCode),
+    /// Operation failed with a stable category and sanitized description.
+    Failed(HostFailure),
 }
 
 /// Thread-safe wake notification used by a backend.
