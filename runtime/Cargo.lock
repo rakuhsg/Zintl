@@ -95,6 +95,7 @@ dependencies = [
  "messageloop-io",
  "runtime-engine",
  "runtime-jsc",
+ "rustix",
  "zintl-host",
  "zintl-io-mounts",
 ]

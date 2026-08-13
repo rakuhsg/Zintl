@@ -1,6 +1,6 @@
 //! `JavaScriptCore` implementation of the engine-neutral Rust backend contract.
 //!
-//! Swift owns `JavaScriptCore` and every engine value on a private serial queue.
+//! Swift owns `JavaScriptCore` and every engine value on the `ZjsHost` thread.
 //! This crate exposes only the safe [`JavaScriptCoreBackend`]; its opaque FFI
 //! pointer and unsafe calls remain private.
 

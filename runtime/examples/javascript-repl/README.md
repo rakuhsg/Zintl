@@ -18,7 +18,8 @@ script, pipe the complete source to the binary:
 cat a.js | ./target/debug/javascript-repl
 ```
 
-Each input line is evaluated as one task and supports Promise results.
+Each interactive input line is evaluated as one task. Piped input is evaluated
+as one complete script, so multiline async demos work.
 
 ```javascript
 const text = await Zintl.readFile("mount://project/notes.txt", "utf8");
@@ -26,6 +27,15 @@ console.log(text);
 const bytes = await Zintl.readFile("mount://project/image.bin");
 console.log(bytes);
 ```
+
+Run the mount mutation demo from `runtime`:
+
+```console
+cargo run -p javascript-repl < examples/javascript-repl/demo/mount-operations.js
+```
+
+The demo uses `Zintl.mkdir`, `writeFile`, `readFile`, `rename`,
+`removeFile`, and `removeDirectory`, then removes every entry it created.
 
 The IO service resolves the mount name and relative path with capability-based
 fd-relative operations. JavaScript receives logical mount/file IDs only and

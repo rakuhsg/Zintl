@@ -13,5 +13,8 @@ runtime-jsc = { path = "../../crates/runtime-jsc" }
 zintl-host = { path = "../../crates/zintl-host" }
 zintl-io-mounts.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
 [lints]
 workspace = true

@@ -82,6 +82,26 @@ fn decode_host_request(kind: u16, payload: &[u8]) -> Result<HostRequest, EngineE
                 .map_err(|_| EngineError::QuotaExceeded)?,
             url: utf8_remaining(&mut cursor)?,
         }),
+        11 => {
+            let url = cursor.length_prefixed_utf8_u16()?;
+            HostRequest::Mount(MountRequest::WriteFile {
+                url,
+                bytes: cursor.take_remaining().to_vec(),
+            })
+        }
+        12 => HostRequest::Mount(MountRequest::CreateDirectory {
+            url: utf8_remaining(&mut cursor)?,
+        }),
+        13 => HostRequest::Mount(MountRequest::RemoveFile {
+            url: utf8_remaining(&mut cursor)?,
+        }),
+        14 => HostRequest::Mount(MountRequest::RemoveDirectory {
+            url: utf8_remaining(&mut cursor)?,
+        }),
+        15 => HostRequest::Mount(MountRequest::Rename {
+            from: cursor.length_prefixed_utf8_u16()?,
+            to: utf8_remaining(&mut cursor)?,
+        }),
         _ => return Err(EngineError::Backend),
     };
     if cursor.is_empty() {
@@ -130,6 +150,12 @@ impl<'a> Cursor<'a> {
             self.take(8)?.try_into().map_err(|_| EngineError::Backend)?,
         ))
     }
+    fn length_prefixed_utf8_u16(&mut self) -> Result<String, EngineError> {
+        let length = usize::from(self.u16()?);
+        std::str::from_utf8(self.take(length)?)
+            .map(str::to_owned)
+            .map_err(|_| EngineError::Backend)
+    }
     fn length_prefixed(&mut self) -> Result<&'a [u8], EngineError> {
         let length = usize::try_from(self.u32()?).map_err(|_| EngineError::Backend)?;
         self.take(length)
@@ -147,7 +173,9 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::decode_event;
-    use crate::{EngineEvent, EvaluationId, EvaluationOutcome};
+    use crate::{
+        EngineEvent, EvaluationId, EvaluationOutcome, HostRequest, HostRequestId, MountRequest,
+    };
 
     #[test]
     // Verifies the canonical value vector decodes without accepting trailing bytes.
@@ -175,5 +203,28 @@ mod tests {
         let mut invalid = bytes.to_vec();
         invalid[15] = 1;
         assert!(decode_event(&invalid).is_err());
+    }
+
+    #[test]
+    // Verifies mount mutation requests decode into typed data without closures or OS handles.
+    fn canonical_mount_write_vector_decodes() {
+        let url = b"mount://project/demo.txt";
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&u16::try_from(url.len()).unwrap().to_be_bytes());
+        payload.extend_from_slice(url);
+        payload.extend_from_slice(b"hello");
+        let mut bytes = b"ZJE1\0\x01\0\x04\0\0\0\0\0\0\0\x09\0\x0b".to_vec();
+        bytes.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&payload);
+        assert_eq!(
+            decode_event(&bytes),
+            Ok(EngineEvent::HostRequest {
+                id: HostRequestId(9),
+                request: HostRequest::Mount(MountRequest::WriteFile {
+                    url: "mount://project/demo.txt".into(),
+                    bytes: b"hello".to_vec(),
+                }),
+            })
+        );
     }
 }

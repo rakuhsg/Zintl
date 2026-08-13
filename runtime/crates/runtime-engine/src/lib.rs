@@ -93,7 +93,7 @@ pub enum EngineObjectKind {
     File,
 }
 
-/// Filesystem host operations emitted by JavaScript.
+/// Data-only mount operations emitted by JavaScript.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MountRequest {
     /// Reads a file through a host-registered mount URI.
@@ -102,6 +102,35 @@ pub enum MountRequest {
         url: String,
         /// Mandatory finite read limit.
         maximum_bytes: usize,
+    },
+    /// Replaces or creates a file with bounded owned bytes.
+    WriteFile {
+        /// Mount URI containing no operating-system path.
+        url: String,
+        /// Complete new file contents.
+        bytes: Vec<u8>,
+    },
+    /// Creates one directory.
+    CreateDirectory {
+        /// Directory mount URI.
+        url: String,
+    },
+    /// Removes one file.
+    RemoveFile {
+        /// File mount URI.
+        url: String,
+    },
+    /// Removes one empty directory.
+    RemoveDirectory {
+        /// Directory mount URI.
+        url: String,
+    },
+    /// Renames one entry without leaving its mount.
+    Rename {
+        /// Existing entry mount URI.
+        from: String,
+        /// Destination mount URI.
+        to: String,
     },
 }
 
@@ -181,7 +210,12 @@ impl EngineEvent {
                 HostRequest::Invoke { name, input, .. } => name.len() + input.len(),
                 HostRequest::Sleep { .. } => 8,
                 HostRequest::Mount(request) => match request {
-                    MountRequest::ReadFile { url, .. } => url.len(),
+                    MountRequest::WriteFile { url, bytes } => url.len() + bytes.len(),
+                    MountRequest::ReadFile { url, .. }
+                    | MountRequest::CreateDirectory { url }
+                    | MountRequest::RemoveFile { url }
+                    | MountRequest::RemoveDirectory { url } => url.len(),
+                    MountRequest::Rename { from, to } => from.len() + to.len(),
                 },
             },
             Self::ConsoleOutput(bytes) => bytes.len(),
