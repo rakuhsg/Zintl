@@ -691,7 +691,7 @@ fn complete_promise(
         }
         HostCompletion::Failed(error) => {
             let reject = v8::Local::new(scope, &promise.reject);
-            let value = error_value(scope, "Host operation failed", host_error_name(error))?;
+            let value = error_value(scope, &error.message, host_error_name(error.code))?;
             reject
                 .call(scope, receiver, &[value])
                 .ok_or(EngineError::Backend)?;
@@ -804,7 +804,7 @@ mod tests {
     use super::V8Backend;
     use runtime_engine::{
         EngineConfiguration, EngineEvent, EngineNotifier, EvaluationId, EvaluationOutcome,
-        EvaluationRequest, JavaScriptEngineBackend,
+        EvaluationRequest, HostCompletion, HostErrorCode, HostFailure, JavaScriptEngineBackend,
     };
     use std::sync::Arc;
 
@@ -860,5 +860,44 @@ mod tests {
             backend.next_event().expect("event"),
             Some(EngineEvent::EvaluationSettled { .. })
         ));
+    }
+
+    #[test]
+    // Verifies a host failure preserves both its stable code and sanitized message in JavaScript.
+    fn exposes_structured_host_failure() {
+        let mut backend = V8Backend::new();
+        backend
+            .start(EngineConfiguration::default(), Arc::new(NoopNotifier))
+            .expect("start");
+        backend
+            .submit_evaluation(EvaluationRequest {
+                id: EvaluationId(1),
+                source: "Zintl.invoke('dev.zintl.fail').catch(error => ({ code: error.code, message: error.message }))".to_owned(),
+            })
+            .expect("submit");
+        let request_id = match backend.next_event().expect("event") {
+            Some(EngineEvent::HostRequest { id, .. }) => id,
+            event => panic!("expected host request, got {event:?}"),
+        };
+        backend
+            .complete_host_request(
+                request_id,
+                HostCompletion::Failed(HostFailure {
+                    code: HostErrorCode::InvalidRequest,
+                    message: "Mount not found".to_owned(),
+                }),
+            )
+            .expect("complete");
+        backend.perform_microtask_checkpoint().expect("checkpoint");
+        assert_eq!(
+            backend.next_event().expect("event"),
+            Some(EngineEvent::EvaluationSettled {
+                id: EvaluationId(1),
+                outcome: EvaluationOutcome::Value(
+                    br#"{"type":"value","value":{"code":"InvalidRequest","message":"Mount not found"}}"#
+                        .to_vec(),
+                ),
+            })
+        );
     }
 }

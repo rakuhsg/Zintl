@@ -378,8 +378,24 @@ private final class JSCFFIEngine: @unchecked Sendable {
     case 1:
       _ = promise.resolve.call(withArguments: [Array(payload)])
     default:
-      let code = String(data: payload, encoding: .utf8) ?? "OperationFailed"
-      rejectNow(promise.reject, "Host operation failed", code: code)
+      let fallbackCode = "OperationFailed"
+      let fallbackMessage = "Host operation failed"
+      guard payload.count >= 2 else {
+        rejectNow(promise.reject, fallbackMessage, code: fallbackCode)
+        return
+      }
+      let codeLength =
+        (Int(payload[payload.startIndex]) << 8)
+        | Int(payload[payload.index(after: payload.startIndex)])
+      guard payload.count >= 2 + codeLength else {
+        rejectNow(promise.reject, fallbackMessage, code: fallbackCode)
+        return
+      }
+      let codeStart = payload.index(payload.startIndex, offsetBy: 2)
+      let messageStart = payload.index(codeStart, offsetBy: codeLength)
+      let code = String(data: payload[codeStart..<messageStart], encoding: .utf8) ?? fallbackCode
+      let message = String(data: payload[messageStart...], encoding: .utf8) ?? fallbackMessage
+      rejectNow(promise.reject, message, code: code)
     }
   }
 

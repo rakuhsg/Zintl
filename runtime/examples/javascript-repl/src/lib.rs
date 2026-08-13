@@ -10,8 +10,8 @@ use messageloop_io::{
 };
 use runtime_engine::{
     EngineEvent, EngineNotifier, EvaluationId, EvaluationOutcome, EvaluationRequest,
-    HostCompletion, HostErrorCode, HostRequest, HostRequestId, JavaScriptEngineBackend,
-    MountRequest,
+    HostCompletion, HostErrorCode, HostFailure, HostRequest, HostRequestId,
+    JavaScriptEngineBackend, MountRequest,
 };
 use runtime_jsc::JavaScriptCoreBackend;
 use runtime_v8::V8Backend;
@@ -208,7 +208,7 @@ impl IoMessageHandler<IoMessage> for IoHandler {
                 let completion = match result {
                     Ok(IoValue::Unit) => HostCompletion::Unit,
                     Ok(IoValue::Bytes(bytes)) => HostCompletion::Bytes(bytes),
-                    Err(error) => HostCompletion::Failed(mount_error_code(&error)),
+                    Err(error) => HostCompletion::Failed(mount_failure(error)),
                 };
                 let _ = self.main_sender.send(MainMessage::IoCompleted {
                     request_id,
@@ -252,25 +252,41 @@ fn run_mount_request(
     }
 }
 
-const fn mount_error_code(error: &MountError) -> HostErrorCode {
-    match error {
+fn mount_failure(error: MountError) -> HostFailure {
+    let (code, message) = match error {
         MountError::MalformedUri
         | MountError::EmptyMountName
         | MountError::InvalidMountName
         | MountError::MalformedPercentEncoding
         | MountError::NulByte
         | MountError::EncodedSeparator
-        | MountError::InvalidUtf8
-        | MountError::InvalidPath
-        | MountError::BoundaryViolation
-        | MountError::SymlinkDisallowed
-        | MountError::SymlinkLoop
-        | MountError::MountNotFound
-        | MountError::HandleNotFound => HostErrorCode::InvalidRequest,
-        MountError::ReadOnly => HostErrorCode::PermissionDenied,
-        MountError::DuplicateMountName | MountError::NotDirectory | MountError::Io => {
-            HostErrorCode::OperationFailed
-        }
+        | MountError::InvalidUtf8 => (HostErrorCode::InvalidRequest, "Invalid mount URI"),
+        MountError::InvalidPath => (HostErrorCode::InvalidRequest, "Invalid mount path"),
+        MountError::BoundaryViolation => (
+            HostErrorCode::PermissionDenied,
+            "Mount path escapes its capability boundary",
+        ),
+        MountError::SymlinkDisallowed => (
+            HostErrorCode::PermissionDenied,
+            "Symlink traversal is not allowed",
+        ),
+        MountError::SymlinkLoop => (
+            HostErrorCode::InvalidRequest,
+            "Mount path has a symlink loop",
+        ),
+        MountError::ReadOnly => (HostErrorCode::PermissionDenied, "Mount is read-only"),
+        MountError::MountNotFound => (HostErrorCode::InvalidRequest, "Mount not found"),
+        MountError::HandleNotFound => (HostErrorCode::InvalidRequest, "Mount handle not found"),
+        MountError::DuplicateMountName => (
+            HostErrorCode::OperationFailed,
+            "Mount name is already registered",
+        ),
+        MountError::NotDirectory => (HostErrorCode::OperationFailed, "Expected a directory"),
+        MountError::Io => (HostErrorCode::OperationFailed, "Mount I/O operation failed"),
+    };
+    HostFailure {
+        code,
+        message: message.to_owned(),
     }
 }
 
@@ -352,7 +368,10 @@ impl MainHandler {
                         .unwrap()
                         .complete_host_request(
                             id,
-                            HostCompletion::Failed(HostErrorCode::InvalidRequest),
+                            HostCompletion::Failed(HostFailure {
+                                code: HostErrorCode::InvalidRequest,
+                                message: "Unknown host operation".to_owned(),
+                            }),
                         )
                         .map_err(engine_io)?,
                 },
@@ -607,7 +626,9 @@ impl From<io::Error> for ReplError {
 
 #[cfg(test)]
 mod tests {
-    use super::{EngineKind, parse_arguments};
+    use super::{EngineKind, mount_failure, parse_arguments};
+    use runtime_engine::HostErrorCode;
+    use zintl_io_mounts::MountError;
 
     #[test]
     // Verifies both supported spellings select V8 without starting a message loop.
@@ -626,5 +647,20 @@ mod tests {
     // Verifies an unknown engine is rejected before either backend is initialized.
     fn rejects_unknown_engine() {
         assert!(parse_arguments(["--engine", "unknown"]).is_err());
+    }
+
+    #[test]
+    // Verifies mount failures retain useful detail without exposing a native path.
+    fn sanitizes_mount_failure_for_javascript() {
+        let failure = mount_failure(MountError::MountNotFound);
+        assert_eq!(failure.code, HostErrorCode::InvalidRequest);
+        assert_eq!(failure.message, "Mount not found");
+
+        let failure = mount_failure(MountError::BoundaryViolation);
+        assert_eq!(failure.code, HostErrorCode::PermissionDenied);
+        assert_eq!(
+            failure.message,
+            "Mount path escapes its capability boundary"
+        );
     }
 }
