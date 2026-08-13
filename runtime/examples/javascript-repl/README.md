@@ -1,15 +1,26 @@
 # Rust JavaScript REPL
 
-This example runs Swift JavaScriptCore through `ZjsHost` on the main-thread
+This example runs JavaScriptCore or V8 through `ZjsHost` on the main-thread
 `MessageLoopIo`. The JavaScript realm persists in interactive mode. A separate
 IO thread mounts the current directory as `project` and owns every real
-filesystem descriptor.
+filesystem descriptor. The V8 backend is built directly from `rusty_v8` and
+does not build or depend on Zintl's Deno workspace.
 
 Run interactively from `runtime`:
 
 ```console
 cargo run -p javascript-repl
 ```
+
+Select an engine when starting the REPL:
+
+```console
+cargo run -p javascript-repl -- --engine jsc
+cargo run -p javascript-repl -- --engine v8
+```
+
+The default is JavaScriptCore on macOS and V8 on other Unix platforms.
+JavaScriptCore is only available on macOS.
 
 The interactive prompt evaluates one complete line at a time. For a multiline
 script, pipe the complete source to the binary:

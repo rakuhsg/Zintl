@@ -1,5 +1,5 @@
 [package]
-name = "runtime-jsc"
+name = "runtime-v8"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,9 +7,10 @@ publish = false
 
 [dependencies]
 runtime-engine = { path = "../runtime-engine" }
+v8 = { version = "152", default-features = false, features = ["simdutf"] }
 
 [lints.rust]
-unsafe_code = "allow"
+unsafe_code = "deny"
 
 [lints.clippy]
 all = "warn"

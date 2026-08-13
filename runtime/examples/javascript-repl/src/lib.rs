@@ -10,9 +10,11 @@ use messageloop_io::{
 };
 use runtime_engine::{
     EngineEvent, EngineNotifier, EvaluationId, EvaluationOutcome, EvaluationRequest,
-    HostCompletion, HostErrorCode, HostRequest, HostRequestId, MountRequest,
+    HostCompletion, HostErrorCode, HostRequest, HostRequestId, JavaScriptEngineBackend,
+    MountRequest,
 };
 use runtime_jsc::JavaScriptCoreBackend;
+use runtime_v8::V8Backend;
 use std::fmt;
 use std::io::{self, IsTerminal, Read, Write};
 #[cfg(unix)]
@@ -26,6 +28,36 @@ use zintl_io_mounts::{
     BoundaryResolve, DirResolve, MountConfig, MountError, MountService, Source as MountSource,
     SymlinkPolicy,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EngineKind {
+    JavaScriptCore,
+    V8,
+}
+
+impl EngineKind {
+    const fn default_for_platform() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::JavaScriptCore
+        } else {
+            Self::V8
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::JavaScriptCore => "JavaScriptCore",
+            Self::V8 => "V8",
+        }
+    }
+
+    fn backend(self) -> Box<dyn JavaScriptEngineBackend> {
+        match self {
+            Self::JavaScriptCore => Box::new(JavaScriptCoreBackend::new()),
+            Self::V8 => Box::new(V8Backend::new()),
+        }
+    }
+}
 
 enum MainMessage {
     EngineReady,
@@ -251,6 +283,7 @@ struct MainHandler {
     interactive: bool,
     eof: bool,
     pending_evaluations: usize,
+    engine: EngineKind,
 }
 
 impl MainHandler {
@@ -407,12 +440,15 @@ impl IoMessageHandler<MainMessage> for MainHandler {
         }
         let notifier = Arc::new(LoopNotifier(cx.sender()));
         self.js = Some(
-            ZjsHostBuilder::new(Box::new(JavaScriptCoreBackend::new()), notifier)
+            ZjsHostBuilder::new(self.engine.backend(), notifier)
                 .build()
                 .map_err(engine_io)?,
         );
         if self.interactive {
-            println!("Zintl JavaScript REPL\nType .help or .exit.");
+            println!(
+                "Zintl JavaScript REPL ({})\nType .help or .exit.",
+                self.engine.name()
+            );
             print!("js> ");
             io::stdout().flush()?;
         }
@@ -472,6 +508,9 @@ fn engine_io(error: runtime_engine::EngineError) -> io::Error {
 /// # Errors
 /// Returns terminal, engine, mount startup, or message-loop failures.
 pub fn run() -> Result<(), ReplError> {
+    let Some(engine) = parse_arguments(std::env::args_os().skip(1))? else {
+        return Ok(());
+    };
     let interactive = io::stdin().is_terminal();
     let io_slot = Arc::new(Mutex::new(None));
     let main_loop = MessageLoopIo::new(MainHandler {
@@ -483,6 +522,7 @@ pub fn run() -> Result<(), ReplError> {
         interactive,
         eof: false,
         pending_evaluations: 0,
+        engine,
     })?;
     let main_sender = main_loop.sender();
     let io_loop = MessageLoopIo::new(IoHandler {
@@ -507,6 +547,50 @@ pub fn run() -> Result<(), ReplError> {
     Ok(())
 }
 
+fn parse_arguments(
+    arguments: impl IntoIterator<Item = impl Into<std::ffi::OsString>>,
+) -> io::Result<Option<EngineKind>> {
+    let mut arguments = arguments.into_iter().map(Into::into);
+    let mut engine = None;
+    while let Some(argument) = arguments.next() {
+        let argument = argument
+            .into_string()
+            .map_err(|_| io::Error::other("arguments must be UTF-8"))?;
+        if argument == "--help" || argument == "-h" {
+            print_usage();
+            return Ok(None);
+        }
+        let value = if argument == "--engine" {
+            arguments
+                .next()
+                .ok_or_else(|| io::Error::other("--engine requires jsc or v8"))?
+                .into_string()
+                .map_err(|_| io::Error::other("engine name must be UTF-8"))?
+        } else if let Some(value) = argument.strip_prefix("--engine=") {
+            value.to_owned()
+        } else {
+            return Err(io::Error::other(format!("unknown argument: {argument}")));
+        };
+        let selected = match value.as_str() {
+            "jsc" => EngineKind::JavaScriptCore,
+            "v8" => EngineKind::V8,
+            _ => return Err(io::Error::other("--engine must be jsc or v8")),
+        };
+        if engine.replace(selected).is_some() {
+            return Err(io::Error::other("--engine may only be specified once"));
+        }
+    }
+    Ok(Some(
+        engine.unwrap_or_else(EngineKind::default_for_platform),
+    ))
+}
+
+fn print_usage() {
+    println!("Usage: javascript-repl [--engine jsc|v8]");
+    println!("  jsc  JavaScriptCore (macOS only)");
+    println!("  v8   V8 through rusty_v8");
+}
+
 #[derive(Debug)]
 pub struct ReplError(io::Error);
 impl fmt::Display for ReplError {
@@ -518,5 +602,29 @@ impl std::error::Error for ReplError {}
 impl From<io::Error> for ReplError {
     fn from(error: io::Error) -> Self {
         Self(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EngineKind, parse_arguments};
+
+    #[test]
+    // Verifies both supported spellings select V8 without starting a message loop.
+    fn parses_v8_engine_option() {
+        assert_eq!(
+            parse_arguments(["--engine", "v8"]).unwrap(),
+            Some(EngineKind::V8)
+        );
+        assert_eq!(
+            parse_arguments(["--engine=v8"]).unwrap(),
+            Some(EngineKind::V8)
+        );
+    }
+
+    #[test]
+    // Verifies an unknown engine is rejected before either backend is initialized.
+    fn rejects_unknown_engine() {
+        assert!(parse_arguments(["--engine", "unknown"]).is_err());
     }
 }

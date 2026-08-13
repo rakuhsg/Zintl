@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/runtime-engine",
     "crates/runtime-jsc",
+    "crates/runtime-v8",
     "crates/zintl-host",
     "examples/javascript-repl",
 ]
@@ -11,7 +12,6 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
-rust-version = "1.85"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
