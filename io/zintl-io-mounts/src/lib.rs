@@ -241,6 +241,11 @@ pub enum MountOperation {
         mount_id: MountId,
         path: MountPath,
     },
+    Rmdir {
+        operation_id: OperationId,
+        mount_id: MountId,
+        path: MountPath,
+    },
     Rename {
         operation_id: OperationId,
         mount_id: MountId,
@@ -430,9 +435,119 @@ impl MountService {
         }
     }
 
+    /// Replaces or creates one file entirely inside its mount.
+    ///
+    /// # Errors
+    /// Returns URI, boundary, readonly, or underlying IO failures.
+    pub fn write_uri(&mut self, uri: &str, bytes: Vec<u8>) -> Result<(), MountError> {
+        let (mount_id, path) = self.resolve_uri(uri)?;
+        let opened = self.try_handle(MountOperation::Open {
+            operation_id: OperationId::new(),
+            mount_id,
+            path,
+            options: OpenOptions {
+                read: false,
+                write: true,
+                create: true,
+                truncate: true,
+            },
+        })?;
+        let MountCompletion::Opened { handle, .. } = opened else {
+            return Err(MountError::Io);
+        };
+        let write = self.try_handle(MountOperation::Write {
+            operation_id: OperationId::new(),
+            handle,
+            offset: 0,
+            bytes,
+        });
+        self.files.remove(&handle);
+        match write? {
+            MountCompletion::Written { .. } => Ok(()),
+            _ => Err(MountError::Io),
+        }
+    }
+
+    /// Creates one directory inside a mount.
+    ///
+    /// # Errors
+    /// Returns URI, boundary, readonly, or underlying IO failures.
+    pub fn create_dir_uri(&mut self, uri: &str) -> Result<(), MountError> {
+        let (mount_id, path) = self.resolve_uri(uri)?;
+        match self.try_handle(MountOperation::Mkdir {
+            operation_id: OperationId::new(),
+            mount_id,
+            path,
+        })? {
+            MountCompletion::Done { .. } => Ok(()),
+            _ => Err(MountError::Io),
+        }
+    }
+
+    /// Removes one file inside a mount.
+    ///
+    /// # Errors
+    /// Returns URI, boundary, readonly, or underlying IO failures.
+    pub fn remove_file_uri(&mut self, uri: &str) -> Result<(), MountError> {
+        let (mount_id, path) = self.resolve_uri(uri)?;
+        match self.try_handle(MountOperation::Unlink {
+            operation_id: OperationId::new(),
+            mount_id,
+            path,
+        })? {
+            MountCompletion::Done { .. } => Ok(()),
+            _ => Err(MountError::Io),
+        }
+    }
+
+    /// Removes one empty directory inside a mount.
+    ///
+    /// # Errors
+    /// Returns URI, boundary, readonly, or underlying IO failures.
+    pub fn remove_dir_uri(&mut self, uri: &str) -> Result<(), MountError> {
+        let (mount_id, path) = self.resolve_uri(uri)?;
+        match self.try_handle(MountOperation::Rmdir {
+            operation_id: OperationId::new(),
+            mount_id,
+            path,
+        })? {
+            MountCompletion::Done { .. } => Ok(()),
+            _ => Err(MountError::Io),
+        }
+    }
+
+    /// Renames one entry within the same mount.
+    ///
+    /// # Errors
+    /// Rejects cross-mount moves and returns URI, boundary, readonly, or IO failures.
+    pub fn rename_uri(&mut self, from: &str, to: &str) -> Result<(), MountError> {
+        let (from_mount, from_path) = self.resolve_uri(from)?;
+        let (to_mount, to_path) = self.resolve_uri(to)?;
+        if from_mount != to_mount {
+            return Err(MountError::BoundaryViolation);
+        }
+        match self.try_handle(MountOperation::Rename {
+            operation_id: OperationId::new(),
+            mount_id: from_mount,
+            from: from_path,
+            to: to_path,
+        })? {
+            MountCompletion::Done { .. } => Ok(()),
+            _ => Err(MountError::Io),
+        }
+    }
+
     #[must_use]
     pub fn mount_id(&self, name: &str) -> Option<MountId> {
         self.names.get(name).copied()
+    }
+
+    fn resolve_uri(&self, uri: &str) -> Result<(MountId, MountPath), MountError> {
+        let uri = MountUri::parse(uri)?;
+        let mount_id = self
+            .mount_id(&uri.mount_name)
+            .ok_or(MountError::MountNotFound)?;
+        Ok((mount_id, uri.path))
     }
 
     #[must_use]
@@ -553,6 +668,18 @@ impl MountService {
                 mount
                     .directory
                     .remove_file(checked_path(mount, &path)?)
+                    .map_err(|_| MountError::Io)?;
+                Ok(MountCompletion::Done { operation_id })
+            }
+            MountOperation::Rmdir {
+                operation_id,
+                mount_id,
+                path,
+            } => {
+                let mount = mutable_mount(&self.mounts, mount_id)?;
+                mount
+                    .directory
+                    .remove_dir(checked_path(mount, &path)?)
                     .map_err(|_| MountError::Io)?;
                 Ok(MountCompletion::Done { operation_id })
             }
@@ -722,6 +849,7 @@ impl MountOperation {
             | Self::Close { operation_id, .. }
             | Self::Mkdir { operation_id, .. }
             | Self::Unlink { operation_id, .. }
+            | Self::Rmdir { operation_id, .. }
             | Self::Rename { operation_id, .. } => *operation_id,
         }
     }
@@ -898,6 +1026,71 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn uri_mutations_create_write_rename_and_remove_entries() {
+        // Verifies the convenience operation layer drives only logical mount paths.
+        let root = tempfile::tempdir().unwrap();
+        let mut service = MountService::default();
+        service
+            .create_mount(MountConfig {
+                name: "project".into(),
+                source: Source::Directory {
+                    root_path: root.path().into(),
+                    readonly: false,
+                    resolve: DirResolve::default(),
+                },
+            })
+            .unwrap();
+        service.create_dir_uri("mount://project/demo").unwrap();
+        service
+            .write_uri(
+                "mount://project/demo/first.txt",
+                b"mount operation".to_vec(),
+            )
+            .unwrap();
+        assert_eq!(
+            service
+                .read_uri("mount://project/demo/first.txt", 64)
+                .unwrap(),
+            b"mount operation"
+        );
+        service
+            .rename_uri(
+                "mount://project/demo/first.txt",
+                "mount://project/demo/second.txt",
+            )
+            .unwrap();
+        service
+            .remove_file_uri("mount://project/demo/second.txt")
+            .unwrap();
+        service.remove_dir_uri("mount://project/demo").unwrap();
+        assert!(!root.path().join("demo").exists());
+    }
+
+    #[test]
+    fn uri_rename_rejects_cross_mount_destinations() {
+        // Verifies a rename request cannot cross logical mount boundaries.
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let mut service = MountService::default();
+        for (name, root) in [("first", first.path()), ("second", second.path())] {
+            service
+                .create_mount(MountConfig {
+                    name: name.into(),
+                    source: Source::Directory {
+                        root_path: root.into(),
+                        readonly: false,
+                        resolve: DirResolve::default(),
+                    },
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            service.rename_uri("mount://first/a", "mount://second/a"),
+            Err(MountError::BoundaryViolation)
+        );
     }
 
     #[test]

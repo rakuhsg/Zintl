@@ -180,6 +180,15 @@ private final class JSCFFIEngine: @unchecked Sendable {
     let readFile: ReadFile = { [weak self] url, maximum, resolve, reject in
       self?.submitMountRead(url: url as String, maximum: maximum, resolve: resolve, reject: reject)
     }
+    typealias MountOperation =
+      @convention(block) (
+        Double, NSString, JSValue, JSValue, JSValue
+      ) -> Void
+    let mountOperation: MountOperation = { [weak self] operation, first, second, resolve, reject in
+      self?.submitMountOperation(
+        operation: operation, first: first as String, second: second,
+        resolve: resolve, reject: reject)
+    }
     typealias Console = @convention(block) (NSString) -> Void
     let console: Console = { [weak self] message in
       self?.emitConsole(message as String)
@@ -188,6 +197,7 @@ private final class JSCFFIEngine: @unchecked Sendable {
     context.setObject(invoke, forKeyedSubscript: "__zintlInvoke" as NSString)
     context.setObject(sleep, forKeyedSubscript: "__zintlSleep" as NSString)
     context.setObject(readFile, forKeyedSubscript: "__zintlReadFile" as NSString)
+    context.setObject(mountOperation, forKeyedSubscript: "__zintlMountOperation" as NSString)
     context.setObject(console, forKeyedSubscript: "__zintlConsole" as NSString)
   }
 
@@ -281,13 +291,50 @@ private final class JSCFFIEngine: @unchecked Sendable {
   ) {
     guard url.utf8.count <= 4096, let maximum = exactUInt64(maximum), maximum > 0
     else {
-      rejectNow(reject, "Invalid virtual filesystem request", code: "InvalidRequest")
+      rejectNow(reject, "Invalid mount read request", code: "InvalidRequest")
       return
     }
     var payload = Data()
     appendUInt64(maximum, to: &payload)
     payload.append(Data(url.utf8))
     submitHost(kind: 10, payload: payload, resolve: resolve, reject: reject)
+  }
+
+  private func submitMountOperation(
+    operation: Double, first: String, second: JSValue, resolve: JSValue, reject: JSValue
+  ) {
+    guard let kind = exactUInt64(operation), (11...15).contains(kind), first.utf8.count <= 4096
+    else {
+      rejectNow(reject, "Invalid mount operation", code: "InvalidRequest")
+      return
+    }
+    var payload = Data()
+    switch kind {
+    case 11:
+      guard let length = UInt16(exactly: first.utf8.count), let bytes = byteArray(second) else {
+        rejectNow(reject, "Invalid mount write", code: "InvalidRequest")
+        return
+      }
+      appendUInt16(length, to: &payload)
+      payload.append(Data(first.utf8))
+      payload.append(bytes)
+    case 12...14:
+      payload.append(Data(first.utf8))
+    case 15:
+      guard second.isString, let destination = second.toString(),
+        destination.utf8.count <= 4096, let length = UInt16(exactly: first.utf8.count)
+      else {
+        rejectNow(reject, "Invalid mount rename", code: "InvalidRequest")
+        return
+      }
+      appendUInt16(length, to: &payload)
+      payload.append(Data(first.utf8))
+      payload.append(Data(destination.utf8))
+    default:
+      rejectNow(reject, "Invalid mount operation", code: "InvalidRequest")
+      return
+    }
+    submitHost(kind: UInt16(kind), payload: payload, resolve: resolve, reject: reject)
   }
 
   private func submitHost(kind: UInt16, payload body: Data, resolve: JSValue, reject: JSValue) {
@@ -428,9 +475,10 @@ private final class JSCFFIEngine: @unchecked Sendable {
       const invokeNative = globalThis.__zintlInvoke;
       const sleepNative = globalThis.__zintlSleep;
       const readFileNative = globalThis.__zintlReadFile;
+      const mountOperationNative = globalThis.__zintlMountOperation;
       const consoleNative = globalThis.__zintlConsole;
       for (const name of ["__zintlEvaluationDone", "__zintlInvoke", "__zintlSleep",
-        "__zintlReadFile", "__zintlConsole"]) delete globalThis[name];
+        "__zintlReadFile", "__zintlMountOperation", "__zintlConsole"]) delete globalThis[name];
       const error = (message, code) => Object.assign(new Error(message), { code });
       const invoke = (name, input = new Uint8Array()) => new Promise((resolve, reject) => {
         if (typeof name !== "string" || !(input instanceof Uint8Array)) return reject(error("Invalid input", "InvalidRequest"));
@@ -475,16 +523,51 @@ private final class JSCFFIEngine: @unchecked Sendable {
         if (codePoints.length) output += String.fromCodePoint(...codePoints);
         return output;
       };
+      const encodeUtf8 = value => {
+        const output = [];
+        for (const character of value) {
+          const point = character.codePointAt(0);
+          if (point <= 0x7f) output.push(point);
+          else if (point <= 0x7ff) output.push(0xc0 | (point >> 6), 0x80 | (point & 0x3f));
+          else if (point <= 0xffff) output.push(0xe0 | (point >> 12),
+            0x80 | ((point >> 6) & 0x3f), 0x80 | (point & 0x3f));
+          else output.push(0xf0 | (point >> 18), 0x80 | ((point >> 12) & 0x3f),
+            0x80 | ((point >> 6) & 0x3f), 0x80 | (point & 0x3f));
+        }
+        return new Uint8Array(output);
+      };
       const readFile = (url, encoding) => new Promise((resolve, reject) => {
         if (typeof url !== "string" || (encoding !== undefined && encoding !== "utf8")) {
-          return reject(error("Invalid virtual filesystem URL or encoding", "InvalidRequest"));
+          return reject(error("Invalid mount URI or encoding", "InvalidRequest"));
         }
         readFileNative(url, 4 * 1024 * 1024, resolve, reject);
       }).then(bytes => {
         const value = new Uint8Array(bytes);
         return encoding === "utf8" ? decodeUtf8(value) : value;
       });
-      Object.defineProperty(globalThis, "Zintl", {value:Object.freeze({invoke, sleep, readFile}), configurable:false});
+      const mutateMount = (kind, first, second = null) => new Promise((resolve, reject) => {
+        if (typeof first !== "string") return reject(error("Invalid mount URI", "InvalidRequest"));
+        mountOperationNative(kind, first, second, resolve, reject);
+      });
+      const writeFile = (url, data) => {
+        let bytes;
+        if (typeof data === "string") bytes = encodeUtf8(data);
+        else if (data instanceof Uint8Array) bytes = data;
+        else return Promise.reject(error("Expected string or Uint8Array", "InvalidRequest"));
+        return mutateMount(11, url, Array.from(bytes));
+      };
+      const mkdir = url => mutateMount(12, url);
+      const removeFile = url => mutateMount(13, url);
+      const removeDirectory = url => mutateMount(14, url);
+      const rename = (from, to) => {
+        if (typeof to !== "string") return Promise.reject(error("Invalid mount URI", "InvalidRequest"));
+        return mutateMount(15, from, to);
+      };
+      Object.defineProperty(globalThis, "Zintl", {
+        value:Object.freeze({
+          invoke, sleep, readFile, writeFile, mkdir, removeFile, removeDirectory, rename
+        }), configurable:false
+      });
       const formatConsoleValue = value => {
         if (typeof value === "string") return value;
         try { const encoded = JSON.stringify(value); if (encoded !== undefined) return encoded; } catch (_) {}

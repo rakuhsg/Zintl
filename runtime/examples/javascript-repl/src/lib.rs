@@ -37,10 +37,9 @@ enum MainMessage {
 }
 
 enum IoMessage {
-    ReadFile {
+    Mount {
         request_id: HostRequestId,
-        uri: String,
-        maximum_bytes: usize,
+        request: MountRequest,
     },
     Sleep {
         request_id: HostRequestId,
@@ -48,9 +47,14 @@ enum IoMessage {
     },
     WorkerCompleted {
         request_id: HostRequestId,
-        result: Result<Vec<u8>, MountError>,
+        result: Result<IoValue, MountError>,
     },
     Stop,
+}
+
+enum IoValue {
+    Unit,
+    Bytes(Vec<u8>),
 }
 
 struct LoopNotifier(IoSender<MainMessage>);
@@ -141,10 +145,9 @@ impl IoMessageHandler<IoMessage> for IoHandler {
 
     fn on(&mut self, cx: &mut IoContext<'_, IoMessage>, message: IoMessage) -> io::Result<()> {
         match message {
-            IoMessage::ReadFile {
+            IoMessage::Mount {
                 request_id,
-                uri,
-                maximum_bytes,
+                request,
             } => {
                 let mounts = self.mounts.clone();
                 let sender = cx.sender();
@@ -152,7 +155,7 @@ impl IoMessageHandler<IoMessage> for IoHandler {
                     let result = mounts
                         .lock()
                         .map_err(|_| MountError::Io)
-                        .and_then(|mut mounts| mounts.read_uri(&uri, maximum_bytes));
+                        .and_then(|mut mounts| run_mount_request(&mut mounts, request));
                     let _ = sender.send(IoMessage::WorkerCompleted { request_id, result });
                 })?;
             }
@@ -165,15 +168,15 @@ impl IoMessageHandler<IoMessage> for IoHandler {
                     thread::sleep(duration);
                     let _ = sender.send(IoMessage::WorkerCompleted {
                         request_id,
-                        result: Ok(Vec::new()),
+                        result: Ok(IoValue::Unit),
                     });
                 })?;
             }
             IoMessage::WorkerCompleted { request_id, result } => {
                 let completion = match result {
-                    Ok(bytes) if bytes.is_empty() => HostCompletion::Unit,
-                    Ok(bytes) => HostCompletion::Bytes(bytes),
-                    Err(_) => HostCompletion::Failed(HostErrorCode::OperationFailed),
+                    Ok(IoValue::Unit) => HostCompletion::Unit,
+                    Ok(IoValue::Bytes(bytes)) => HostCompletion::Bytes(bytes),
+                    Err(error) => HostCompletion::Failed(mount_error_code(&error)),
                 };
                 let _ = self.main_sender.send(MainMessage::IoCompleted {
                     request_id,
@@ -183,6 +186,59 @@ impl IoMessageHandler<IoMessage> for IoHandler {
             IoMessage::Stop => cx.request_termination(),
         }
         Ok(())
+    }
+}
+
+fn run_mount_request(
+    mounts: &mut MountService,
+    request: MountRequest,
+) -> Result<IoValue, MountError> {
+    match request {
+        MountRequest::ReadFile { url, maximum_bytes } => {
+            mounts.read_uri(&url, maximum_bytes).map(IoValue::Bytes)
+        }
+        MountRequest::WriteFile { url, bytes } => {
+            mounts.write_uri(&url, bytes)?;
+            Ok(IoValue::Unit)
+        }
+        MountRequest::CreateDirectory { url } => {
+            mounts.create_dir_uri(&url)?;
+            Ok(IoValue::Unit)
+        }
+        MountRequest::RemoveFile { url } => {
+            mounts.remove_file_uri(&url)?;
+            Ok(IoValue::Unit)
+        }
+        MountRequest::RemoveDirectory { url } => {
+            mounts.remove_dir_uri(&url)?;
+            Ok(IoValue::Unit)
+        }
+        MountRequest::Rename { from, to } => {
+            mounts.rename_uri(&from, &to)?;
+            Ok(IoValue::Unit)
+        }
+    }
+}
+
+const fn mount_error_code(error: &MountError) -> HostErrorCode {
+    match error {
+        MountError::MalformedUri
+        | MountError::EmptyMountName
+        | MountError::InvalidMountName
+        | MountError::MalformedPercentEncoding
+        | MountError::NulByte
+        | MountError::EncodedSeparator
+        | MountError::InvalidUtf8
+        | MountError::InvalidPath
+        | MountError::BoundaryViolation
+        | MountError::SymlinkDisallowed
+        | MountError::SymlinkLoop
+        | MountError::MountNotFound
+        | MountError::HandleNotFound => HostErrorCode::InvalidRequest,
+        MountError::ReadOnly => HostErrorCode::PermissionDenied,
+        MountError::DuplicateMountName | MountError::NotDirectory | MountError::Io => {
+            HostErrorCode::OperationFailed
+        }
     }
 }
 
@@ -239,11 +295,10 @@ impl MainHandler {
                     eprintln!("{}", String::from_utf8_lossy(&bytes));
                 }
                 EngineEvent::HostRequest { id, request } => match request {
-                    HostRequest::Mount(MountRequest::ReadFile { url, maximum_bytes }) => {
-                        self.send_io(IoMessage::ReadFile {
+                    HostRequest::Mount(request) => {
+                        self.send_io(IoMessage::Mount {
                             request_id: id,
-                            uri: url,
-                            maximum_bytes,
+                            request,
                         })?;
                     }
                     HostRequest::Sleep { nanoseconds } => {
@@ -292,13 +347,19 @@ impl MainHandler {
     }
 
     fn consume_input(&mut self, cx: &mut IoContext<'_, MainMessage>, eof: bool) -> io::Result<()> {
-        while let Some(newline) = self.input.iter().position(|byte| *byte == b'\n') {
-            let line = self.input.drain(..=newline).collect::<Vec<_>>();
-            self.consume_line(cx, &String::from_utf8_lossy(&line))?;
-        }
-        if eof && !self.input.is_empty() {
-            let line = std::mem::take(&mut self.input);
-            self.consume_line(cx, &String::from_utf8_lossy(&line))?;
+        if self.interactive {
+            while let Some(newline) = self.input.iter().position(|byte| *byte == b'\n') {
+                let line = self.input.drain(..=newline).collect::<Vec<_>>();
+                self.consume_line(cx, &String::from_utf8_lossy(&line))?;
+            }
+            if eof && !self.input.is_empty() {
+                let line = std::mem::take(&mut self.input);
+                self.consume_line(cx, &String::from_utf8_lossy(&line))?;
+            }
+        } else if eof && !self.input.is_empty() {
+            let source = String::from_utf8(std::mem::take(&mut self.input))
+                .map_err(|_| io::Error::other("stdin is not UTF-8"))?;
+            self.evaluate(source)?;
         }
         if eof {
             self.eof = true;
@@ -320,7 +381,15 @@ impl MainHandler {
                 Ok(())
             }
             ".help" => {
-                println!("await Zintl.readFile('mount://project/Cargo.toml', 'utf8')");
+                println!("Zintl.readFile(uri, 'utf8')");
+                println!("Zintl.writeFile(uri, stringOrBytes)");
+                println!("Zintl.mkdir(uri)");
+                println!("Zintl.rename(from, to)");
+                println!("Zintl.removeFile(uri)");
+                println!("Zintl.removeDirectory(uri)");
+                println!(
+                    "Demo: cargo run -p javascript-repl < examples/javascript-repl/demo/mount-operations.js"
+                );
                 Ok(())
             }
             _ => self.evaluate(source.to_owned()),
@@ -332,6 +401,7 @@ impl IoMessageHandler<MainMessage> for MainHandler {
     fn init(&mut self, cx: &mut IoContext<'_, MainMessage>) -> io::Result<()> {
         #[cfg(unix)]
         {
+            rustix::io::ioctl_fionbio(io::stdin(), true)?;
             let fd = io::stdin().as_raw_fd();
             self.stdin_token = Some(cx.register(&mut SourceFd(&fd), Interest::READABLE)?);
         }
@@ -370,10 +440,20 @@ impl IoMessageHandler<MainMessage> for MainHandler {
         if Some(event.token()) != self.stdin_token {
             return Ok(());
         }
+        let mut eof = false;
         let mut chunk = [0; 4096];
-        let count = io::stdin().read(&mut chunk)?;
-        self.input.extend_from_slice(&chunk[..count]);
-        self.consume_input(cx, count == 0)
+        loop {
+            match io::stdin().read(&mut chunk) {
+                Ok(0) => {
+                    eof = true;
+                    break;
+                }
+                Ok(count) => self.input.extend_from_slice(&chunk[..count]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        self.consume_input(cx, eof)
     }
     fn terminate(&mut self, _cx: &mut IoContext<'_, MainMessage>) -> io::Result<()> {
         if let Some(js) = self.js.as_mut() {
