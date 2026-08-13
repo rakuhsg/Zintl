@@ -3,13 +3,13 @@ name = "javascript-repl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version.workspace = true
 
 [dependencies]
 messageloop-core.workspace = true
 messageloop-io.workspace = true
 runtime-engine = { path = "../../crates/runtime-engine" }
 runtime-jsc = { path = "../../crates/runtime-jsc" }
+runtime-v8 = { path = "../../crates/runtime-v8" }
 zintl-host = { path = "../../crates/zintl-host" }
 zintl-io-mounts.workspace = true
 
