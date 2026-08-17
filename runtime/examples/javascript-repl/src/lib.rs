@@ -4,10 +4,10 @@
 
 use messageloop_core::Sender;
 #[cfg(unix)]
+use messageloop_io::Interest;
+#[cfg(unix)]
 use messageloop_io::SourceFd;
-use messageloop_io::{
-    Event, Interest, IoContext, IoMessageHandler, IoSender, MessageLoopIo, Token,
-};
+use messageloop_io::{Event, IoContext, IoMessageHandler, IoSender, MessageLoopIo, Token};
 use runtime_engine::{
     EngineEvent, EngineNotifier, EvaluationId, EvaluationOutcome, EvaluationRequest,
     HostCompletion, HostErrorCode, HostFailure, HostRequest, HostRequestId,
@@ -62,6 +62,8 @@ impl EngineKind {
 enum MainMessage {
     EngineReady,
     MountCreated(Result<(), MountError>),
+    #[cfg(windows)]
+    StdinRead(io::Result<Vec<u8>>),
     IoCompleted {
         request_id: HostRequestId,
         completion: HostCompletion,
@@ -457,6 +459,26 @@ impl IoMessageHandler<MainMessage> for MainHandler {
             let fd = io::stdin().as_raw_fd();
             self.stdin_token = Some(cx.register(&mut SourceFd(&fd), Interest::READABLE)?);
         }
+        #[cfg(windows)]
+        {
+            let sender = cx.sender();
+            thread::Builder::new()
+                .name("zintl-stdin".into())
+                .spawn(move || {
+                    loop {
+                        let mut chunk = vec![0; 4096];
+                        let result = io::stdin().read(&mut chunk).map(|count| {
+                            chunk.truncate(count);
+                            chunk
+                        });
+                        let finished =
+                            matches!(&result, Ok(chunk) if chunk.is_empty()) || result.is_err();
+                        if sender.send(MainMessage::StdinRead(result)).is_err() || finished {
+                            break;
+                        }
+                    }
+                })?;
+        }
         let notifier = Arc::new(LoopNotifier(cx.sender()));
         self.js = Some(
             ZjsHostBuilder::new(self.engine.backend(), notifier)
@@ -478,6 +500,14 @@ impl IoMessageHandler<MainMessage> for MainHandler {
             MainMessage::EngineReady => self.process_engine(cx),
             MainMessage::MountCreated(Ok(())) => Ok(()),
             MainMessage::MountCreated(Err(error)) => Err(io::Error::other(error)),
+            #[cfg(windows)]
+            MainMessage::StdinRead(Ok(chunk)) => {
+                let eof = chunk.is_empty();
+                self.input.extend_from_slice(&chunk);
+                self.consume_input(cx, eof)
+            }
+            #[cfg(windows)]
+            MainMessage::StdinRead(Err(error)) => Err(error),
             MainMessage::IoCompleted {
                 request_id,
                 completion,
