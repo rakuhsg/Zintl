@@ -1,76 +1,45 @@
-# zintl: Building GUI application in Rust.
+# zintl-ui
 
-```rust
-use zintl::*;
+`zintl-ui` is a renderer-independent reactive UI core. A renderer supplies a
+`RenderNode` description and a `RenderBackend` that mounts those descriptions
+to retained native objects.
 
-struct LabelButton {
-	text: String,
-	click_hook: HookId,
+Views form reactive `Bound` boundaries. Stores read while rendering a view are
+recorded as that boundary's dependencies. Updating a store marks only its
+dependent boundaries dirty; `Composer::flush` rebuilds those boundaries,
+reconciles their cached element subtrees, and applies backend operations.
+
+```rust,ignore
+struct Counter {
+    count: Store<i32>,
 }
 
-...
+impl View for Counter {
+    type Output = AppRenderNode;
 
-impl IntoElement for LabelButton {
-	type Output = RenderNode;
-
-	fn into_element(&self, _cx: &mut ElementContext<RenderNode>) -> Element<RenderNode> {
-		Element {
-			node: RenderNode::LabelButton(self.text.clone()),
-			dependencies: vec![click_hook],
-		}
-	}
+    fn render(&mut self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        Text::new(cx.get(self.count).to_string())
+    }
 }
 
-...
+let mut composer = Composer::new(app_backend);
+let count = composer.context(|cx| cx.store(0));
+composer.mount(Counter { count });
 
-struct TodoApp {
-	tasks: Store<Vec<Task>>,
-	task_name: Store<String>,
-	add_button_click: Signal<ClickEvent>,
-}
-
-...
-
-impl View for TodoApp {
-	type Output = RenderNode;
-	
-	fn init(&mut self, cx: &mut Context) {
-		self.tasks = cx.store(|| {
-			vec![]
-		});
-		self.task_name = cx.store(|| { "".into() });
-		self.add_button_signal = cx.signal();
-		cx.subscribe(add_button_signal, |cx, e: ClickEvent| {
-			match e {
-				ClickEvent::Click {..} => {
-					let task_name_str: &String = cx.get_store(todo_name).unwrap();
-					let tasks: &mut Vec<Task> = cx.get_store_mut(tasks).unwrap();
-					tasks.push(Task::new(*task_name_str));
-					cx.post_future(async {
-					});
-				}
-			}
-		});
-	}
-
-	fn render(&self, cx: &mut Context) -> impl IntoElement<Output = RenderNode> {
-		Stack::new([
-			Input::new().store_value(task_name),
-			LabelButton::new("Add todo").trigger_click(add_button_hook),
-			Stack::new(
-				cx.use_store(tasks, |tasks| {
-					cx.render_iter(tasks)
-				}),
-			),
-		])
-	}
-}
-
-impl<R, T: View<Output = R> IntoElement for T {
-	type Output = RenderNode;
-
-	fn into_element(&self, cx: &mut ElementContext<RenderNode>) -> Element<RenderNode> {
-        self.render(&mut cx.cx_view()).into_element(&mut cx.cx_child())
-	}
-}
+composer.context(|cx| cx.update(count, |value| *value += 1));
+composer.flush();
 ```
+
+Children are matched by position and element kind by default. Dynamic lists
+should provide keys so their bound and native identities survive insertion and
+reordering.
+
+```rust,ignore
+let rows = tasks
+    .iter()
+    .map(|task| TaskRow::new(task).key(task.id).into_element());
+Element::node(AppRenderNode::List).with_children(rows)
+```
+
+See `zintl-ui-test` for a complete in-memory render node and backend used by the
+unit tests.

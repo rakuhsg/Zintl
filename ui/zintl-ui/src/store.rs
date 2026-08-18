@@ -1,6 +1,5 @@
 use crate::hook::{Hook, HookId};
-
-use std::{any::TypeId, marker::PhantomData};
+use std::marker::PhantomData;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct StoreId {
@@ -8,32 +7,33 @@ pub struct StoreId {
     pub(crate) index: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Store<T: 'static> {
-    id: Option<StoreId>,
-    hook_id: HookId,
-    phantom: PhantomData<T>,
+    pub(crate) id: StoreId,
+    pub(crate) hook_id: HookId,
+    phantom: PhantomData<fn() -> T>,
 }
 
-impl<T: 'static> Hook for Store<T> {
-    fn get_id(&self) -> HookId {
-        self.hook_id
+impl<T: 'static> Copy for Store<T> {}
+
+impl<T: 'static> Clone for Store<T> {
+    fn clone(&self) -> Self {
+        *self
     }
 }
 
 impl<T: 'static> Store<T> {
-    pub fn new() -> Self {
-        Store {
-            id: None,
-            hook_id: HookId::DEFAULT,
+    pub(crate) fn new(id: StoreId, hook_id: HookId) -> Self {
+        Self {
+            id,
+            hook_id,
             phantom: PhantomData,
         }
     }
+}
 
-    pub(crate) fn init(&mut self, id: StoreId) {
-        self.id = Some(id);
-    }
-
-    pub(crate) fn get_type_id(&self) -> TypeId {
-        TypeId::of::<T>()
+impl<T: 'static> Hook for Store<T> {
+    fn hook_id(&self) -> HookId {
+        self.hook_id
     }
 }

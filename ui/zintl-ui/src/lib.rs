@@ -3,6 +3,7 @@
 pub mod composer;
 pub mod element;
 pub mod hook;
+pub mod renderer;
 pub mod sequence;
 pub mod signal;
 pub mod store;

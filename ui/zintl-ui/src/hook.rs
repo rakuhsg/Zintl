@@ -1,18 +1,16 @@
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HookId(u32);
 
 impl HookId {
-    pub const DEFAULT: Self = HookId(0);
-
-    pub fn new(id: u32) -> Self {
-        HookId(id)
+    pub(crate) fn new(index: u32) -> Self {
+        Self(index)
     }
 
-    pub fn value(&self) -> u32 {
-        self.0
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
     }
 }
 
 pub trait Hook {
-    fn get_id(&self) -> HookId;
+    fn hook_id(&self) -> HookId;
 }
