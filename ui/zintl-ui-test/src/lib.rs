@@ -252,6 +252,102 @@ mod tests {
         );
     }
 
+    struct StatefulChildView {
+        count: Option<Store<i32>>,
+        exposed_count: Rc<Cell<Option<Store<i32>>>>,
+        renders: Rc<Cell<usize>>,
+    }
+
+    struct TextView {
+        content: String,
+    }
+
+    impl View for TextView {
+        type Output = TestRenderNode;
+
+        fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+            Element::node(TestRenderNode::Text(self.content.clone()))
+        }
+    }
+
+    impl View for StatefulChildView {
+        type Output = TestRenderNode;
+
+        fn init(&mut self, cx: &mut Context<'_>) {
+            let count = cx.store(0_i32);
+            self.count = Some(count);
+            self.exposed_count.set(Some(count));
+        }
+
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+            self.renders.set(self.renders.get() + 1);
+            let count = self.count.expect("View::init must run before render");
+            TextView {
+                content: cx.get(count).to_string(),
+            }
+        }
+    }
+
+    struct ParentWithStatefulChild {
+        /// Triggers a parent rebuild without contributing to the rendered output.
+        version: Store<u32>,
+        /// Exposes the child-owned Store so the test can update its state.
+        exposed_child_count: Rc<Cell<Option<Store<i32>>>>,
+        /// Counts parent renders to verify that child updates remain isolated.
+        parent_renders: Rc<Cell<usize>>,
+        /// Counts child renders across both child and parent updates.
+        child_renders: Rc<Cell<usize>>,
+    }
+
+    impl View for ParentWithStatefulChild {
+        type Output = TestRenderNode;
+
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+            self.parent_renders.set(self.parent_renders.get() + 1);
+            let _version = cx.get(self.version);
+            StatefulChildView {
+                count: None,
+                exposed_count: self.exposed_child_count.clone(),
+                renders: self.child_renders.clone(),
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_child_view_state_across_parent_rebuilds() {
+        // A child-owned Store updates independently and survives reconstruction of its parent.
+        let mut composer = Composer::new(TestBackend::new());
+        let version = composer.context(|cx| cx.store(0_u32));
+        let exposed_child_count = Rc::new(Cell::new(None));
+        let parent_renders = Rc::new(Cell::new(0));
+        let child_renders = Rc::new(Cell::new(0));
+        composer.mount(ParentWithStatefulChild {
+            version,
+            exposed_child_count: exposed_child_count.clone(),
+            parent_renders: parent_renders.clone(),
+            child_renders: child_renders.clone(),
+        });
+        let child_count = exposed_child_count.get().unwrap();
+
+        composer.context(|cx| cx.update(child_count, |value| *value = 7));
+        composer.flush();
+        assert_eq!(parent_renders.get(), 1);
+        assert_eq!(child_renders.get(), 2);
+
+        composer.context(|cx| cx.update(version, |value| *value += 1));
+        composer.flush();
+
+        assert_eq!(parent_renders.get(), 2);
+        assert_eq!(child_renders.get(), 3);
+        assert_eq!(
+            composer.backend().roots(),
+            vec![TestTree {
+                value: TestRenderNode::Text("7".into()),
+                children: vec![],
+            }]
+        );
+    }
+
     struct CounterView {
         count: Store<i32>,
         renders: Rc<Cell<usize>>,

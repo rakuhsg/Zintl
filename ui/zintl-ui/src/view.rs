@@ -115,7 +115,7 @@ struct ViewBuilder<V> {
 }
 
 impl<V: View> BoundBuilder<V::Output> for ViewBuilder<V> {
-    fn build(&mut self, cx: &mut Context<'_>) -> Element<V::Output> {
+    fn build_children(&mut self, cx: &mut Context<'_>) -> Vec<Element<V::Output>> {
         if !self.initialized {
             if let Some(init_stores) = &mut cx.init_stores {
                 init_stores.begin();
@@ -123,7 +123,7 @@ impl<V: View> BoundBuilder<V::Output> for ViewBuilder<V> {
             self.view.init(cx);
             self.initialized = true;
         }
-        self.view.render(cx).into_element()
+        vec![self.view.render(cx).into_element()]
     }
 
     fn builder_type_id(&self) -> TypeId {

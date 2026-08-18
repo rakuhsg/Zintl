@@ -22,7 +22,7 @@ struct BoundState<R: RenderNode, NodeId> {
     key: Option<ElementKey>,
     builder: Box<dyn BoundBuilder<R>>,
     dependencies: Vec<HookId>,
-    inner: Vec<MountedElement<R, NodeId>>,
+    children: Vec<MountedElement<R, NodeId>>,
     mount_point: MountPoint<NodeId>,
     init_stores: InitStores,
 }
@@ -233,7 +233,7 @@ where
                 key: bound.key,
                 builder: bound.builder,
                 dependencies: Vec::new(),
-                inner: Vec::new(),
+                children: Vec::new(),
                 mount_point: MountPoint { parent, index },
                 init_stores: InitStores::new(),
             },
@@ -252,7 +252,7 @@ where
         }
 
         let dependencies = RefCell::new(Vec::new());
-        let element = {
+        let children = {
             let mut context = Context {
                 stores: &mut self.stores,
                 next_hook_id: &mut self.next_hook_id,
@@ -260,7 +260,7 @@ where
                 dependencies: Some(&dependencies),
                 init_stores: Some(&mut state.init_stores),
             };
-            state.builder.build(&mut context)
+            state.builder.build_children(&mut context)
         };
         let new_dependencies = dependencies.into_inner();
 
@@ -268,14 +268,14 @@ where
         self.subscribe(id, &new_dependencies);
         state.dependencies = new_dependencies;
 
-        let old_inner = std::mem::take(&mut state.inner);
-        state.inner = self.reconcile_list(
+        let old_children = std::mem::take(&mut state.children);
+        state.children = self.reconcile_list(
             state.mount_point.parent,
-            old_inner,
-            normalize(vec![element]),
+            old_children,
+            normalize(children),
             Some(id),
         );
-        self.refresh_mount_points(state.mount_point.parent, &mut state.inner, Some(id));
+        self.refresh_mount_points(state.mount_point.parent, &mut state.children, Some(id));
         self.bounds.put(id, state);
     }
 
@@ -461,7 +461,7 @@ where
             MountedElement::Bound(id) => {
                 if let Some(state) = self.bounds.take(id) {
                     self.unsubscribe(id, &state.dependencies);
-                    for child in state.inner {
+                    for child in state.children {
                         self.unmount_element(child);
                     }
                     self.bounds.release(id);
@@ -478,7 +478,7 @@ where
                 .get(*id)
                 .map(|state| {
                     state
-                        .inner
+                        .children
                         .iter()
                         .flat_map(|child| self.top_handles(child))
                         .collect()
@@ -506,9 +506,9 @@ where
                     };
                     state.parent_bound = parent_bound;
                     state.mount_point = MountPoint { parent, index };
-                    self.refresh_mount_points(parent, &mut state.inner, Some(*id));
+                    self.refresh_mount_points(parent, &mut state.children, Some(*id));
                     index += state
-                        .inner
+                        .children
                         .iter()
                         .map(|child| self.top_handles(child).len())
                         .sum::<usize>();

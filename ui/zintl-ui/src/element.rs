@@ -34,7 +34,7 @@ impl From<&str> for ElementKey {
 }
 
 pub trait BoundBuilder<R: RenderNode>: 'static {
-    fn build(&mut self, cx: &mut Context<'_>) -> Element<R>;
+    fn build_children(&mut self, cx: &mut Context<'_>) -> Vec<Element<R>>;
     fn builder_type_id(&self) -> TypeId;
 }
 
