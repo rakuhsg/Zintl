@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "messageloop-core",
+    "messageloop-appkit",
     "messageloop-sync",
     "messageloop-io",
 ]
@@ -18,4 +19,3 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
-
