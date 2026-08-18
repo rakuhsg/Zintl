@@ -1,6 +1,0 @@
-[package]
-name = "zintl-ui-test"
-edition = "2024"
-
-[dependencies]
-zintl-ui = { path = "../zintl-ui" }

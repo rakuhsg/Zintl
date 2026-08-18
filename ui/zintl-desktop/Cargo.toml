@@ -3,4 +3,4 @@ name = "zintl-desktop"
 edition = "2024"
 
 [dependencies]
-zintl-ui = { path = "../zintl-ui" }
+zintl = { path = "../zintl" }
