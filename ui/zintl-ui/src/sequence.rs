@@ -1,131 +1,161 @@
 use crate::store::StoreId;
-use std::any::*;
-use std::cell::UnsafeCell;
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
-pub struct Sequence<T: 'static> {
-    type_id: TypeId,
-    seq: Vec<UnsafeCell<T>>,
-    next_idx: usize,
+pub struct Sequence<T> {
+    items: Vec<T>,
 }
 
-impl<T: 'static> Sequence<T> {
+impl<T> Sequence<T> {
     fn new() -> Self {
-        Sequence {
-            type_id: TypeId::of::<T>(),
-            seq: Vec::new(),
-            next_idx: 0,
-        }
+        Self { items: Vec::new() }
     }
 
-    fn get<'a>(&mut self, idx: usize) -> Option<&'a mut T> {
-        let t = match self.seq.get(idx) {
-            Some(b) => b,
-            None => return None,
-        };
-        // SAFETY: A type of the input value is validated.
-        let r = unsafe { &mut *(t.get()) };
-        Some(r)
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.items.get(index)
+    }
+
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        self.items.get_mut(index)
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
     }
 
     fn push(&mut self, item: T) -> usize {
-        self.seq.push(UnsafeCell::new(item));
-        let idx = self.next_idx;
-        self.next_idx += 1;
-        idx
+        let index = self.items.len();
+        self.items.push(item);
+        index
     }
 }
 
-trait IntoSequence {
-    fn get_type_id(&self) -> TypeId;
+pub struct Arena {
+    sequences: Vec<Box<dyn Any>>,
+    sequence_ids: HashMap<TypeId, usize>,
 }
 
-impl<T: 'static> IntoSequence for Sequence<T> {
-    fn get_type_id(&self) -> TypeId {
-        self.type_id
-    }
-}
-
-pub struct Arena<'a> {
-    seqs: Vec<Box<dyn IntoSequence>>,
-    seqid_table: HashMap<TypeId, usize>,
-    next_seqid: usize,
-    phantom: std::marker::PhantomData<&'a u8>,
-}
-
-impl<'a> Arena<'a> {
+impl Arena {
     pub fn new() -> Self {
-        let empty_seq: Sequence<()> = Sequence::new();
-        Arena {
-            seqs: vec![Box::new(empty_seq)],
-            seqid_table: HashMap::new(),
-            next_seqid: 1,
-            phantom: std::marker::PhantomData,
+        Self {
+            sequences: Vec::new(),
+            sequence_ids: HashMap::new(),
         }
     }
 
-    pub fn get<R: 'static>(&mut self, sid: StoreId) -> Option<&'a mut R> {
-        if sid != StoreId::UNINITIALIZED {
-            if let Some(seq) = self.seqs.get_mut(sid.seq) {
-                if seq.get_type_id() == TypeId::of::<R>() {
-                    let seq_fatptr: *mut dyn IntoSequence = &mut **seq;
-                    let seq_ptr = seq_fatptr as *mut Sequence<R>;
-                    // SAFETY: A pointer isn't possibly going to be null.
-                    let seq_ref = unsafe { &mut *seq_ptr };
-                    return seq_ref.get(sid.idx);
-                }
-            }
-        }
-        None
+    pub fn sequence<T: 'static>(&self) -> Option<&Sequence<T>> {
+        let sequence_id = *self.sequence_ids.get(&TypeId::of::<T>())?;
+        self.sequences
+            .get(sequence_id)?
+            .downcast_ref::<Sequence<T>>()
     }
 
-    pub fn insert_new<T: 'static>(&mut self, item: T) -> StoreId {
+    pub fn sequence_mut<T: 'static>(&mut self) -> Option<&mut Sequence<T>> {
+        let sequence_id = *self.sequence_ids.get(&TypeId::of::<T>())?;
+        self.sequences
+            .get_mut(sequence_id)?
+            .downcast_mut::<Sequence<T>>()
+    }
+
+    pub fn get<T: 'static>(&self, id: StoreId) -> Option<&T> {
+        self.sequences
+            .get(id.sequence_id)?
+            .downcast_ref::<Sequence<T>>()?
+            .get(id.index)
+    }
+
+    pub fn get_mut<T: 'static>(&mut self, id: StoreId) -> Option<&mut T> {
+        self.sequences
+            .get_mut(id.sequence_id)?
+            .downcast_mut::<Sequence<T>>()?
+            .get_mut(id.index)
+    }
+
+    pub fn insert<T: 'static>(&mut self, item: T) -> StoreId {
         let type_id = TypeId::of::<T>();
-        if let Some(seq_id) = self.seqid_table.get(&type_id) {
-            if let Some(seq) = self.seqs.get_mut(*seq_id) {
-                let seq_fatptr: *mut dyn IntoSequence = &mut **seq;
-                let seq_ptr = seq_fatptr as *mut Sequence<T>;
-                // SAFETY: A pointer isn't possibly going to be null.
-                let seq_ref = unsafe { &mut *seq_ptr };
-                let idx = seq_ref.push(item);
 
-                StoreId { seq: *seq_id, idx }
-            } else {
-                panic!("no seq");
-            }
-        } else {
-            let mut new_seq: Sequence<T> = Sequence::new();
-            let idx = new_seq.push(item);
-            self.seqs.push(Box::new(new_seq));
-            let new_seqid = self.next_seqid;
-            self.seqid_table.insert(type_id, new_seqid);
-            self.next_seqid += 1;
-
-            StoreId {
-                seq: new_seqid,
-                idx,
-            }
+        if let Some(sequence_id) = self.sequence_ids.get(&type_id).copied() {
+            let sequence = self.sequences[sequence_id]
+                .downcast_mut::<Sequence<T>>()
+                .expect("sequence type must match its TypeId");
+            let index = sequence.push(item);
+            return StoreId { sequence_id, index };
         }
+
+        let sequence_id = self.sequences.len();
+        let mut sequence = Sequence::new();
+        let index = sequence.push(item);
+        self.sequences.push(Box::new(sequence));
+        self.sequence_ids.insert(type_id, sequence_id);
+
+        StoreId { sequence_id, index }
+    }
+}
+
+impl Default for Arena {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     #[test]
-    fn seq_arena() {
+    fn groups_values_into_sequences_by_type() {
+        // Values of the same type share a sequence while other types use another sequence.
         let mut arena = Arena::new();
-        assert_eq!(arena.get::<()>(StoreId::UNINITIALIZED), None);
-        let sid_str = arena.insert_new(String::from("string"));
-        assert_eq!(sid_str, StoreId { seq: 1, idx: 0 });
-        let sid_int = arena.insert_new(35_i32);
-        assert_eq!(arena.insert_new(12_i32), StoreId { seq: 2, idx: 1 });
-        assert_eq!(sid_int, StoreId { seq: 2, idx: 0 });
-        let item = arena.get::<String>(sid_str).unwrap();
-        assert_eq!(*item, String::from("string"));
-        assert_eq!(arena.get::<String>(sid_int), None);
-        let item = arena.get::<i32>(sid_int).unwrap();
-        assert_eq!(*item, 35_i32);
+        let first_number = arena.insert(35_i32);
+        let second_number = arena.insert(12_i32);
+        let text = arena.insert(String::from("string"));
+
+        assert_eq!(first_number.sequence_id, second_number.sequence_id);
+        assert_ne!(first_number.sequence_id, text.sequence_id);
+        let first_value = arena.get(first_number).unwrap();
+        let second_value = arena.get(second_number).unwrap();
+        assert_eq!((*first_value, *second_value), (35, 12));
+        assert_eq!(arena.get(text).map(String::as_str), Some("string"));
+    }
+
+    #[test]
+    fn retrieves_a_sequence_by_its_value_type() {
+        // TypeId lookup returns the complete typed sequence and rejects absent types.
+        let mut arena = Arena::new();
+        arena.insert(String::from("first"));
+        arena.insert(String::from("second"));
+
+        let strings = arena.sequence_mut::<String>().unwrap();
+        *strings.get_mut(1).unwrap() = String::from("updated");
+
+        let strings = arena.sequence::<String>().unwrap();
+        assert_eq!(strings.len(), 2);
+        assert_eq!(strings.get(0).map(String::as_str), Some("first"));
+        assert_eq!(strings.get(1).map(String::as_str), Some("updated"));
+        assert!(arena.sequence::<u64>().is_none());
+    }
+
+    #[test]
+    fn mutates_values_and_rejects_invalid_access() {
+        // Mutable access updates a value without accepting a wrong type or invalid index.
+        let mut arena = Arena::new();
+        let number = arena.insert(35_i32);
+
+        *arena.get_mut(number).unwrap() = 42;
+
+        assert_eq!(arena.get(number), Some(&42));
+        assert!(arena.get::<String>(number).is_none());
+        assert!(
+            arena
+                .get::<i32>(StoreId {
+                    sequence_id: number.sequence_id,
+                    index: usize::MAX,
+                })
+                .is_none()
+        );
     }
 }
