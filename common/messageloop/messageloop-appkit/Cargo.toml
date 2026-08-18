@@ -1,0 +1,24 @@
+[package]
+name = "messageloop-appkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+messageloop-core = { path = "../messageloop-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation-sys = { version = "0.8.7", features = ["link"] }
+
+[[test]]
+name = "appkit"
+path = "tests/appkit.rs"
+harness = false
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
