@@ -11,23 +11,25 @@ reconciles their cached element subtrees, and applies backend operations.
 
 ```rust,ignore
 struct Counter {
-    count: Store<i32>,
+    count: Option<Store<i32>>,
 }
 
 impl View for Counter {
     type Output = AppRenderNode;
 
-    fn render(&mut self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        Text::new(cx.get(self.count).to_string())
+    fn init(&mut self, cx: &mut Context<'_>) {
+        self.count = Some(cx.store(0));
+    }
+
+    fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        Text::new(cx.get(self.count.unwrap()).to_string())
     }
 }
 
 let mut composer = Composer::new(app_backend);
-let count = composer.context(|cx| cx.store(0));
-composer.mount(Counter { count });
+composer.mount(Counter { count: None });
 
-composer.context(|cx| cx.update(count, |value| *value += 1));
-composer.flush();
+// Event handlers receive a Context and update the registered Store through it.
 ```
 
 Children are matched by position and element kind by default. Dynamic lists

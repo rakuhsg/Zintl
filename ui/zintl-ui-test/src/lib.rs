@@ -204,6 +204,54 @@ mod tests {
     use zintl_ui::store::Store;
     use zintl_ui::view::{Context, View};
 
+    struct InitializedView {
+        count: Option<Store<i32>>,
+        exposed_count: Rc<Cell<Option<Store<i32>>>>,
+        initializations: Rc<Cell<usize>>,
+    }
+
+    impl View for InitializedView {
+        type Output = TestRenderNode;
+
+        fn init(&mut self, cx: &mut Context<'_>) {
+            self.initializations.set(self.initializations.get() + 1);
+            let count = cx.store(0_i32);
+            self.count = Some(count);
+            self.exposed_count.set(Some(count));
+        }
+
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+            let count = self.count.expect("View::init must run before render");
+            Element::node(TestRenderNode::Text(cx.get(count).to_string()))
+        }
+    }
+
+    #[test]
+    fn registers_a_store_during_view_initialization() {
+        // View::init creates Store handles before immutable rendering begins.
+        let mut composer = Composer::new(TestBackend::new());
+        let exposed_count = Rc::new(Cell::new(None));
+        let initializations = Rc::new(Cell::new(0));
+        composer.mount(InitializedView {
+            count: None,
+            exposed_count: exposed_count.clone(),
+            initializations: initializations.clone(),
+        });
+        let count = exposed_count.get().unwrap();
+
+        composer.context(|cx| cx.update(count, |value| *value = 7));
+        composer.flush();
+
+        assert_eq!(initializations.get(), 1);
+        assert_eq!(
+            composer.backend().roots(),
+            vec![TestTree {
+                value: TestRenderNode::Text("7".into()),
+                children: vec![],
+            }]
+        );
+    }
+
     struct CounterView {
         count: Store<i32>,
         renders: Rc<Cell<usize>>,
@@ -212,7 +260,7 @@ mod tests {
     impl View for CounterView {
         type Output = TestRenderNode;
 
-        fn render(&mut self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
             self.renders.set(self.renders.get() + 1);
             Element::node(TestRenderNode::Text(cx.get(self.count).to_string()))
         }
@@ -225,7 +273,7 @@ mod tests {
     impl View for StaticView {
         type Output = TestRenderNode;
 
-        fn render(&mut self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
             self.renders.set(self.renders.get() + 1);
             Element::node(TestRenderNode::Text("static".into()))
         }
@@ -241,7 +289,7 @@ mod tests {
     impl View for RootView {
         type Output = TestRenderNode;
 
-        fn render(&mut self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
             self.root_renders.set(self.root_renders.get() + 1);
             Element::node(TestRenderNode::Container("root")).with_children([
                 CounterView {
@@ -295,7 +343,7 @@ mod tests {
     impl View for ConditionalView {
         type Output = TestRenderNode;
 
-        fn render(&mut self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
             if *cx.get(self.visible) {
                 Element::fragment([Element::node(TestRenderNode::Text("visible".into()))])
             } else {
@@ -343,7 +391,7 @@ mod tests {
     impl View for RowView {
         type Output = TestRenderNode;
 
-        fn render(&mut self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
             Element::node(TestRenderNode::Row(self.id))
         }
     }
@@ -355,7 +403,7 @@ mod tests {
     impl View for ListView {
         type Output = TestRenderNode;
 
-        fn render(&mut self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
             let rows = cx
                 .get(self.order)
                 .iter()
@@ -416,7 +464,7 @@ mod tests {
     impl View for SwitchingView {
         type Output = TestRenderNode;
 
-        fn render(&mut self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
             self.renders.set(self.renders.get() + 1);
             let value = if *cx.get(self.use_first) {
                 cx.get(self.first)

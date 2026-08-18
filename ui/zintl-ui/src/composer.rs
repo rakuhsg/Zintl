@@ -2,7 +2,7 @@ use crate::element::{Bound, BoundBuilder, Element, ElementKey, IntoElement};
 use crate::hook::HookId;
 use crate::renderer::{RenderBackend, RenderNode};
 use crate::sequence::Arena;
-use crate::view::Context;
+use crate::view::{Context, InitStores};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 
@@ -24,6 +24,7 @@ struct BoundState<R: RenderNode, NodeId> {
     dependencies: Vec<HookId>,
     inner: Vec<MountedElement<R, NodeId>>,
     mount_point: MountPoint<NodeId>,
+    init_stores: InitStores,
 }
 
 struct BoundSlot<R: RenderNode, NodeId> {
@@ -144,6 +145,7 @@ where
             next_hook_id: &mut self.next_hook_id,
             dirty_hooks: &mut self.dirty_hooks,
             dependencies: None,
+            init_stores: None,
         };
         operation(&mut context)
     }
@@ -233,6 +235,7 @@ where
                 dependencies: Vec::new(),
                 inner: Vec::new(),
                 mount_point: MountPoint { parent, index },
+                init_stores: InitStores::new(),
             },
         );
         self.rebuild_bound(id, None);
@@ -255,6 +258,7 @@ where
                 next_hook_id: &mut self.next_hook_id,
                 dirty_hooks: &mut self.dirty_hooks,
                 dependencies: Some(&dependencies),
+                init_stores: Some(&mut state.init_stores),
             };
             state.builder.build(&mut context)
         };
