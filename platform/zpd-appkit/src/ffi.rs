@@ -27,12 +27,24 @@ pub type CommandRelease = unsafe extern "C" fn(user_data: *const c_void);
 pub type SidebarSelectionCallback =
     unsafe extern "C" fn(user_data: *const c_void, item_id: NativeString);
 pub type SidebarRelease = unsafe extern "C" fn(user_data: *const c_void);
+pub type RunLoopSourcePerform = unsafe extern "C" fn(user_data: *const c_void);
 
 unsafe extern "C" {
     pub fn zintlappkit_init(ud: *const c_void, cb: *const AppCallback);
     pub fn zintlappkit_schedule();
     pub fn zintlappkit_run();
+    pub fn zintlappkit_stop();
     pub fn zintlappkit_destroy();
+    pub fn zintlappkit_application_run_loop() -> *const c_void;
+    pub fn zintlappkit_run_loop_is_current(run_loop: *const c_void) -> bool;
+    pub fn zintlappkit_run_loop_stop(run_loop: *const c_void);
+    pub fn zintlappkit_run_loop_source_create(
+        run_loop: *const c_void,
+        user_data: *const c_void,
+        perform: RunLoopSourcePerform,
+    ) -> *const c_void;
+    pub fn zintlappkit_run_loop_source_signal(source: *const c_void);
+    pub fn zintlappkit_run_loop_source_destroy(source: *const c_void);
     pub fn zintlappkit_create_window(
         user_data: *const c_void,
         callback: *const WindowCallback,

@@ -5,8 +5,56 @@ import ZintlAppkitSupportTypes
 
 struct State {
   var source: CFRunLoopSource
-  var loop: CFRunLoop
+  var loop: ZintlRunLoop
   var delegate: ZintlAppDelegate
+}
+
+final class ZintlRunLoop: @unchecked Sendable {
+  let raw: CFRunLoop
+
+  init(_ raw: CFRunLoop) {
+    self.raw = raw
+  }
+}
+
+final class ZintlRunLoopSource: @unchecked Sendable {
+  let runLoop: ZintlRunLoop
+  let raw: CFRunLoopSource
+
+  init(runLoop: ZintlRunLoop, raw: CFRunLoopSource) {
+    self.runLoop = runLoop
+    self.raw = raw
+  }
+
+  deinit {
+    CFRunLoopRemoveSource(self.runLoop.raw, self.raw, .commonModes)
+    CFRunLoopSourceInvalidate(self.raw)
+  }
+}
+
+final class ZintlRunLoopSourceCallback: @unchecked Sendable {
+  let userData: UnsafeRawPointer
+  let perform: ZintlRunLoopSourcePerform
+
+  init(userData: UnsafeRawPointer, perform: @escaping ZintlRunLoopSourcePerform) {
+    self.userData = userData
+    self.perform = perform
+  }
+}
+
+func performRunLoopSource(rp: UnsafeMutableRawPointer?) {
+  guard let rp else {
+    return
+  }
+  let callback = Unmanaged<ZintlRunLoopSourceCallback>.fromOpaque(rp).takeUnretainedValue()
+  callback.perform(callback.userData)
+}
+
+func releaseRunLoopSource(rp: UnsafeRawPointer?) {
+  guard let rp else {
+    return
+  }
+  Unmanaged<ZintlRunLoopSourceCallback>.fromOpaque(rp).release()
 }
 
 class ZintlAppDelegate: NSObject, NSApplicationDelegate {
@@ -268,7 +316,7 @@ func zintlAppkitInit(ud: UnsafeRawPointer, appcbPtr: UnsafePointer<AppCallback>)
   let app = NSApplication.shared
   app.setActivationPolicy(.regular)
 
-  let loop = RunLoop.current.getCFRunLoop()
+  let loop = ZintlRunLoop(RunLoop.current.getCFRunLoop())
 
   assert(
     ZintlAppkitSupportState.shared.state == nil,
@@ -282,7 +330,7 @@ func zintlAppkitInit(ud: UnsafeRawPointer, appcbPtr: UnsafePointer<AppCallback>)
   sourceCx.perform = performRustFn
   sourceCx.release = releaseRustFn
   let source = CFRunLoopSourceCreate(nil, 1, &sourceCx)!
-  CFRunLoopAddSource(loop, source, .commonModes)
+  CFRunLoopAddSource(loop.raw, source, .commonModes)
 
   let delegate = ZintlAppDelegate(ud: ud, cb: appcb)
 
@@ -300,7 +348,7 @@ func zintlAppkitSchedule() {
     }
 
     CFRunLoopSourceSignal(state.source)
-    CFRunLoopWakeUp(state.loop)
+    CFRunLoopWakeUp(state.loop.raw)
   }
 }
 
@@ -316,10 +364,83 @@ func zintlAppkitRun() {
 }
 
 @MainActor
+@_cdecl("zintlappkit_stop")
+func zintlAppkitStop() {
+  NSApp.stop(nil)
+  let event = NSEvent.otherEvent(
+    with: .applicationDefined,
+    location: .zero,
+    modifierFlags: [],
+    timestamp: 0,
+    windowNumber: 0,
+    context: nil,
+    subtype: 0,
+    data1: 0,
+    data2: 0
+  )
+  if let event {
+    NSApp.postEvent(event, atStart: false)
+  }
+}
+
+@MainActor
+@_cdecl("zintlappkit_application_run_loop")
+func zintlAppkitApplicationRunLoop() -> UnsafeRawPointer? {
+  guard let state = ZintlAppkitSupportState.shared.state else {
+    return nil
+  }
+  return UnsafeRawPointer(Unmanaged.passUnretained(state.loop).toOpaque())
+}
+
+@_cdecl("zintlappkit_run_loop_is_current")
+func zintlAppkitRunLoopIsCurrent(ptr: UnsafeRawPointer) -> Bool {
+  let loop = Unmanaged<ZintlRunLoop>.fromOpaque(ptr).takeUnretainedValue()
+  return CFRunLoopGetCurrent() == loop.raw
+}
+
+@_cdecl("zintlappkit_run_loop_stop")
+func zintlAppkitRunLoopStop(ptr: UnsafeRawPointer) {
+  let loop = Unmanaged<ZintlRunLoop>.fromOpaque(ptr).takeUnretainedValue()
+  CFRunLoopStop(loop.raw)
+}
+
+@_cdecl("zintlappkit_run_loop_source_create")
+func zintlAppkitRunLoopSourceCreate(
+  runLoopPointer: UnsafeRawPointer,
+  userData: UnsafeRawPointer,
+  perform: @escaping ZintlRunLoopSourcePerform
+) -> UnsafeMutableRawPointer? {
+  let runLoop = Unmanaged<ZintlRunLoop>.fromOpaque(runLoopPointer).takeUnretainedValue()
+  let callback = ZintlRunLoopSourceCallback(userData: userData, perform: perform)
+  var context = CFRunLoopSourceContext()
+  context.info = Unmanaged.passRetained(callback).toOpaque()
+  context.perform = performRunLoopSource
+  context.release = releaseRunLoopSource
+  guard let source = CFRunLoopSourceCreate(nil, 0, &context) else {
+    Unmanaged<ZintlRunLoopSourceCallback>.fromOpaque(context.info).release()
+    return nil
+  }
+  CFRunLoopAddSource(runLoop.raw, source, .commonModes)
+  return Unmanaged.passRetained(ZintlRunLoopSource(runLoop: runLoop, raw: source)).toOpaque()
+}
+
+@_cdecl("zintlappkit_run_loop_source_signal")
+func zintlAppkitRunLoopSourceSignal(ptr: UnsafeRawPointer) {
+  let source = Unmanaged<ZintlRunLoopSource>.fromOpaque(ptr).takeUnretainedValue()
+  CFRunLoopSourceSignal(source.raw)
+  CFRunLoopWakeUp(source.runLoop.raw)
+}
+
+@_cdecl("zintlappkit_run_loop_source_destroy")
+func zintlAppkitRunLoopSourceDestroy(ptr: UnsafeRawPointer) {
+  Unmanaged<ZintlRunLoopSource>.fromOpaque(ptr).release()
+}
+
+@MainActor
 @_cdecl("zintlappkit_destroy")
 func zintlAppkitDestroy() {
   if let state = ZintlAppkitSupportState.shared.state {
-    CFRunLoopRemoveSource(state.loop, state.source, .commonModes)
+    CFRunLoopRemoveSource(state.loop.raw, state.source, .commonModes)
     CFRunLoopSourceInvalidate(state.source)
   }
   NSApp.delegate = nil

@@ -42,6 +42,7 @@ typedef void (*ZintlControlRelease)(const void* user_data);
 typedef void (*ZintlStringCallback)(void* user_data, ZintlString value);
 typedef void (*ZintlSidebarSelectionCallback)(const void* user_data, ZintlString item_id);
 typedef void (*ZintlSidebarRelease)(const void* user_data);
+typedef void (*ZintlRunLoopSourcePerform)(const void* user_data);
 
 typedef struct {
     void (*did_create)(const void* user_data);
@@ -50,6 +51,18 @@ typedef struct {
     void (*did_click)(const void* user_data);
     ZintlWindowRelease release;
 } WindowCallback;
+
+const void* zintlappkit_application_run_loop(void);
+bool zintlappkit_run_loop_is_current(const void* run_loop);
+void zintlappkit_run_loop_stop(const void* run_loop);
+void* zintlappkit_run_loop_source_create(
+    const void* run_loop,
+    const void* user_data,
+    ZintlRunLoopSourcePerform perform
+);
+void zintlappkit_run_loop_source_signal(const void* source);
+void zintlappkit_run_loop_source_destroy(const void* source);
+void zintlappkit_stop(void);
 
 void* zintlappkit_create_window(
     const void* user_data,

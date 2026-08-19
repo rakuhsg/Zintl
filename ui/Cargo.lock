@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "core-foundation-sys"
-version = "0.8.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -24,8 +18,8 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "messageloop-appkit"
 version = "0.1.0"
 dependencies = [
- "core-foundation-sys",
  "messageloop-core",
+ "zpd-appkit",
 ]
 
 [[package]]

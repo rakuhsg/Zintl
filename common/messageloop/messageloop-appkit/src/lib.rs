@@ -2,44 +2,29 @@
 
 #![cfg(target_os = "macos")]
 
-use core_foundation_sys::base::{CFRelease, kCFAllocatorDefault};
-pub use core_foundation_sys::runloop::CFRunLoopRef;
-use core_foundation_sys::runloop::{
-    CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopGetMain, CFRunLoopRemoveSource, CFRunLoopRun,
-    CFRunLoopSourceContext, CFRunLoopSourceCreate, CFRunLoopSourceInvalidate, CFRunLoopSourceRef,
-    CFRunLoopSourceSignal, CFRunLoopStop, CFRunLoopWakeUp, kCFRunLoopCommonModes,
-};
 pub use messageloop_core::{SendError, Sender, SenderResult};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::ptr;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak};
-
-/// Returns the process main run loop borrowed for the process lifetime.
-#[must_use]
-pub fn main_run_loop() -> CFRunLoopRef {
-    // SAFETY: Core Foundation returns a borrowed process-owned run loop.
-    unsafe { CFRunLoopGetMain() }
-}
+use zpd_appkit::runloop::{
+    Application, ApplicationDelegate, RunLoopSource, RunLoopSourceError, RunLoopSourceSignaler,
+};
 
 struct QueueState<M> {
     messages: VecDeque<M>,
     quit_requested: bool,
     closed: bool,
-    source: Option<usize>,
+    source: Option<RunLoopSourceSignaler>,
 }
 
 struct SharedState<M> {
     queue: Mutex<QueueState<M>>,
-    run_loop: usize,
 }
 
 impl<M> SharedState<M> {
-    fn new(run_loop: CFRunLoopRef) -> Self {
+    fn new() -> Self {
         Self {
             queue: Mutex::new(QueueState {
                 messages: VecDeque::new(),
@@ -47,21 +32,15 @@ impl<M> SharedState<M> {
                 closed: false,
                 source: None,
             }),
-            run_loop: run_loop as usize,
         }
     }
 
-    fn signal_locked(&self, state: &QueueState<M>) {
-        let Some(source) = state.source else {
+    fn signal_locked(state: &QueueState<M>) {
+        let Some(source) = &state.source else {
             return;
         };
-
-        // SAFETY: Access to `source` is serialized by `queue`. The owning loop
-        // clears it under the same lock before invalidating and releasing it.
-        unsafe {
-            CFRunLoopSourceSignal(source as CFRunLoopSourceRef);
-            CFRunLoopWakeUp(self.run_loop as CFRunLoopRef);
-        }
+        let signaled = source.signal();
+        debug_assert!(signaled, "a registered run-loop source must be active");
     }
 
     fn request_termination(&self) {
@@ -73,7 +52,7 @@ impl<M> SharedState<M> {
             return;
         }
         state.quit_requested = true;
-        self.signal_locked(&state);
+        Self::signal_locked(&state);
     }
 }
 
@@ -103,7 +82,7 @@ impl<M: Send + 'static> Sender for AppkitSender<M> {
             return Err(SendError::Closed);
         }
         state.messages.push_back(message);
-        shared.signal_locked(&state);
+        SharedState::signal_locked(&state);
         Ok(())
     }
 }
@@ -151,11 +130,11 @@ struct CallbackState<M, H> {
 }
 
 impl<M: Send + 'static, H: MessageLoopHandler<M>> CallbackState<M, H> {
-    fn perform(&self) {
+    fn perform(&self) -> bool {
         // A nested CFRunLoop invocation must not borrow the handler twice. The
         // outer invocation will drain anything queued by the nested loop.
         if self.performing.replace(true) {
-            return;
+            return false;
         }
 
         let cx = Context {
@@ -191,7 +170,8 @@ impl<M: Send + 'static, H: MessageLoopHandler<M>> CallbackState<M, H> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .quit_requested;
-        if quit_requested && !self.terminated.replace(true) {
+        let should_stop = quit_requested && !self.terminated.replace(true);
+        if should_stop {
             {
                 let mut state = self
                     .shared
@@ -202,110 +182,69 @@ impl<M: Send + 'static, H: MessageLoopHandler<M>> CallbackState<M, H> {
                 state.messages.clear();
             }
             self.handler.borrow_mut().terminate(&cx);
-
-            // SAFETY: `run_loop` is the process main run loop and remains valid
-            // for the process lifetime. This callback runs on that run loop.
-            unsafe { CFRunLoopStop(self.shared.run_loop as CFRunLoopRef) };
         }
 
         self.performing.set(false);
-    }
-}
-
-extern "C" fn perform_source<M, H>(info: *const c_void)
-where
-    M: Send + 'static,
-    H: MessageLoopHandler<M>,
-{
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: The source is invalidated before its boxed callback state is
-        // dropped, and Core Foundation invokes this function only for it.
-        let state = unsafe { &*info.cast::<CallbackState<M, H>>() };
-        // SAFETY: These calls only return borrowed, process-owned run loops.
-        let is_main = unsafe { CFRunLoopGetCurrent() == CFRunLoopGetMain() };
-        if !is_main {
-            std::process::abort();
-        }
-        state.perform();
-    }));
-    if result.is_err() {
-        // Panics must never unwind through the Core Foundation callback ABI.
-        std::process::abort();
+        should_stop
     }
 }
 
 /// A single-source dispatcher owned and run by the process main thread.
-pub struct MessageLoopAppkit<M, H> {
+///
+/// This message loop holds an [`Application`] reference for its entire
+/// lifetime. It obtains the native run loop from that application, keeps its
+/// source installed there, and uses the same application to drive and stop the
+/// `AppKit` event loop.
+pub struct MessageLoopAppkit<'application, M, H, D: ApplicationDelegate = ()> {
+    application: &'application Application<D>,
     shared: Arc<SharedState<M>>,
-    source: CFRunLoopSourceRef,
-    _callback: Box<CallbackState<M, H>>,
-    main_thread_only: PhantomData<Rc<()>>,
+    _source: RunLoopSource<'application>,
+    _handler: PhantomData<H>,
 }
 
-impl<M: Send + 'static, H: MessageLoopHandler<M>> MessageLoopAppkit<M, H> {
-    /// Creates and registers one source on the supplied main run loop.
+impl<'application, M, H, D> MessageLoopAppkit<'application, M, H, D>
+where
+    M: Send + 'static,
+    H: MessageLoopHandler<M> + 'application,
+    D: ApplicationDelegate,
+{
+    /// Creates one source on the supplied application's main run loop.
     ///
-    /// # Safety
-    /// `run_loop` must be a valid borrowed `CFRunLoopRef`. This function
-    /// verifies that it identifies the process main run loop.
-    ///
-    /// # Panics
-    /// Panics when called off the process main thread or source creation fails.
-    #[must_use]
-    pub unsafe fn new(run_loop: CFRunLoopRef, handler: H) -> Self {
-        // SAFETY: These calls only return borrowed, process-owned run loops.
-        let (current, main) = unsafe { (CFRunLoopGetCurrent(), CFRunLoopGetMain()) };
-        assert_eq!(
-            run_loop, main,
-            "AppKit message loop requires the main CFRunLoop"
-        );
-        assert_eq!(
-            current, main,
-            "AppKit message loop must be created on the main thread"
-        );
-
-        let shared = Arc::new(SharedState::new(run_loop));
-        let mut callback = Box::new(CallbackState {
+    /// # Errors
+    /// Returns an error when called off that run loop or native source
+    /// creation fails.
+    pub fn new(
+        application: &'application Application<D>,
+        handler: H,
+    ) -> Result<Self, RunLoopSourceError> {
+        let shared = Arc::new(SharedState::new());
+        let callback = Rc::new(CallbackState {
             shared: shared.clone(),
             handler: RefCell::new(handler),
             initialized: Cell::new(false),
             terminated: Cell::new(false),
             performing: Cell::new(false),
         });
-        let mut context = CFRunLoopSourceContext {
-            version: 0,
-            info: ptr::from_mut(callback.as_mut()).cast(),
-            retain: None,
-            release: None,
-            copyDescription: None,
-            equal: None,
-            hash: None,
-            schedule: None,
-            cancel: None,
-            perform: perform_source::<M, H>,
-        };
-
-        // SAFETY: `context.info` points to a stable Box allocation retained by
-        // this value until after the source is invalidated.
-        let source = unsafe { CFRunLoopSourceCreate(kCFAllocatorDefault, 0, &raw mut context) };
-        assert!(!source.is_null(), "failed to create CFRunLoopSource");
+        let source_callback = callback.clone();
+        let source = application.run_loop().create_source(move || {
+            if source_callback.perform() {
+                application.stop();
+            }
+        })?;
         {
             let mut state = shared
                 .queue
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.source = Some(source as usize);
+            state.source = Some(source.signaler());
         }
-        // SAFETY: Both references are valid, and this value removes the source
-        // before releasing its create ownership.
-        unsafe { CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes) };
 
-        Self {
+        Ok(Self {
+            application,
             shared,
-            source,
-            _callback: callback,
-            main_thread_only: PhantomData,
-        }
+            _source: source,
+            _handler: PhantomData,
+        })
     }
 
     #[must_use]
@@ -315,32 +254,21 @@ impl<M: Send + 'static, H: MessageLoopHandler<M>> MessageLoopAppkit<M, H> {
         }
     }
 
-    /// Runs the main `CFRunLoop` until the handler requests termination.
+    /// Runs the application's `AppKit` event loop until termination.
     pub fn run(self) {
-        self.run_with(|| {
-            // SAFETY: Construction proves this value is on the main thread.
-            unsafe { CFRunLoopRun() };
-        });
-    }
-
-    /// Runs an `AppKit` event driver while this message loop remains installed.
-    ///
-    /// Use this when a platform integration, such as `NSApplication`, must
-    /// drive the main `CFRunLoop` in order to dispatch native events.
-    pub fn run_with(self, driver: impl FnOnce()) {
         {
             let state = self
                 .shared
                 .queue
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.shared.signal_locked(&state);
+            SharedState::signal_locked(&state);
         }
-        driver();
+        self.application.run();
     }
 }
 
-impl<M, H> Drop for MessageLoopAppkit<M, H> {
+impl<M, H, D: ApplicationDelegate> Drop for MessageLoopAppkit<'_, M, H, D> {
     fn drop(&mut self) {
         {
             let mut state = self
@@ -352,20 +280,8 @@ impl<M, H> Drop for MessageLoopAppkit<M, H> {
             state.messages.clear();
             state.source = None;
         }
-
-        // SAFETY: This type is main-thread-bound. Clearing `source` while
-        // holding the queue lock ensures no sender can signal after this point.
-        unsafe {
-            CFRunLoopRemoveSource(
-                self.shared.run_loop as CFRunLoopRef,
-                self.source,
-                kCFRunLoopCommonModes,
-            );
-            CFRunLoopSourceInvalidate(self.source);
-            CFRelease(self.source.cast());
-        }
     }
 }
 
 /// Compatibility name matching the existing native implementation.
-pub type AppkitMessageLoop<M, H> = MessageLoopAppkit<M, H>;
+pub type AppkitMessageLoop<'application, M, H, D = ()> = MessageLoopAppkit<'application, M, H, D>;

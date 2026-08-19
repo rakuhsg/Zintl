@@ -174,9 +174,8 @@ mod appkit {
 
     use messageloop_appkit::{
         Context as MessageContext, MessageLoopAppkit, MessageLoopHandler, SendError, Sender,
-        main_run_loop,
     };
-    use zpd_appkit::runloop::{Application, ApplicationError};
+    use zpd_appkit::runloop::{Application, ApplicationError, RunLoopSourceError};
     use zpd_appkit::ui::{
         CommandError, CommandItem, CommandModifier, CommandRole, CommandSet,
         Window as NativeWindow, WindowAppMenu, WindowError,
@@ -189,6 +188,7 @@ mod appkit {
         Application(ApplicationError),
         Command(CommandError),
         Window(WindowError),
+        RunLoopSource(RunLoopSourceError),
         MessageLoop(SendError),
         NoWindow,
     }
@@ -199,6 +199,7 @@ mod appkit {
                 Self::Application(error) => error.fmt(formatter),
                 Self::Command(error) => error.fmt(formatter),
                 Self::Window(error) => error.fmt(formatter),
+                Self::RunLoopSource(error) => error.fmt(formatter),
                 Self::MessageLoop(error) => error.fmt(formatter),
                 Self::NoWindow => {
                     formatter.write_str("the rendered tree does not contain a window")
@@ -213,6 +214,7 @@ mod appkit {
                 Self::Application(error) => Some(error),
                 Self::Command(error) => Some(error),
                 Self::Window(error) => Some(error),
+                Self::RunLoopSource(error) => Some(error),
                 Self::MessageLoop(error) => Some(error),
                 Self::NoWindow => None,
             }
@@ -270,17 +272,15 @@ mod appkit {
             }
             let window_count = windows.len();
 
-            // SAFETY: This method is main-thread-bound by `Application::new`,
-            // and `main_run_loop` returns the process-owned main run loop.
-            let message_loop =
-                unsafe { MessageLoopAppkit::new(main_run_loop(), AppHandler { windows }) };
+            let message_loop = MessageLoopAppkit::new(&application, AppHandler { windows })
+                .map_err(AppError::RunLoopSource)?;
             let sender = message_loop.sender();
             for index in 0..window_count {
                 sender
                     .send(Message::ShowWindow { index })
                     .map_err(AppError::MessageLoop)?;
             }
-            message_loop.run_with(|| application.run());
+            message_loop.run();
             Ok(())
         }
     }

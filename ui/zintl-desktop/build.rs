@@ -2,11 +2,16 @@
 fn main() {
     use std::env;
     use std::path::PathBuf;
-    use std::process::Command;
-
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
     let support_dir = manifest_dir.join("../../platform/ZintlAppkitSupport");
+    emit_swift_support(&support_dir);
+}
+
+#[cfg(target_os = "macos")]
+fn emit_swift_support(support_dir: &std::path::Path) {
+    use std::process::Command;
+
     let module_cache = support_dir.join(".build/module-cache");
     std::fs::create_dir_all(&module_cache).expect("failed to create the Swift module cache");
 
@@ -14,10 +19,14 @@ fn main() {
         "cargo:rerun-if-changed={}",
         support_dir.join("Sources").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        support_dir.join("Package.swift").display()
+    );
 
     let status = Command::new("swift")
         .args(["build", "-c", "release", "--package-path"])
-        .arg(&support_dir)
+        .arg(support_dir)
         .env("CLANG_MODULE_CACHE_PATH", &module_cache)
         .env("SWIFTPM_MODULECACHE_OVERRIDE", &module_cache)
         .status()
@@ -32,7 +41,7 @@ fn main() {
             "--show-bin-path",
             "--package-path",
         ])
-        .arg(&support_dir)
+        .arg(support_dir)
         .env("CLANG_MODULE_CACHE_PATH", &module_cache)
         .env("SWIFTPM_MODULECACHE_OVERRIDE", &module_cache)
         .output()
