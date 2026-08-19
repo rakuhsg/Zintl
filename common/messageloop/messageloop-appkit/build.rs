@@ -4,7 +4,7 @@ fn main() {
     use std::path::PathBuf;
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
-    let support_dir = manifest_dir.join("../../ZintlAppkitSupport");
+    let support_dir = manifest_dir.join("../../../platform/ZintlAppkitSupport");
     emit_swift_support(&support_dir);
 }
 

@@ -1,11 +1,11 @@
 #[cfg(target_os = "macos")]
-use core_foundation_sys::runloop::CFRunLoopGetMain;
-#[cfg(target_os = "macos")]
 use messageloop_appkit::{Context, MessageLoopAppkit, MessageLoopHandler, SendError, Sender};
 #[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "macos")]
 use std::thread;
+#[cfg(target_os = "macos")]
+use zpd_appkit::runloop::Application;
 
 #[cfg(target_os = "macos")]
 enum Message {
@@ -47,20 +47,18 @@ impl MessageLoopHandler<Message> for Handler {
 #[cfg(target_os = "macos")]
 fn main() {
     // Verifies FIFO delivery, self-send, closure, and main-thread affinity via
-    // the real CFRunLoopSource callback rather than a Rust test worker thread.
+    // the Application-owned CFRunLoop source rather than a Rust test worker.
     let values = Arc::new(Mutex::new(Vec::new()));
-    // SAFETY: Core Foundation returns a valid borrowed process main run loop.
-    let run_loop = unsafe { CFRunLoopGetMain() };
-    // SAFETY: `run_loop` is the valid borrowed main run loop required by `new`.
-    let message_loop = unsafe {
-        MessageLoopAppkit::new(
-            run_loop,
-            Handler {
-                main_thread: thread::current().id(),
-                values: values.clone(),
-            },
-        )
-    };
+    let application = Application::new(()).unwrap();
+    assert!(application.run_loop().is_current());
+    let message_loop = MessageLoopAppkit::new(
+        &application,
+        Handler {
+            main_thread: thread::current().id(),
+            values: values.clone(),
+        },
+    )
+    .unwrap();
     let sender = message_loop.sender();
     let worker_sender = sender.clone();
     let worker = thread::spawn(move || {

@@ -8,6 +8,7 @@ use std::rc::Rc;
 #[cfg(feature = "wgpu")]
 use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
+use crate::string::NativeString;
 use crate::{ffi, runloop::Application};
 
 use super::sidebar::{self, Sidebar, SidebarError};
@@ -204,6 +205,16 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
         // SAFETY: The handle is owned by `self`, and `Window` is restricted to
         // the AppKit main thread.
         unsafe { ffi::zintlappkit_show_window(self.raw.as_ptr()) };
+        Ok(())
+    }
+
+    pub fn set_title(&self, title: &str) -> Result<(), WindowError> {
+        self.ensure_open()?;
+        // SAFETY: The handle is valid, the string borrow covers the synchronous
+        // call, and this method runs on the AppKit main thread.
+        unsafe {
+            ffi::zintlappkit_window_set_title(self.raw.as_ptr(), NativeString::from_str(title))
+        };
         Ok(())
     }
 

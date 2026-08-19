@@ -4,3 +4,7 @@ edition = "2024"
 
 [dependencies]
 zintl-ui = { path = "../zintl-ui" }
+zpd-appkit = { path = "../../platform/zpd-appkit" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+messageloop-appkit = { path = "../../common/messageloop/messageloop-appkit" }

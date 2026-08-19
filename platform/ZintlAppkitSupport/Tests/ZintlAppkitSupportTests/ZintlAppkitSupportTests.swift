@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 import Testing
 import ZintlAppkitSupportTypes
 
@@ -35,6 +36,10 @@ private final class SidebarCallbackProbe {
   var releases = 0
 }
 
+private final class RunLoopCallbackProbe: @unchecked Sendable {
+  var performs = 0
+}
+
 private func withProbe(
   _ userData: UnsafeRawPointer?,
   body: (WindowCallbackProbe) -> Void
@@ -52,7 +57,7 @@ private func withProbe(
   #expect(actual == expected)
 }
 
-/// Verifies window callback ordering and ownership, app-state teardown, and menu-command dispatch.
+/// Verifies window and run-loop ownership, app-state teardown, and menu-command dispatch.
 @MainActor
 @Test func nativeOwnershipAndLifecycle() throws {
   let probe = WindowCallbackProbe()
@@ -85,6 +90,8 @@ private func withProbe(
   #expect(probe.didCreate == 1)
   let nativeWindow = Unmanaged<ZintlWindow>.fromOpaque(window).takeUnretainedValue()
   #expect(!nativeWindow.window.isReleasedWhenClosed)
+  withZintlString("Zintl") { zintlAppkitWindowSetTitle(ptr: window, title: $0) }
+  #expect(nativeWindow.window.title == "Zintl")
   nativeWindow.dispatchClickIfOpen()
   let closeButton = try #require(nativeWindow.window.standardWindowButton(.closeButton))
   closeButton.performClick(nil)
@@ -109,6 +116,29 @@ private func withProbe(
 
   #expect(NSApp.delegate != nil)
   #expect(ZintlAppkitSupportState.shared.state != nil)
+
+  let runLoop = try #require(zintlAppkitApplicationRunLoop())
+  #expect(zintlAppkitRunLoopIsCurrent(ptr: runLoop))
+  let runLoopProbe = RunLoopCallbackProbe()
+  let runLoopSource = zintlAppkitRunLoopSourceCreate(
+    runLoopPointer: runLoop,
+    userData: Unmanaged.passUnretained(runLoopProbe).toOpaque(),
+    perform: { userData in
+      guard let userData else {
+        return
+      }
+      let probe = Unmanaged<RunLoopCallbackProbe>.fromOpaque(userData).takeUnretainedValue()
+      probe.performs += 1
+    }
+  )
+  #expect(runLoopSource != nil)
+  guard let runLoopSource else {
+    return
+  }
+  zintlAppkitRunLoopSourceSignal(ptr: runLoopSource)
+  CFRunLoopRunInMode(.defaultMode, 0.01, true)
+  #expect(runLoopProbe.performs == 1)
+  zintlAppkitRunLoopSourceDestroy(ptr: runLoopSource)
 
   let commandProbe = CommandCallbackProbe()
   let retainedCommandProbe = Unmanaged.passRetained(commandProbe)
