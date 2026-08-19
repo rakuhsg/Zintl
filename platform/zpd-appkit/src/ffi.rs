@@ -38,6 +38,7 @@ unsafe extern "C" {
         callback: *const WindowCallback,
     ) -> *const c_void;
     pub fn zintlappkit_show_window(ptr: *const c_void);
+    pub fn zintlappkit_window_set_title(ptr: *const c_void, title: NativeString);
     pub fn zintlappkit_window_set_bounds(ptr: *const c_void, bounds: Rect);
     pub fn zintlappkit_window_set_size(ptr: *const c_void, width: f64, height: f64);
     pub fn zintlappkit_window_set_position(ptr: *const c_void, x: f64, y: f64);

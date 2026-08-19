@@ -56,6 +56,7 @@ void* zintlappkit_create_window(
     const WindowCallback* callback
 );
 void zintlappkit_show_window(const void* window);
+void zintlappkit_window_set_title(const void* window, ZintlString title);
 void zintlappkit_window_set_bounds(const void* window, ZintlRect bounds);
 void zintlappkit_window_set_size(const void* window, double width, double height);
 void zintlappkit_window_set_position(const void* window, double x, double y);

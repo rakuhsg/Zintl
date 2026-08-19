@@ -19,6 +19,13 @@ use std::ptr;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak};
 
+/// Returns the process main run loop borrowed for the process lifetime.
+#[must_use]
+pub fn main_run_loop() -> CFRunLoopRef {
+    // SAFETY: Core Foundation returns a borrowed process-owned run loop.
+    unsafe { CFRunLoopGetMain() }
+}
+
 struct QueueState<M> {
     messages: VecDeque<M>,
     quit_requested: bool,

@@ -653,6 +653,13 @@ func zintlAppkitShowWindow(ptr: UnsafeMutableRawPointer) {
 }
 
 @MainActor
+@_cdecl("zintlappkit_window_set_title")
+func zintlAppkitWindowSetTitle(ptr: UnsafeRawPointer, title: ZintlString) {
+  let wnd = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()
+  wnd.window.title = zintlString(title)
+}
+
+@MainActor
 @_cdecl("zintlappkit_window_set_bounds")
 func zintlAppkitWindowSetBounds(ptr: UnsafeRawPointer, bounds: ZintlRect) {
   let wnd = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()

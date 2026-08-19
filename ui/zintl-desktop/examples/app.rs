@@ -6,12 +6,15 @@ impl View for MainView {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = RenderNode> {
-        Text::new("hello, world!".to_string())
+        Window::new(Rect::new(100.0, 100.0, 640.0, 400.0), "Zintl")
     }
 }
 
-fn main() {
+#[cfg(target_os = "macos")]
+fn main() -> Result<(), AppError> {
     let app = App::new(MainView {});
-    let node = app.render();
-    println!("{:?}", node);
+    app.run()
 }
+
+#[cfg(not(target_os = "macos"))]
+fn main() {}

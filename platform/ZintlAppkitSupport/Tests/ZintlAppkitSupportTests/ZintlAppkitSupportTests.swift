@@ -85,6 +85,8 @@ private func withProbe(
   #expect(probe.didCreate == 1)
   let nativeWindow = Unmanaged<ZintlWindow>.fromOpaque(window).takeUnretainedValue()
   #expect(!nativeWindow.window.isReleasedWhenClosed)
+  withZintlString("Zintl") { zintlAppkitWindowSetTitle(ptr: window, title: $0) }
+  #expect(nativeWindow.window.title == "Zintl")
   nativeWindow.dispatchClickIfOpen()
   let closeButton = try #require(nativeWindow.window.standardWindowButton(.closeButton))
   closeButton.performClick(nil)
