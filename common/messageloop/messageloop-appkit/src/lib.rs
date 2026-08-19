@@ -317,6 +317,17 @@ impl<M: Send + 'static, H: MessageLoopHandler<M>> MessageLoopAppkit<M, H> {
 
     /// Runs the main `CFRunLoop` until the handler requests termination.
     pub fn run(self) {
+        self.run_with(|| {
+            // SAFETY: Construction proves this value is on the main thread.
+            unsafe { CFRunLoopRun() };
+        });
+    }
+
+    /// Runs an `AppKit` event driver while this message loop remains installed.
+    ///
+    /// Use this when a platform integration, such as `NSApplication`, must
+    /// drive the main `CFRunLoop` in order to dispatch native events.
+    pub fn run_with(self, driver: impl FnOnce()) {
         {
             let state = self
                 .shared
@@ -325,9 +336,7 @@ impl<M: Send + 'static, H: MessageLoopHandler<M>> MessageLoopAppkit<M, H> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.shared.signal_locked(&state);
         }
-        // SAFETY: Construction proves this value is on the main thread, and
-        // its `Rc` marker prevents moving it to another thread.
-        unsafe { CFRunLoopRun() };
+        driver();
     }
 }
 

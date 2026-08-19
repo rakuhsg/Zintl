@@ -223,12 +223,19 @@ mod appkit {
         windows: Vec<NativeWindow<'application, ()>>,
     }
 
-    impl MessageLoopHandler<()> for AppHandler<'_> {
-        fn on(&mut self, _cx: &MessageContext<'_, ()>, (): ()) {
-            for window in &self.windows {
-                window
+    enum Message {
+        ShowWindow { index: usize },
+    }
+
+    impl MessageLoopHandler<Message> for AppHandler<'_> {
+        fn on(&mut self, _cx: &MessageContext<'_, Message>, message: Message) {
+            match message {
+                Message::ShowWindow { index } => self
+                    .windows
+                    .get(index)
+                    .expect("show-window message must reference an existing window")
                     .show()
-                    .expect("a newly created AppKit window must still be open");
+                    .expect("a newly created AppKit window must still be open"),
             }
         }
     }
@@ -261,16 +268,19 @@ mod appkit {
                 window.set_bounds(bounds).map_err(AppError::Window)?;
                 windows.push(window);
             }
+            let window_count = windows.len();
 
             // SAFETY: This method is main-thread-bound by `Application::new`,
             // and `main_run_loop` returns the process-owned main run loop.
             let message_loop =
                 unsafe { MessageLoopAppkit::new(main_run_loop(), AppHandler { windows }) };
-            message_loop
-                .sender()
-                .send(())
-                .map_err(AppError::MessageLoop)?;
-            application.run();
+            let sender = message_loop.sender();
+            for index in 0..window_count {
+                sender
+                    .send(Message::ShowWindow { index })
+                    .map_err(AppError::MessageLoop)?;
+            }
+            message_loop.run_with(|| application.run());
             Ok(())
         }
     }
