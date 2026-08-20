@@ -42,6 +42,50 @@ final class ZintlButton: NSButton {
   var actionTarget: ZintlControlActionTarget?
 }
 
+@MainActor
+final class ZintlTextFieldChangeTarget: NSObject, NSTextFieldDelegate {
+  nonisolated(unsafe) private var userData: UnsafeRawPointer?
+  nonisolated(unsafe) private var callback: ZintlTextFieldChangeCallback?
+  nonisolated(unsafe) private var release: ZintlControlRelease?
+
+  init(
+    userData: UnsafeRawPointer?,
+    callback: ZintlTextFieldChangeCallback?,
+    release: ZintlControlRelease?
+  ) {
+    self.userData = userData
+    self.callback = callback
+    self.release = release
+  }
+
+  deinit {
+    self.releaseUserData()
+  }
+
+  func controlTextDidChange(_ notification: Notification) {
+    guard let textField = notification.object as? NSTextField else {
+      return
+    }
+    withZintlString(textField.stringValue) { value in
+      self.callback?(self.userData, value)
+    }
+  }
+
+  nonisolated func releaseUserData() {
+    let release = self.release
+    self.release = nil
+    let userData = self.userData
+    self.userData = nil
+    self.callback = nil
+    release?(userData)
+  }
+}
+
+@MainActor
+final class ZintlTextField: NSTextField {
+  var changeTarget: ZintlTextFieldChangeTarget?
+}
+
 private func zintlView(_ pointer: UnsafeRawPointer) -> NSView {
   Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue()
 }
@@ -52,6 +96,10 @@ private func zintlButton(_ pointer: UnsafeRawPointer) -> ZintlButton {
 
 private func zintlTextField(_ pointer: UnsafeRawPointer) -> NSTextField {
   Unmanaged<NSTextField>.fromOpaque(pointer).takeUnretainedValue()
+}
+
+private func zintlEditableTextField(_ pointer: UnsafeRawPointer) -> ZintlTextField {
+  Unmanaged<ZintlTextField>.fromOpaque(pointer).takeUnretainedValue()
 }
 
 private func zintlRect(_ rect: ZintlRect) -> NSRect {
@@ -185,10 +233,14 @@ func zintlAppkitCreateTextField(
   label: Bool
 ) -> UnsafeMutableRawPointer {
   let value = zintlString(value)
-  let textField =
-    label
-    ? NSTextField(labelWithString: value)
-    : NSTextField(string: value)
+  let textField: NSTextField
+  if label {
+    textField = NSTextField(labelWithString: value)
+  } else {
+    let editableTextField = ZintlTextField(frame: .zero)
+    editableTextField.stringValue = value
+    textField = editableTextField
+  }
   return Unmanaged.passRetained(textField).toOpaque()
 }
 
@@ -232,4 +284,32 @@ func zintlAppkitTextFieldSetEditable(textField: UnsafeRawPointer, editable: Bool
 @_cdecl("zintlappkit_text_field_set_selectable")
 func zintlAppkitTextFieldSetSelectable(textField: UnsafeRawPointer, selectable: Bool) {
   zintlTextField(textField).isSelectable = selectable
+}
+
+@MainActor
+@_cdecl("zintlappkit_text_field_set_change_handler")
+func zintlAppkitTextFieldSetChangeHandler(
+  textField: UnsafeRawPointer,
+  userData: UnsafeRawPointer?,
+  callback: ZintlTextFieldChangeCallback?,
+  release: ZintlControlRelease?
+) {
+  let textField = zintlEditableTextField(textField)
+  textField.changeTarget?.releaseUserData()
+  let target = ZintlTextFieldChangeTarget(
+    userData: userData,
+    callback: callback,
+    release: release
+  )
+  textField.changeTarget = target
+  textField.delegate = target
+}
+
+@MainActor
+@_cdecl("zintlappkit_text_field_clear_change_handler")
+func zintlAppkitTextFieldClearChangeHandler(textField: UnsafeRawPointer) {
+  let textField = zintlEditableTextField(textField)
+  textField.changeTarget?.releaseUserData()
+  textField.delegate = nil
+  textField.changeTarget = nil
 }

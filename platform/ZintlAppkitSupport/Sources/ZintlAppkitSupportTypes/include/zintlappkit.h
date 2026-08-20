@@ -40,6 +40,10 @@ typedef void (*ZintlWindowRelease)(const void* user_data);
 typedef void (*ZintlControlAction)(const void* user_data);
 typedef void (*ZintlControlRelease)(const void* user_data);
 typedef void (*ZintlStringCallback)(void* user_data, ZintlString value);
+typedef void (*ZintlTextFieldChangeCallback)(
+    const void* user_data,
+    ZintlString value
+);
 typedef void (*ZintlSidebarSelectionCallback)(const void* user_data, ZintlString item_id);
 typedef void (*ZintlSidebarRelease)(const void* user_data);
 typedef void (*ZintlRunLoopSourcePerform)(const void* user_data);
@@ -113,6 +117,13 @@ void zintlappkit_text_field_set_placeholder_string(
 );
 void zintlappkit_text_field_set_editable(const void* text_field, bool editable);
 void zintlappkit_text_field_set_selectable(const void* text_field, bool selectable);
+void zintlappkit_text_field_set_change_handler(
+    const void* text_field,
+    const void* user_data,
+    ZintlTextFieldChangeCallback callback,
+    ZintlControlRelease release
+);
+void zintlappkit_text_field_clear_change_handler(const void* text_field);
 void* zintlappkit_layout_constraint_create(
     const void* first_view,
     int32_t first_attribute,

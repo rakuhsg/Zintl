@@ -1,40 +1,129 @@
 use zintl_ui::composer::Composer;
 pub use zintl_ui::element::{Element, IntoElement};
 use zintl_ui::renderer::{RenderBackend, RenderNode as RenderNodeTrait};
+pub use zintl_ui::store::Store;
 pub use zintl_ui::view::{Context, View};
+pub use zintl_ui_layout::{Axis, LayoutStyle, Size};
 
-pub use zpd_appkit::geometry::Rect;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Rect {
+    pub const fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RenderNode {
-    Text(String),
-    Window { bounds: Rect, title: String },
+    Text {
+        content: String,
+        layout: LayoutStyle,
+    },
+    Button {
+        title: String,
+        layout: LayoutStyle,
+    },
+    TextField {
+        value: String,
+        placeholder: Option<String>,
+        binding: Option<Store<String>>,
+        layout: LayoutStyle,
+    },
+    Container {
+        layout: LayoutStyle,
+    },
+    Window {
+        bounds: Rect,
+        title: String,
+    },
 }
 
 impl RenderNodeTrait for RenderNode {
     fn same_kind(&self, other: &Self) -> bool {
         matches!(
             (self, other),
-            (Self::Text(_), Self::Text(_)) | (Self::Window { .. }, Self::Window { .. })
+            (Self::Text { .. }, Self::Text { .. })
+                | (Self::Button { .. }, Self::Button { .. })
+                | (Self::TextField { .. }, Self::TextField { .. })
+                | (Self::Container { .. }, Self::Container { .. })
+                | (Self::Window { .. }, Self::Window { .. })
         )
     }
 }
 
-pub struct Window {
-    bounds: Rect,
-    title: String,
+pub trait Children: 'static {
+    fn elements(&self) -> Vec<Element<RenderNode>>;
 }
 
-impl Window {
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Empty;
+
+impl Children for Empty {
+    fn elements(&self) -> Vec<Element<RenderNode>> {
+        Vec::new()
+    }
+}
+
+macro_rules! impl_children_tuple {
+    ($($type:ident:$value:ident),+) => {
+        impl<$($type),+> Children for ($($type,)+)
+        where
+            $($type: Clone + IntoElement<Output = RenderNode> + 'static,)+
+        {
+            fn elements(&self) -> Vec<Element<RenderNode>> {
+                let ($($value,)+) = self;
+                vec![$($value.clone().into_element(),)+]
+            }
+        }
+    };
+}
+
+impl_children_tuple!(A:a);
+impl_children_tuple!(A:a, B:b);
+impl_children_tuple!(A:a, B:b, C:c);
+impl_children_tuple!(A:a, B:b, C:c, D:d);
+impl_children_tuple!(A:a, B:b, C:c, D:d, E:e);
+impl_children_tuple!(A:a, B:b, C:c, D:d, E:e, F:f);
+
+#[derive(Clone)]
+pub struct Window<C = Empty> {
+    bounds: Rect,
+    title: String,
+    children: C,
+}
+
+impl Window<Empty> {
     pub fn new(bounds: Rect, title: impl Into<String>) -> Self {
         Self {
             bounds,
             title: title.into(),
+            children: Empty,
         }
     }
 }
 
-impl View for Window {
+impl<C> Window<C> {
+    pub fn content<V>(self, content: V) -> Window<(V,)> {
+        Window {
+            bounds: self.bounds,
+            title: self.title,
+            children: (content,),
+        }
+    }
+}
+
+impl<C: Children> View for Window<C> {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
@@ -42,24 +131,211 @@ impl View for Window {
             bounds: self.bounds,
             title: self.title.clone(),
         })
+        .with_children(self.children.elements())
     }
 }
 
+#[derive(Clone)]
 pub struct Text {
     content: String,
+    layout: LayoutStyle,
 }
 
 impl Text {
-    pub fn new(content: String) -> Self {
-        Text { content }
+    pub fn new(content: impl Into<String>) -> Self {
+        let content = content.into();
+        let minimum_width = content.chars().count() as f32 * 7.0;
+        Self {
+            content,
+            layout: LayoutStyle::leaf(Size::new(minimum_width, 20.0)),
+        }
+    }
+
+    pub fn minimum_size(mut self, size: Size) -> Self {
+        self.layout.minimum_size = size;
+        self
     }
 }
 
-impl IntoElement for Text {
+impl View for Text {
     type Output = RenderNode;
 
-    fn into_element(self) -> Element<Self::Output> {
-        Element::node(RenderNode::Text(self.content))
+    fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        Element::node(RenderNode::Text {
+            content: self.content.clone(),
+            layout: self.layout,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct Button {
+    title: String,
+    layout: LayoutStyle,
+}
+
+impl Button {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            layout: LayoutStyle::leaf(Size::new(80.0, 32.0)),
+        }
+    }
+
+    pub fn minimum_size(mut self, size: Size) -> Self {
+        self.layout.minimum_size = size;
+        self
+    }
+}
+
+impl View for Button {
+    type Output = RenderNode;
+
+    fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        Element::node(RenderNode::Button {
+            title: self.title.clone(),
+            layout: self.layout,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct TextField {
+    value: TextFieldValue,
+    placeholder: Option<String>,
+    layout: LayoutStyle,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextFieldValue {
+    Literal(String),
+    Store(Store<String>),
+}
+
+impl From<String> for TextFieldValue {
+    fn from(value: String) -> Self {
+        Self::Literal(value)
+    }
+}
+
+impl From<&str> for TextFieldValue {
+    fn from(value: &str) -> Self {
+        Self::Literal(value.into())
+    }
+}
+
+impl From<Store<String>> for TextFieldValue {
+    fn from(store: Store<String>) -> Self {
+        Self::Store(store)
+    }
+}
+
+impl TextField {
+    pub fn new(value: impl Into<TextFieldValue>) -> Self {
+        Self {
+            value: value.into(),
+            placeholder: None,
+            layout: LayoutStyle::leaf(Size::new(160.0, 28.0)),
+        }
+    }
+
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    pub fn minimum_size(mut self, size: Size) -> Self {
+        self.layout.minimum_size = size;
+        self
+    }
+}
+
+impl View for TextField {
+    type Output = RenderNode;
+
+    fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        let (value, binding) = match &self.value {
+            TextFieldValue::Literal(value) => (value.clone(), None),
+            TextFieldValue::Store(store) => (cx.get(*store).clone(), Some(*store)),
+        };
+        Element::node(RenderNode::TextField {
+            value,
+            placeholder: self.placeholder.clone(),
+            binding,
+            layout: self.layout,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct HStack<C> {
+    children: C,
+    layout: LayoutStyle,
+}
+
+impl<C> HStack<C> {
+    pub fn new(children: C) -> Self {
+        Self {
+            children,
+            layout: LayoutStyle::stack(Axis::Horizontal, 8.0),
+        }
+    }
+
+    pub fn spacing(mut self, spacing: f32) -> Self {
+        self.layout.gap = spacing;
+        self
+    }
+
+    pub fn minimum_size(mut self, size: Size) -> Self {
+        self.layout.minimum_size = size;
+        self
+    }
+}
+
+impl<C: Children> View for HStack<C> {
+    type Output = RenderNode;
+
+    fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        Element::node(RenderNode::Container {
+            layout: self.layout,
+        })
+        .with_children(self.children.elements())
+    }
+}
+
+#[derive(Clone)]
+pub struct VStack<C> {
+    children: C,
+    layout: LayoutStyle,
+}
+
+impl<C> VStack<C> {
+    pub fn new(children: C) -> Self {
+        Self {
+            children,
+            layout: LayoutStyle::stack(Axis::Vertical, 8.0),
+        }
+    }
+
+    pub fn spacing(mut self, spacing: f32) -> Self {
+        self.layout.gap = spacing;
+        self
+    }
+
+    pub fn minimum_size(mut self, size: Size) -> Self {
+        self.layout.minimum_size = size;
+        self
+    }
+}
+
+impl<C: Children> View for VStack<C> {
+    type Output = RenderNode;
+
+    fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        Element::node(RenderNode::Container {
+            layout: self.layout,
+        })
+        .with_children(self.children.elements())
     }
 }
 
@@ -146,6 +422,12 @@ impl RenderBackend<RenderNode> for TreeBackend {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderedNode {
+    pub value: RenderNode,
+    pub children: Vec<RenderedNode>,
+}
+
 pub struct App {
     composer: Composer<RenderNode, TreeBackend>,
 }
@@ -161,153 +443,158 @@ impl App {
     }
 
     pub fn render(&self) -> RenderNode {
+        self.render_tree().value
+    }
+
+    pub fn render_tree(&self) -> RenderedNode {
         let backend = self.composer.backend();
-        let root = backend.node(0).children[0];
-        backend.node(root).value.clone().unwrap()
+        rendered_node(backend, backend.node(0).children[0])
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn run(mut self) -> Result<(), AppError> {
+        let backend = self.composer.backend();
+        let mut bindings = Vec::new();
+        let specifications = backend
+            .node(0)
+            .children
+            .iter()
+            .filter_map(|node| window_spec(backend, *node, &mut bindings))
+            .collect();
+        zintl_ui_appkit::run_with_event_handler(specifications, move |event| match event {
+            zintl_ui_appkit::Event::TextChanged { id, value } => {
+                let store = *bindings
+                    .get(id as usize)
+                    .expect("text change must reference an existing Store binding");
+                self.update_text_store(store, value);
+            }
+        })
+    }
+
+    fn update_text_store(&mut self, store: Store<String>, value: String) {
+        self.composer.context(|cx| {
+            cx.update(store, |current| *current = value);
+        });
+        self.composer.flush();
+    }
+}
+
+fn rendered_node(backend: &TreeBackend, id: usize) -> RenderedNode {
+    let node = backend.node(id);
+    RenderedNode {
+        value: node.value.clone().expect("render nodes always have values"),
+        children: node
+            .children
+            .iter()
+            .map(|child| rendered_node(backend, *child))
+            .collect(),
     }
 }
 
 #[cfg(target_os = "macos")]
-mod appkit {
-    use std::error::Error;
-    use std::fmt;
-
-    use messageloop_appkit::{
-        Context as MessageContext, MessageLoopAppkit, MessageLoopHandler, SendError, Sender,
+fn window_spec(
+    backend: &TreeBackend,
+    id: usize,
+    bindings: &mut Vec<Store<String>>,
+) -> Option<zintl_ui_appkit::WindowSpec> {
+    let node = backend.node(id);
+    let RenderNode::Window { bounds, title } = node.value.as_ref()? else {
+        return None;
     };
-    use zpd_appkit::runloop::{Application, ApplicationError, RunLoopSourceError};
-    use zpd_appkit::ui::{
-        CommandError, CommandItem, CommandModifier, CommandRole, CommandSet,
-        Window as NativeWindow, WindowAppMenu, WindowError,
-    };
-
-    use super::{App, RenderNode};
-
-    #[derive(Debug)]
-    pub enum AppError {
-        Application(ApplicationError),
-        Command(CommandError),
-        Window(WindowError),
-        RunLoopSource(RunLoopSourceError),
-        MessageLoop(SendError),
-        NoWindow,
-    }
-
-    impl fmt::Display for AppError {
-        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                Self::Application(error) => error.fmt(formatter),
-                Self::Command(error) => error.fmt(formatter),
-                Self::Window(error) => error.fmt(formatter),
-                Self::RunLoopSource(error) => error.fmt(formatter),
-                Self::MessageLoop(error) => error.fmt(formatter),
-                Self::NoWindow => {
-                    formatter.write_str("the rendered tree does not contain a window")
-                }
-            }
-        }
-    }
-
-    impl Error for AppError {
-        fn source(&self) -> Option<&(dyn Error + 'static)> {
-            match self {
-                Self::Application(error) => Some(error),
-                Self::Command(error) => Some(error),
-                Self::Window(error) => Some(error),
-                Self::RunLoopSource(error) => Some(error),
-                Self::MessageLoop(error) => Some(error),
-                Self::NoWindow => None,
-            }
-        }
-    }
-
-    struct AppHandler<'application> {
-        windows: Vec<NativeWindow<'application, ()>>,
-    }
-
-    enum Message {
-        ShowWindow { index: usize },
-    }
-
-    impl MessageLoopHandler<Message> for AppHandler<'_> {
-        fn on(&mut self, _cx: &MessageContext<'_, Message>, message: Message) {
-            match message {
-                Message::ShowWindow { index } => self
-                    .windows
-                    .get(index)
-                    .expect("show-window message must reference an existing window")
-                    .show()
-                    .expect("a newly created AppKit window must still be open"),
-            }
-        }
-    }
-
-    impl App {
-        pub fn run(self) -> Result<(), AppError> {
-            let specifications: Vec<_> = self
-                .composer
-                .backend()
-                .nodes
-                .iter()
-                .filter_map(|node| match node.as_ref()?.value.as_ref()? {
-                    RenderNode::Window { bounds, title } => Some((*bounds, title.clone())),
-                    RenderNode::Text(_) => None,
-                })
-                .collect();
-            if specifications.is_empty() {
-                return Err(AppError::NoWindow);
-            }
-
-            let application = Application::new(()).map_err(AppError::Application)?;
-            application
-                .set_commands(&quit_commands(), |_| {})
-                .map_err(AppError::Command)?;
-
-            let mut windows = Vec::with_capacity(specifications.len());
-            for (bounds, title) in specifications {
-                let window = application.create_window(()).map_err(AppError::Window)?;
-                window.set_title(&title).map_err(AppError::Window)?;
-                window.set_bounds(bounds).map_err(AppError::Window)?;
-                windows.push(window);
-            }
-            let window_count = windows.len();
-
-            let message_loop = MessageLoopAppkit::new(&application, AppHandler { windows })
-                .map_err(AppError::RunLoopSource)?;
-            let sender = message_loop.sender();
-            for index in 0..window_count {
-                sender
-                    .send(Message::ShowWindow { index })
-                    .map_err(AppError::MessageLoop)?;
-            }
-            message_loop.run();
-            Ok(())
-        }
-    }
-
-    fn quit_commands() -> CommandSet {
-        CommandSet {
-            app_menu: Some(WindowAppMenu {
-                items: vec![CommandItem {
-                    id: None,
-                    title: "Quit".into(),
-                    role: Some(CommandRole::Quit),
-                    key: Some("q".into()),
-                    modifiers: vec![CommandModifier::Cmd],
-                    enabled: true,
-                }],
-            }),
-            menus: Vec::new(),
-        }
-    }
+    Some(zintl_ui_appkit::WindowSpec {
+        bounds: zintl_ui_appkit::Rect::new(bounds.x, bounds.y, bounds.width, bounds.height),
+        title: title.clone(),
+        children: node
+            .children
+            .iter()
+            .filter_map(|child| view_spec(backend, *child, bindings))
+            .collect(),
+    })
 }
 
 #[cfg(target_os = "macos")]
-pub use appkit::AppError;
+fn view_spec(
+    backend: &TreeBackend,
+    id: usize,
+    bindings: &mut Vec<Store<String>>,
+) -> Option<zintl_ui_appkit::ViewSpec> {
+    use zintl_ui_appkit::{ViewKind, ViewSpec};
+
+    let node = backend.node(id);
+    let (kind, layout) = match node.value.as_ref()? {
+        RenderNode::Text { content, layout } => (ViewKind::Label(content.clone()), *layout),
+        RenderNode::Button { title, layout } => (ViewKind::Button(title.clone()), *layout),
+        RenderNode::TextField {
+            value,
+            placeholder,
+            binding,
+            layout,
+        } => {
+            let on_change = binding.map(|store| {
+                let id = bindings.len() as u64;
+                bindings.push(store);
+                id
+            });
+            (
+                ViewKind::TextField {
+                    value: value.clone(),
+                    placeholder: placeholder.clone(),
+                    on_change,
+                },
+                *layout,
+            )
+        }
+        RenderNode::Container { layout } => (ViewKind::Container, *layout),
+        RenderNode::Window { .. } => return None,
+    };
+    Some(ViewSpec {
+        kind,
+        layout,
+        children: node
+            .children
+            .iter()
+            .filter_map(|child| view_spec(backend, *child, bindings))
+            .collect(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub use zintl_ui_appkit::AppError;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct StoreTextFieldView {
+        value: Option<Store<String>>,
+    }
+
+    impl View for StoreTextFieldView {
+        type Output = RenderNode;
+
+        fn init(&mut self, cx: &mut Context<'_>) {
+            self.value = Some(cx.store("initial".to_owned()));
+        }
+
+        fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = RenderNode> {
+            TextField::new(
+                self.value
+                    .expect("StoreTextFieldView must be initialized before rendering"),
+            )
+        }
+    }
+
+    fn assert_view<T: View<Output = RenderNode>>() {}
+
+    #[test]
+    fn desktop_controls_and_stacks_are_views() {
+        // Verifies every desktop primitive participates in the View abstraction.
+        assert_view::<Text>();
+        assert_view::<Button>();
+        assert_view::<TextField>();
+        assert_view::<HStack<(Text, Button)>>();
+        assert_view::<VStack<(TextField,)>>();
+    }
 
     #[test]
     fn window_element_preserves_bounds_and_title() {
@@ -318,8 +605,74 @@ mod tests {
             app.render(),
             RenderNode::Window {
                 bounds,
-                title: "Zintl".into(),
+                title: "Zintl".into()
             }
         );
+    }
+
+    #[test]
+    fn stack_render_tree_carries_direction_gap_and_control_sizes() {
+        // Verifies desktop layout decisions are retained for the platform backend.
+        let app = App::new(
+            Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Zintl")
+                .content(HStack::new((Button::new("Save"), TextField::new(""))).spacing(12.0)),
+        );
+        let tree = app.render_tree();
+        let stack = &tree.children[0];
+
+        assert_eq!(
+            stack.value,
+            RenderNode::Container {
+                layout: LayoutStyle::stack(Axis::Horizontal, 12.0),
+            }
+        );
+        assert!(matches!(
+            stack.children[0].value,
+            RenderNode::Button {
+                layout: LayoutStyle {
+                    minimum_size: Size {
+                        width: 80.0,
+                        height: 32.0
+                    },
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            stack.children[1].value,
+            RenderNode::TextField {
+                layout: LayoutStyle {
+                    minimum_size: Size {
+                        width: 160.0,
+                        height: 28.0
+                    },
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn text_field_writes_native_input_to_its_store() {
+        // Verifies a bound TextField reads from its Store and rerenders after input updates it.
+        let mut app = App::new(StoreTextFieldView { value: None });
+        let store = match app.render() {
+            RenderNode::TextField { value, binding, .. } => {
+                assert_eq!(value, "initial");
+                binding.expect("a Store-backed TextField must expose its binding")
+            }
+            node => panic!("expected a TextField, got {node:?}"),
+        };
+
+        app.update_text_store(store, "typed value".into());
+
+        let stored = app.composer.context(|cx| cx.get(store).clone());
+        assert_eq!(stored, "typed value");
+        assert!(matches!(
+            app.render(),
+            RenderNode::TextField { value, .. } if value == "typed value"
+        ));
     }
 }
