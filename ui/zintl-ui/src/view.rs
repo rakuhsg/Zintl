@@ -6,6 +6,7 @@ use crate::store::Store;
 use std::any::{TypeId, type_name};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::marker::PhantomData;
 
 pub struct Context<'a> {
     pub(crate) stores: &'a mut Arena,
@@ -86,6 +87,19 @@ impl Context<'_> {
             .expect("store handle must belong to this composer")
     }
 
+    pub fn bind<T, F, E>(&self, store: Store<T>, render: F) -> StoreBinding<T, F, E>
+    where
+        T: 'static,
+        F: Fn(&T) -> E + 'static,
+        E: IntoElement + 'static,
+    {
+        StoreBinding {
+            store,
+            render,
+            element: PhantomData,
+        }
+    }
+
     pub fn update<T: 'static, U>(
         &mut self,
         store: Store<T>,
@@ -98,6 +112,63 @@ impl Context<'_> {
         let result = update(value);
         self.dirty_hooks.insert(store.hook_id);
         result
+    }
+}
+
+pub struct StoreBinding<T: 'static, F, E> {
+    store: Store<T>,
+    render: F,
+    element: PhantomData<fn(&T) -> E>,
+}
+
+impl<T: 'static, F: Clone, E> Clone for StoreBinding<T, F, E> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store,
+            render: self.render.clone(),
+            element: PhantomData,
+        }
+    }
+}
+
+struct StoreBindingBuilder<T: 'static, F, E> {
+    store: Store<T>,
+    render: F,
+    element: PhantomData<fn(&T) -> E>,
+}
+
+impl<T, F, E> BoundBuilder<E::Output> for StoreBindingBuilder<T, F, E>
+where
+    T: 'static,
+    F: Fn(&T) -> E + 'static,
+    E: IntoElement + 'static,
+{
+    fn build_children(&mut self, cx: &mut Context<'_>) -> Vec<Element<E::Output>> {
+        vec![(self.render)(cx.get(self.store)).into_element()]
+    }
+
+    fn builder_type_id(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
+}
+
+impl<T, F, E> IntoElement for StoreBinding<T, F, E>
+where
+    T: 'static,
+    F: Fn(&T) -> E + 'static,
+    E: IntoElement + 'static,
+{
+    type Output = E::Output;
+
+    fn into_element(self) -> Element<Self::Output> {
+        Element::Bound(Bound {
+            key: None,
+            builder: Box::new(StoreBindingBuilder {
+                store: self.store,
+                render: self.render,
+                element: PhantomData,
+            }),
+        })
     }
 }
 

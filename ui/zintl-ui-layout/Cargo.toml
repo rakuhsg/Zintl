@@ -1,0 +1,6 @@
+[package]
+name = "zintl-ui-layout"
+edition = "2024"
+
+[dependencies]
+taffy = { version = "0.12", default-features = false, features = ["std", "flexbox", "taffy_tree"] }

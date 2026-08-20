@@ -31,6 +31,12 @@ private final class StringValueProbe {
 }
 
 @MainActor
+private final class TextFieldChangeProbe {
+  var values: [String] = []
+  var releases = 0
+}
+
+@MainActor
 private final class SidebarCallbackProbe {
   var selections: [String] = []
   var releases = 0
@@ -256,6 +262,35 @@ private func withProbe(
     }
   )
   #expect(String(decoding: stringProbe.utf8, as: UTF8.self) == expectedValue)
+
+  let changeProbe = TextFieldChangeProbe()
+  let retainedChangeProbe = Unmanaged.passRetained(changeProbe)
+  zintlAppkitTextFieldSetChangeHandler(
+    textField: textField,
+    userData: retainedChangeProbe.toOpaque(),
+    callback: { userData, value in
+      guard let userData else {
+        return
+      }
+      let probe = Unmanaged<TextFieldChangeProbe>.fromOpaque(userData).takeUnretainedValue()
+      probe.values.append(zintlString(value))
+    },
+    release: { userData in
+      guard let userData else {
+        return
+      }
+      let probe = Unmanaged<TextFieldChangeProbe>.fromOpaque(userData)
+      probe.takeUnretainedValue().releases += 1
+      probe.release()
+    }
+  )
+  nativeTextField?.stringValue = "typed value"
+  nativeTextField?.delegate?.controlTextDidChange?(
+    Notification(name: NSControl.textDidChangeNotification, object: nativeTextField)
+  )
+  #expect(changeProbe.values == ["typed value"])
+  zintlAppkitTextFieldClearChangeHandler(textField: textField)
+  #expect(changeProbe.releases == 1)
 
   nativeButton = nil
   nativeTextField = nil

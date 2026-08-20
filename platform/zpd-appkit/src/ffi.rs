@@ -22,6 +22,8 @@ pub struct WindowCallback {
 pub type WindowRelease = unsafe extern "C" fn(user_data: *const c_void);
 pub type ControlAction = unsafe extern "C" fn(user_data: *const c_void);
 pub type ControlRelease = unsafe extern "C" fn(user_data: *const c_void);
+pub type TextFieldChangeCallback =
+    unsafe extern "C" fn(user_data: *const c_void, value: NativeString);
 pub type CommandCallback = unsafe extern "C" fn(user_data: *const c_void, command_id: NativeString);
 pub type CommandRelease = unsafe extern "C" fn(user_data: *const c_void);
 pub type SidebarSelectionCallback =
@@ -94,6 +96,13 @@ unsafe extern "C" {
     );
     pub fn zintlappkit_text_field_set_editable(text_field: *const c_void, editable: bool);
     pub fn zintlappkit_text_field_set_selectable(text_field: *const c_void, selectable: bool);
+    pub fn zintlappkit_text_field_set_change_handler(
+        text_field: *const c_void,
+        user_data: *const c_void,
+        callback: TextFieldChangeCallback,
+        release: ControlRelease,
+    );
+    pub fn zintlappkit_text_field_clear_change_handler(text_field: *const c_void);
     pub fn zintlappkit_layout_constraint_create(
         first_view: *const c_void,
         first_attribute: i32,

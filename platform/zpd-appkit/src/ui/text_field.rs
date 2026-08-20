@@ -1,8 +1,47 @@
+use std::cell::RefCell;
+use std::ffi::c_void;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
+
 use crate::ffi;
 use crate::runloop::{Application, ApplicationDelegate};
 use crate::string::{NativeOptionalString, NativeString, receive_native_string};
 
 use super::view::{AsView, OwnedView, ViewError, ViewRef};
+
+struct ChangeState<F> {
+    callback: RefCell<F>,
+}
+
+unsafe extern "C" fn perform_change<F: FnMut(String)>(
+    user_data: *const c_void,
+    value: NativeString,
+) {
+    if user_data.is_null() {
+        return;
+    }
+    // SAFETY: Native code owns this Rc strong reference until `release_change`.
+    let state = unsafe { Rc::from_raw(user_data.cast::<ChangeState<F>>()) };
+    // SAFETY: The native callback owns the UTF-8 buffer for this synchronous call.
+    let value = unsafe { value.to_string() };
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Ok(mut callback) = state.callback.try_borrow_mut() else {
+            std::process::abort();
+        };
+        callback(value);
+    }));
+    let _ = Rc::into_raw(state);
+    if result.is_err() {
+        std::process::abort();
+    }
+}
+
+unsafe extern "C" fn release_change<F>(user_data: *const c_void) {
+    if !user_data.is_null() {
+        // SAFETY: This consumes the Rc strong reference transferred to native code.
+        unsafe { drop(Rc::from_raw(user_data.cast::<ChangeState<F>>())) };
+    }
+}
 
 /// Owns a strong reference to an AppKit `NSTextField`.
 pub struct TextField {
@@ -82,6 +121,33 @@ impl TextField {
         // SAFETY: `self` owns a live NSTextField on the AppKit main thread.
         unsafe {
             ffi::zintlappkit_text_field_set_selectable(self.view.as_view().as_ptr(), selectable);
+        }
+    }
+
+    pub fn set_change_handler<F>(&self, callback: F)
+    where
+        F: FnMut(String) + 'static,
+    {
+        let state = Rc::new(ChangeState {
+            callback: RefCell::new(callback),
+        });
+        let user_data = Rc::into_raw(state);
+        // SAFETY: Native code owns the transferred Rc reference until the
+        // handler is cleared or the text field is destroyed.
+        unsafe {
+            ffi::zintlappkit_text_field_set_change_handler(
+                self.view.as_view().as_ptr(),
+                user_data.cast(),
+                perform_change::<F>,
+                release_change::<F>,
+            );
+        }
+    }
+
+    pub fn clear_change_handler(&self) {
+        // SAFETY: `self` owns a live editable NSTextField on the main thread.
+        unsafe {
+            ffi::zintlappkit_text_field_clear_change_handler(self.view.as_view().as_ptr());
         }
     }
 }

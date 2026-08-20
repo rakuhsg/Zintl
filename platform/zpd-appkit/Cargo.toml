@@ -3,6 +3,7 @@ name = "zpd-appkit"
 edition = "2024"
 version.workspace = true
 license.workspace = true
+links = "ZintlAppkitSupport"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
