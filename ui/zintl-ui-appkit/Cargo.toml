@@ -3,6 +3,7 @@ name = "zintl-ui-appkit"
 edition = "2024"
 
 [dependencies]
+zintl-ui = { path = "../zintl-ui" }
 zintl-ui-layout = { path = "../zintl-ui-layout" }
 zpd-appkit = { path = "../../platform/zpd-appkit" }
 

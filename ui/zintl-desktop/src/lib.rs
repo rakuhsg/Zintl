@@ -62,6 +62,45 @@ impl RenderNodeTrait for RenderNode {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
+    fn appkit_node(&self) -> zintl_ui_appkit::NodeKind {
+        use zintl_ui_appkit::{NodeKind, ViewKind};
+
+        match self {
+            Self::Text { content, layout } => NodeKind::View {
+                kind: ViewKind::Label(content.clone()),
+                layout: *layout,
+            },
+            Self::Button { title, layout } => NodeKind::View {
+                kind: ViewKind::Button(title.clone()),
+                layout: *layout,
+            },
+            Self::TextField {
+                value,
+                placeholder,
+                binding,
+                layout,
+            } => NodeKind::View {
+                kind: ViewKind::TextField {
+                    value: value.clone(),
+                    placeholder: placeholder.clone(),
+                    on_change: binding.is_some(),
+                },
+                layout: *layout,
+            },
+            Self::Container { layout } => NodeKind::View {
+                kind: ViewKind::Container,
+                layout: *layout,
+            },
+            Self::Window { bounds, title } => NodeKind::Window {
+                bounds: zintl_ui_appkit::Rect::new(bounds.x, bounds.y, bounds.width, bounds.height),
+                title: title.clone(),
+            },
+        }
+    }
+}
+
 pub trait Children: 'static {
     fn elements(&self) -> Vec<Element<RenderNode>>;
 }
@@ -339,16 +378,19 @@ impl<C: Children> View for VStack<C> {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 struct Node {
     value: Option<RenderNode>,
     parent: Option<usize>,
     children: Vec<usize>,
 }
 
+#[cfg(not(target_os = "macos"))]
 struct TreeBackend {
     nodes: Vec<Option<Node>>,
 }
 
+#[cfg(not(target_os = "macos"))]
 impl TreeBackend {
     fn new() -> Self {
         Self {
@@ -368,6 +410,10 @@ impl TreeBackend {
         self.nodes[id].as_mut().unwrap()
     }
 
+    fn children(&self, id: usize) -> &[usize] {
+        &self.node(id).children
+    }
+
     fn detach(&mut self, child: usize) {
         let Some(parent) = self.node(child).parent else {
             return;
@@ -379,6 +425,7 @@ impl TreeBackend {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 impl RenderBackend<RenderNode> for TreeBackend {
     type NodeId = usize;
 
@@ -428,8 +475,14 @@ pub struct RenderedNode {
     pub children: Vec<RenderedNode>,
 }
 
+#[cfg(target_os = "macos")]
+type DesktopBackend = zintl_ui_appkit::AppKitBackend<RenderNode>;
+
+#[cfg(not(target_os = "macos"))]
+type DesktopBackend = TreeBackend;
+
 pub struct App {
-    composer: Composer<RenderNode, TreeBackend>,
+    composer: Composer<RenderNode, DesktopBackend>,
 }
 
 impl App {
@@ -437,7 +490,11 @@ impl App {
     where
         E: IntoElement<Output = RenderNode>,
     {
-        let mut composer = Composer::new(TreeBackend::new());
+        #[cfg(target_os = "macos")]
+        let backend = DesktopBackend::new();
+        #[cfg(not(target_os = "macos"))]
+        let backend = TreeBackend::new();
+        let mut composer = Composer::new(backend);
         composer.mount(root);
         Self { composer }
     }
@@ -448,29 +505,34 @@ impl App {
 
     pub fn render_tree(&self) -> RenderedNode {
         let backend = self.composer.backend();
-        rendered_node(backend, backend.node(0).children[0])
+        let root = backend.root();
+        let child = *backend
+            .children(root)
+            .first()
+            .expect("the rendered tree must contain a root element");
+        rendered_node(backend, child)
     }
 
     #[cfg(target_os = "macos")]
-    pub fn run(mut self) -> Result<(), AppError> {
-        let backend = self.composer.backend();
-        let mut bindings = Vec::new();
-        let specifications = backend
-            .node(0)
-            .children
-            .iter()
-            .filter_map(|node| window_spec(backend, *node, &mut bindings))
-            .collect();
-        zintl_ui_appkit::run_with_event_handler(specifications, move |event| match event {
-            zintl_ui_appkit::Event::TextChanged { id, value } => {
-                let store = *bindings
-                    .get(id as usize)
-                    .expect("text change must reference an existing Store binding");
-                self.update_text_store(store, value);
+    pub fn run(self) -> Result<(), AppError> {
+        zintl_ui_appkit::run_composer(self.composer, |composer, event| match event {
+            zintl_ui_appkit::Event::TextChanged { node, value } => {
+                let store = match composer.backend().value(node) {
+                    Some(RenderNode::TextField {
+                        binding: Some(store),
+                        ..
+                    }) => *store,
+                    _ => return,
+                };
+                composer.context(|cx| {
+                    cx.update(store, |current| *current = value);
+                });
+                composer.flush();
             }
         })
     }
 
+    #[cfg(test)]
     fn update_text_store(&mut self, store: Store<String>, value: String) {
         self.composer.context(|cx| {
             cx.update(store, |current| *current = value);
@@ -479,6 +541,22 @@ impl App {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn rendered_node(backend: &DesktopBackend, id: zintl_ui_appkit::NodeId) -> RenderedNode {
+    RenderedNode {
+        value: backend
+            .value(id)
+            .cloned()
+            .expect("render nodes always have values"),
+        children: backend
+            .children(id)
+            .iter()
+            .map(|child| rendered_node(backend, *child))
+            .collect(),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn rendered_node(backend: &TreeBackend, id: usize) -> RenderedNode {
     let node = backend.node(id);
     RenderedNode {
@@ -492,81 +570,40 @@ fn rendered_node(backend: &TreeBackend, id: usize) -> RenderedNode {
 }
 
 #[cfg(target_os = "macos")]
-fn window_spec(
-    backend: &TreeBackend,
-    id: usize,
-    bindings: &mut Vec<Store<String>>,
-) -> Option<zintl_ui_appkit::WindowSpec> {
-    let node = backend.node(id);
-    let RenderNode::Window { bounds, title } = node.value.as_ref()? else {
-        return None;
-    };
-    Some(zintl_ui_appkit::WindowSpec {
-        bounds: zintl_ui_appkit::Rect::new(bounds.x, bounds.y, bounds.width, bounds.height),
-        title: title.clone(),
-        children: node
-            .children
-            .iter()
-            .filter_map(|child| view_spec(backend, *child, bindings))
-            .collect(),
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn view_spec(
-    backend: &TreeBackend,
-    id: usize,
-    bindings: &mut Vec<Store<String>>,
-) -> Option<zintl_ui_appkit::ViewSpec> {
-    use zintl_ui_appkit::{ViewKind, ViewSpec};
-
-    let node = backend.node(id);
-    let (kind, layout) = match node.value.as_ref()? {
-        RenderNode::Text { content, layout } => (ViewKind::Label(content.clone()), *layout),
-        RenderNode::Button { title, layout } => (ViewKind::Button(title.clone()), *layout),
-        RenderNode::TextField {
-            value,
-            placeholder,
-            binding,
-            layout,
-        } => {
-            let on_change = binding.map(|store| {
-                let id = bindings.len() as u64;
-                bindings.push(store);
-                id
-            });
-            (
-                ViewKind::TextField {
-                    value: value.clone(),
-                    placeholder: placeholder.clone(),
-                    on_change,
-                },
-                *layout,
-            )
-        }
-        RenderNode::Container { layout } => (ViewKind::Container, *layout),
-        RenderNode::Window { .. } => return None,
-    };
-    Some(ViewSpec {
-        kind,
-        layout,
-        children: node
-            .children
-            .iter()
-            .filter_map(|child| view_spec(backend, *child, bindings))
-            .collect(),
-    })
-}
-
-#[cfg(target_os = "macos")]
 pub use zintl_ui_appkit::AppError;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     struct StoreTextFieldView {
         value: Option<Store<String>>,
+    }
+
+    struct BoundLabelView {
+        value: Option<Store<String>>,
+        renders: Rc<Cell<usize>>,
+    }
+
+    impl View for BoundLabelView {
+        type Output = RenderNode;
+
+        fn init(&mut self, cx: &mut Context<'_>) {
+            self.value = Some(cx.store("initial".to_owned()));
+        }
+
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = RenderNode> {
+            self.renders.set(self.renders.get() + 1);
+            let store = self
+                .value
+                .expect("BoundLabelView must be initialized before rendering");
+            VStack::new((
+                TextField::new(store),
+                cx.bind(store, |value| Text::new(format!("Stored value: {value}"))),
+            ))
+        }
     }
 
     impl View for StoreTextFieldView {
@@ -674,5 +711,32 @@ mod tests {
             app.render(),
             RenderNode::TextField { value, .. } if value == "typed value"
         ));
+    }
+
+    #[test]
+    fn store_binding_rebuilds_only_its_dependent_element() {
+        // Verifies cx.bind updates its label without subscribing the enclosing view.
+        let renders = Rc::new(Cell::new(0));
+        let mut app = App::new(BoundLabelView {
+            value: None,
+            renders: renders.clone(),
+        });
+        let tree = app.render_tree();
+        let store = match &tree.children[0].value {
+            RenderNode::TextField {
+                binding: Some(store),
+                ..
+            } => *store,
+            node => panic!("expected a Store-backed TextField, got {node:?}"),
+        };
+
+        app.update_text_store(store, "typed value".into());
+
+        assert_eq!(renders.get(), 1);
+        let tree = app.render_tree();
+        let RenderNode::Text { content, .. } = &tree.children[1].value else {
+            panic!("expected a bound Text, got {:?}", tree.children[1].value);
+        };
+        assert_eq!(content, "Stored value: typed value");
     }
 }

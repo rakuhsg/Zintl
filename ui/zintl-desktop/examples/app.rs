@@ -15,14 +15,12 @@ impl View for MainView {
         let name = self
             .name
             .expect("MainView must be initialized before rendering");
-        let stored_name = cx.get(name).clone();
-        println!("TextField Store value: {stored_name:?}");
 
         Window::new(Rect::new(100.0, 100.0, 640.0, 400.0), "Zintl").content(
             VStack::new((
                 Text::new("Welcome to Zintl"),
                 TextField::new(name).placeholder("Your name"),
-                Text::new(format!("Stored value: {stored_name:?}")),
+                cx.bind(name, |name| Text::new(format!("Stored value: {name:?}"))),
                 HStack::new((Button::new("Continue"), Button::new("Cancel"))).spacing(12.0),
             ))
             .spacing(26.0),

@@ -158,9 +158,9 @@ where
         self.mounted = true;
         let root_handle = self.backend.root();
         let elements = normalize(vec![root.into_element()]);
-        self.root = self.reconcile_list(root_handle, Vec::new(), elements, None);
+        self.root = self.reconcile_list(root_handle, Vec::new(), elements, None, 0);
         let mut root = std::mem::take(&mut self.root);
-        self.refresh_mount_points(root_handle, &mut root, None);
+        self.refresh_mount_points(root_handle, &mut root, None, 0);
         self.root = root;
     }
 
@@ -274,8 +274,14 @@ where
             old_children,
             normalize(children),
             Some(id),
+            state.mount_point.index,
         );
-        self.refresh_mount_points(state.mount_point.parent, &mut state.children, Some(id));
+        self.refresh_mount_points(
+            state.mount_point.parent,
+            &mut state.children,
+            Some(id),
+            state.mount_point.index,
+        );
         self.bounds.put(id, state);
     }
 
@@ -305,18 +311,21 @@ where
         old: Vec<MountedElement<R, B::NodeId>>,
         new: Vec<Element<R>>,
         parent_bound: Option<BoundId>,
+        start_index: usize,
     ) -> Vec<MountedElement<R, B::NodeId>> {
         let mut old: Vec<_> = old.into_iter().map(Some).collect();
         let mut result = Vec::with_capacity(new.len());
+        let mut parent_index = start_index;
 
         for (position, element) in new.into_iter().enumerate() {
             let match_index = self.find_match(&old, &element, position);
             let mounted = if let Some(match_index) = match_index {
                 let mounted = old[match_index].take().unwrap();
-                self.reconcile_element(parent, position, mounted, element, parent_bound)
+                self.reconcile_element(parent, parent_index, mounted, element, parent_bound)
             } else {
-                self.mount_element(parent, position, element, parent_bound)
+                self.mount_element(parent, parent_index, element, parent_bound)
             };
+            parent_index += self.top_handles(&mounted).len();
             result.push(mounted);
         }
 
@@ -324,7 +333,7 @@ where
             self.unmount_element(mounted);
         }
 
-        let mut index = 0;
+        let mut index = start_index;
         for mounted in &result {
             let handles = self.top_handles(mounted);
             for handle in handles {
@@ -386,7 +395,7 @@ where
                 let handle = self.backend.create(&value);
                 self.backend.insert_child(parent, index, handle);
                 let children =
-                    self.reconcile_list(handle, Vec::new(), normalize(children), parent_bound);
+                    self.reconcile_list(handle, Vec::new(), normalize(children), parent_bound, 0);
                 MountedElement::Node(MountedNode {
                     value,
                     key,
@@ -428,6 +437,7 @@ where
                     old.children,
                     normalize(children),
                     parent_bound,
+                    0,
                 );
                 MountedElement::Node(old)
             }
@@ -492,12 +502,13 @@ where
         parent: B::NodeId,
         elements: &mut [MountedElement<R, B::NodeId>],
         parent_bound: Option<BoundId>,
+        start_index: usize,
     ) {
-        let mut index = 0;
+        let mut index = start_index;
         for element in elements {
             match element {
                 MountedElement::Node(node) => {
-                    self.refresh_mount_points(node.handle, &mut node.children, parent_bound);
+                    self.refresh_mount_points(node.handle, &mut node.children, parent_bound, 0);
                     index += 1;
                 }
                 MountedElement::Bound(id) => {
@@ -506,7 +517,7 @@ where
                     };
                     state.parent_bound = parent_bound;
                     state.mount_point = MountPoint { parent, index };
-                    self.refresh_mount_points(parent, &mut state.children, Some(*id));
+                    self.refresh_mount_points(parent, &mut state.children, Some(*id), index);
                     index += state
                         .children
                         .iter()
