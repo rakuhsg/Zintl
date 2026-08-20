@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "messageloop/messageloop-core",
     "messageloop/messageloop-appkit",
+    "messageloop/messageloop-dispatcherqueue",
     "messageloop/messageloop-sync",
     "messageloop/messageloop-io",
 ]

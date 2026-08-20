@@ -1,0 +1,9 @@
+[package]
+name = "zpd-winui3-example"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+zpd-winui3 = { path = ".." }
+
