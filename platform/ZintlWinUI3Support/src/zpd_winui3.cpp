@@ -9,6 +9,7 @@
 #include <cctype>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -106,6 +107,24 @@ struct Callback {
 
 struct zpd_winui3_dispatcher {
   DispatcherQueue queue{nullptr};
+};
+
+struct DispatcherSourceState {
+  std::mutex mutex;
+  DispatcherQueue queue{nullptr};
+  const void* data{};
+  zpd_winui3_invoke_fn invoke{};
+  zpd_winui3_release_fn release{};
+  bool active{true};
+  bool scheduled{};
+};
+
+struct zpd_winui3_dispatcher_source {
+  std::shared_ptr<DispatcherSourceState> state;
+};
+
+struct zpd_winui3_dispatcher_signaler {
+  std::weak_ptr<DispatcherSourceState> state;
 };
 
 struct zpd_winui3_app_context {
@@ -338,8 +357,11 @@ zpd_winui3_dispatcher* zpd_winui3_app_dispatcher(const zpd_winui3_app_context* c
   return create<zpd_winui3_dispatcher>([&] { return new zpd_winui3_dispatcher{context->queue}; });
 }
 
-zpd_winui3_window* zpd_winui3_window_create(const zpd_winui3_app_context* context) {
-  if (!context) return nullptr;
+int32_t zpd_winui3_application_exit() {
+  return status([] { Application::Current().Exit(); });
+}
+
+zpd_winui3_window* zpd_winui3_window_create() {
   return create<zpd_winui3_window>([] { return new zpd_winui3_window(); });
 }
 
@@ -359,6 +381,87 @@ bool zpd_winui3_dispatcher_try_enqueue(const zpd_winui3_dispatcher* dispatcher, 
   } catch (...) {
     return false;
   }
+}
+
+zpd_winui3_dispatcher_source* zpd_winui3_dispatcher_source_create(const zpd_winui3_dispatcher* dispatcher, const void* data, zpd_winui3_invoke_fn invoke, zpd_winui3_release_fn release) {
+  if (!dispatcher || !invoke) {
+    if (data && release) release(data);
+    return nullptr;
+  }
+  try {
+    auto state = std::make_shared<DispatcherSourceState>();
+    state->queue = dispatcher->queue;
+    state->data = data;
+    state->invoke = invoke;
+    state->release = release;
+    return new zpd_winui3_dispatcher_source{std::move(state)};
+  } catch (...) {
+    if (data && release) release(data);
+    return nullptr;
+  }
+}
+
+void zpd_winui3_dispatcher_source_release(zpd_winui3_dispatcher_source* source) {
+  if (!source) return;
+  const void* data{};
+  zpd_winui3_release_fn release{};
+  {
+    std::scoped_lock lock(source->state->mutex);
+    source->state->active = false;
+    source->state->scheduled = false;
+    data = std::exchange(source->state->data, nullptr);
+    release = std::exchange(source->state->release, nullptr);
+    source->state->invoke = nullptr;
+  }
+  if (data && release) release(data);
+  delete source;
+}
+
+zpd_winui3_dispatcher_signaler* zpd_winui3_dispatcher_source_signaler(const zpd_winui3_dispatcher_source* source) {
+  if (!source) return nullptr;
+  return create<zpd_winui3_dispatcher_signaler>([&] { return new zpd_winui3_dispatcher_signaler{source->state}; });
+}
+
+zpd_winui3_dispatcher_signaler* zpd_winui3_dispatcher_signaler_clone(const zpd_winui3_dispatcher_signaler* signaler) {
+  if (!signaler) return nullptr;
+  return create<zpd_winui3_dispatcher_signaler>([&] { return new zpd_winui3_dispatcher_signaler{signaler->state}; });
+}
+
+void zpd_winui3_dispatcher_signaler_release(zpd_winui3_dispatcher_signaler* signaler) { delete signaler; }
+
+bool zpd_winui3_dispatcher_signaler_signal(const zpd_winui3_dispatcher_signaler* signaler) {
+  if (!signaler) return false;
+  auto state = signaler->state.lock();
+  if (!state) return false;
+  {
+    std::scoped_lock lock(state->mutex);
+    if (!state->active) return false;
+    if (state->scheduled) return true;
+    state->scheduled = true;
+  }
+  try {
+    auto weak = std::weak_ptr<DispatcherSourceState>(state);
+    if (state->queue.TryEnqueue(DispatcherQueuePriority::Normal, [weak] {
+      auto state = weak.lock();
+      if (!state) return;
+      const void* data{};
+      zpd_winui3_invoke_fn invoke{};
+      {
+        std::scoped_lock lock(state->mutex);
+        state->scheduled = false;
+        if (!state->active) return;
+        data = state->data;
+        invoke = state->invoke;
+      }
+      if (data && invoke) invoke(data);
+    })) {
+      return true;
+    }
+  } catch (...) {
+  }
+  std::scoped_lock lock(state->mutex);
+  state->scheduled = false;
+  return false;
 }
 
 void zpd_winui3_window_release(zpd_winui3_window* window) {

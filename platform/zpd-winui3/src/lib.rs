@@ -10,6 +10,9 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static APPLICATION_OWNED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Error(pub i32);
@@ -28,6 +31,19 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplicationCreateError {
+    AlreadyCreated,
+}
+
+impl std::fmt::Display for ApplicationCreateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a WinUI Application has already been created")
+    }
+}
+
+impl std::error::Error for ApplicationCreateError {}
+
 fn check(status: i32) -> Result<()> {
     if status >= 0 {
         Ok(())
@@ -42,13 +58,24 @@ fn abort_on_panic(body: impl FnOnce()) {
     }
 }
 
-pub struct Application;
+pub struct Application {
+    _main_thread: PhantomData<Rc<()>>,
+}
 
 impl Application {
+    pub fn new() -> std::result::Result<Self, ApplicationCreateError> {
+        APPLICATION_OWNED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| ApplicationCreateError::AlreadyCreated)?;
+        Ok(Self {
+            _main_thread: PhantomData,
+        })
+    }
+
     /// Starts WinUI and invokes `launched` on its UI thread.
-    pub fn run<F, S>(launched: F) -> Result<()>
+    pub fn run<F, S>(self, launched: F) -> Result<()>
     where
-        F: FnOnce(&AppContext) -> S + 'static,
+        F: FnOnce(&ApplicationContext) -> S + 'static,
         S: 'static,
     {
         struct State<F, S> {
@@ -58,16 +85,22 @@ impl Application {
 
         unsafe extern "C" fn launch<F, S>(context: *const ffi::AppContext, data: *const c_void)
         where
-            F: FnOnce(&AppContext) -> S,
+            F: FnOnce(&ApplicationContext) -> S,
         {
             abort_on_panic(|| {
                 // SAFETY: Native code invokes this with the allocation transferred below.
                 let state = unsafe { &mut *data.cast_mut().cast::<State<F, S>>() };
                 let callback = state.callback.take().expect("launch callback ran twice");
-                state.application_state = Some(callback(&AppContext {
-                    raw: context,
+                // SAFETY: The launch context owns a live dispatcher for this callback.
+                let dispatcher = unsafe { ffi::zpd_winui3_app_dispatcher(context) };
+                let context = ApplicationContext {
+                    dispatcher: DispatcherQueue {
+                        raw: NonNull::new(dispatcher)
+                            .expect("WinUI launch did not provide a DispatcherQueue"),
+                    },
                     _main_thread: PhantomData,
-                }));
+                };
+                state.application_state = Some(callback(&context));
             });
         }
 
@@ -89,27 +122,44 @@ impl Application {
     }
 }
 
-pub struct AppContext<'application> {
-    raw: *const ffi::AppContext,
-    _main_thread: PhantomData<&'application Rc<()>>,
+impl Drop for Application {
+    fn drop(&mut self) {
+        APPLICATION_OWNED.store(false, Ordering::Release);
+    }
 }
 
-impl AppContext<'_> {
-    pub fn dispatcher_queue(&self) -> Result<DispatcherQueue> {
-        // SAFETY: The context is valid for the synchronous launch callback.
-        let raw = unsafe { ffi::zpd_winui3_app_dispatcher(self.raw) };
-        Ok(DispatcherQueue {
-            raw: NonNull::new(raw).ok_or(Error(-1))?,
-        })
+pub struct ApplicationContext {
+    dispatcher: DispatcherQueue,
+    _main_thread: PhantomData<Rc<()>>,
+}
+
+impl Clone for ApplicationContext {
+    fn clone(&self) -> Self {
+        Self {
+            dispatcher: self.dispatcher.clone(),
+            _main_thread: PhantomData,
+        }
+    }
+}
+
+impl ApplicationContext {
+    #[must_use]
+    pub fn dispatcher_queue(&self) -> DispatcherQueue {
+        self.dispatcher.clone()
     }
 
     pub fn create_window(&self) -> Result<Window> {
-        // SAFETY: The context proves this call is on the initialized UI thread.
-        let raw = unsafe { ffi::zpd_winui3_window_create(self.raw) };
+        // SAFETY: ApplicationContext is restricted to the initialized UI thread.
+        let raw = unsafe { ffi::zpd_winui3_window_create() };
         Ok(Window {
             raw: NonNull::new(raw).ok_or(Error(-1))?,
             _main_thread: PhantomData,
         })
+    }
+
+    pub fn exit(&self) -> Result<()> {
+        // SAFETY: ApplicationContext is restricted to the initialized UI thread.
+        check(unsafe { ffi::zpd_winui3_application_exit() })
     }
 }
 
@@ -181,6 +231,93 @@ impl Drop for DispatcherQueue {
     fn drop(&mut self) {
         // SAFETY: This releases one independently owned native wrapper.
         unsafe { ffi::zpd_winui3_dispatcher_release(self.raw.as_ptr()) };
+    }
+}
+
+/// Owns a UI-thread callback scheduled through a DispatcherQueue.
+pub struct DispatcherQueueSource<'callback> {
+    raw: NonNull<ffi::DispatcherQueueSource>,
+    _callback: PhantomData<&'callback mut ()>,
+    _main_thread: PhantomData<Rc<()>>,
+}
+
+impl DispatcherQueue {
+    pub fn create_source<'callback, F>(
+        &self,
+        callback: F,
+    ) -> Result<DispatcherQueueSource<'callback>>
+    where
+        F: FnMut() + 'callback,
+    {
+        let callback = Rc::into_raw(Rc::new(RefCell::new(callback)));
+        // SAFETY: Native code takes ownership of one Rc strong reference,
+        // including when source creation fails.
+        let raw = unsafe {
+            ffi::zpd_winui3_dispatcher_source_create(
+                self.raw.as_ptr(),
+                callback.cast(),
+                invoke_unit::<F>,
+                release_callback::<F>,
+            )
+        };
+        Ok(DispatcherQueueSource {
+            raw: NonNull::new(raw).ok_or(Error(-1))?,
+            _callback: PhantomData,
+            _main_thread: PhantomData,
+        })
+    }
+}
+
+impl DispatcherQueueSource<'_> {
+    pub fn signaler(&self) -> Result<DispatcherQueueSignaler> {
+        // SAFETY: `self.raw` identifies a live source on its UI thread.
+        let raw = unsafe { ffi::zpd_winui3_dispatcher_source_signaler(self.raw.as_ptr()) };
+        Ok(DispatcherQueueSignaler {
+            raw: NonNull::new(raw).ok_or(Error(-1))?,
+        })
+    }
+}
+
+impl Drop for DispatcherQueueSource<'_> {
+    fn drop(&mut self) {
+        // SAFETY: The source and its callback are released once on the UI thread.
+        unsafe { ffi::zpd_winui3_dispatcher_source_release(self.raw.as_ptr()) };
+    }
+}
+
+/// Thread-safe weak signal handle for a DispatcherQueueSource.
+pub struct DispatcherQueueSignaler {
+    raw: NonNull<ffi::DispatcherQueueSignaler>,
+}
+
+// SAFETY: Native signalers contain only a synchronized weak source reference.
+unsafe impl Send for DispatcherQueueSignaler {}
+// SAFETY: Native signal operations synchronize all shared source state.
+unsafe impl Sync for DispatcherQueueSignaler {}
+
+impl Clone for DispatcherQueueSignaler {
+    fn clone(&self) -> Self {
+        // SAFETY: `self.raw` identifies a live signaler wrapper.
+        let raw = unsafe { ffi::zpd_winui3_dispatcher_signaler_clone(self.raw.as_ptr()) };
+        Self {
+            raw: NonNull::new(raw).expect("failed to clone DispatcherQueueSignaler"),
+        }
+    }
+}
+
+impl DispatcherQueueSignaler {
+    /// Schedules the source callback without invoking it inline.
+    #[must_use]
+    pub fn signal(&self) -> bool {
+        // SAFETY: Native signalers may be used concurrently from any thread.
+        unsafe { ffi::zpd_winui3_dispatcher_signaler_signal(self.raw.as_ptr()) }
+    }
+}
+
+impl Drop for DispatcherQueueSignaler {
+    fn drop(&mut self) {
+        // SAFETY: This releases one independently owned signaler wrapper.
+        unsafe { ffi::zpd_winui3_dispatcher_signaler_release(self.raw.as_ptr()) };
     }
 }
 
@@ -884,6 +1021,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn application_ownership_is_unique_and_released_on_drop() {
+        // Verifies one Application token owns process-wide startup permission at a time.
+        let application = Application::new().unwrap();
+        assert_eq!(
+            Application::new().err(),
+            Some(ApplicationCreateError::AlreadyCreated)
+        );
+        drop(application);
+        assert!(Application::new().is_ok());
+    }
 
     #[test]
     fn grid_lengths_preserve_winui_kinds_and_values() {

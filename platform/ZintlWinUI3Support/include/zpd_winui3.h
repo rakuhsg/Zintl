@@ -11,6 +11,8 @@ extern "C" {
 
 typedef struct zpd_winui3_app_context zpd_winui3_app_context;
 typedef struct zpd_winui3_dispatcher zpd_winui3_dispatcher;
+typedef struct zpd_winui3_dispatcher_source zpd_winui3_dispatcher_source;
+typedef struct zpd_winui3_dispatcher_signaler zpd_winui3_dispatcher_signaler;
 typedef struct zpd_winui3_window zpd_winui3_window;
 typedef struct zpd_winui3_element zpd_winui3_element;
 
@@ -65,7 +67,8 @@ int32_t zpd_winui3_application_run(
     zpd_winui3_release_fn release);
 
 zpd_winui3_dispatcher* zpd_winui3_app_dispatcher(const zpd_winui3_app_context* context);
-zpd_winui3_window* zpd_winui3_window_create(const zpd_winui3_app_context* context);
+int32_t zpd_winui3_application_exit(void);
+zpd_winui3_window* zpd_winui3_window_create(void);
 
 zpd_winui3_dispatcher* zpd_winui3_dispatcher_clone(const zpd_winui3_dispatcher* dispatcher);
 void zpd_winui3_dispatcher_release(zpd_winui3_dispatcher* dispatcher);
@@ -75,6 +78,19 @@ bool zpd_winui3_dispatcher_try_enqueue(
     const void* user_data,
     zpd_winui3_invoke_fn invoke,
     zpd_winui3_release_fn release);
+zpd_winui3_dispatcher_source* zpd_winui3_dispatcher_source_create(
+    const zpd_winui3_dispatcher* dispatcher,
+    const void* user_data,
+    zpd_winui3_invoke_fn invoke,
+    zpd_winui3_release_fn release);
+void zpd_winui3_dispatcher_source_release(zpd_winui3_dispatcher_source* source);
+zpd_winui3_dispatcher_signaler* zpd_winui3_dispatcher_source_signaler(
+    const zpd_winui3_dispatcher_source* source);
+zpd_winui3_dispatcher_signaler* zpd_winui3_dispatcher_signaler_clone(
+    const zpd_winui3_dispatcher_signaler* signaler);
+void zpd_winui3_dispatcher_signaler_release(zpd_winui3_dispatcher_signaler* signaler);
+bool zpd_winui3_dispatcher_signaler_signal(
+    const zpd_winui3_dispatcher_signaler* signaler);
 
 void zpd_winui3_window_release(zpd_winui3_window* window);
 int32_t zpd_winui3_window_set_title(zpd_winui3_window* window, zpd_winui3_string title);

@@ -11,6 +11,16 @@ pub struct DispatcherQueue {
 }
 
 #[repr(C)]
+pub struct DispatcherQueueSource {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct DispatcherQueueSignaler {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 pub struct Window {
     _private: [u8; 0],
 }
@@ -85,7 +95,8 @@ unsafe extern "C" {
         release: ReleaseFn,
     ) -> i32;
     pub fn zpd_winui3_app_dispatcher(context: *const AppContext) -> *mut DispatcherQueue;
-    pub fn zpd_winui3_window_create(context: *const AppContext) -> *mut Window;
+    pub fn zpd_winui3_application_exit() -> i32;
+    pub fn zpd_winui3_window_create() -> *mut Window;
     pub fn zpd_winui3_dispatcher_clone(dispatcher: *const DispatcherQueue) -> *mut DispatcherQueue;
     pub fn zpd_winui3_dispatcher_release(dispatcher: *mut DispatcherQueue);
     pub fn zpd_winui3_dispatcher_try_enqueue(
@@ -95,6 +106,21 @@ unsafe extern "C" {
         invoke: InvokeFn,
         release: ReleaseFn,
     ) -> bool;
+    pub fn zpd_winui3_dispatcher_source_create(
+        dispatcher: *const DispatcherQueue,
+        data: *const c_void,
+        invoke: InvokeFn,
+        release: ReleaseFn,
+    ) -> *mut DispatcherQueueSource;
+    pub fn zpd_winui3_dispatcher_source_release(source: *mut DispatcherQueueSource);
+    pub fn zpd_winui3_dispatcher_source_signaler(
+        source: *const DispatcherQueueSource,
+    ) -> *mut DispatcherQueueSignaler;
+    pub fn zpd_winui3_dispatcher_signaler_clone(
+        signaler: *const DispatcherQueueSignaler,
+    ) -> *mut DispatcherQueueSignaler;
+    pub fn zpd_winui3_dispatcher_signaler_release(signaler: *mut DispatcherQueueSignaler);
+    pub fn zpd_winui3_dispatcher_signaler_signal(signaler: *const DispatcherQueueSignaler) -> bool;
     pub fn zpd_winui3_window_release(window: *mut Window);
     pub fn zpd_winui3_window_set_title(window: *mut Window, title: StringRef) -> i32;
     pub fn zpd_winui3_window_resize(window: *mut Window, width: i32, height: i32) -> i32;

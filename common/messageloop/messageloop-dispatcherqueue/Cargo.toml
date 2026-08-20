@@ -1,0 +1,25 @@
+[package]
+name = "messageloop-dispatcherqueue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+messageloop-core = { path = "../messageloop-core" }
+
+[target.'cfg(windows)'.dependencies]
+zpd-winui3 = { path = "../../../platform/zpd-winui3" }
+
+[[test]]
+name = "dispatcherqueue"
+path = "tests/dispatcherqueue.rs"
+harness = false
+
+[[test]]
+name = "dispatcherqueue-external-exit"
+path = "tests/external_exit.rs"
+harness = false
+
+[lints]
+workspace = true
