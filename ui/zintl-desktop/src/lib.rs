@@ -240,39 +240,15 @@ impl View for Button {
 
 #[derive(Clone)]
 pub struct TextField {
-    value: TextFieldValue,
+    binding: Option<Store<String>>,
     placeholder: Option<String>,
     layout: LayoutStyle,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum TextFieldValue {
-    Literal(String),
-    Store(Store<String>),
-}
-
-impl From<String> for TextFieldValue {
-    fn from(value: String) -> Self {
-        Self::Literal(value)
-    }
-}
-
-impl From<&str> for TextFieldValue {
-    fn from(value: &str) -> Self {
-        Self::Literal(value.into())
-    }
-}
-
-impl From<Store<String>> for TextFieldValue {
-    fn from(store: Store<String>) -> Self {
-        Self::Store(store)
-    }
-}
-
 impl TextField {
-    pub fn new(value: impl Into<TextFieldValue>) -> Self {
+    pub fn new() -> Self {
         Self {
-            value: value.into(),
+            binding: None,
             placeholder: None,
             layout: LayoutStyle::leaf(Size::new(160.0, 28.0)),
         }
@@ -280,6 +256,11 @@ impl TextField {
 
     pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    pub fn bind(mut self, store: Store<String>) -> Self {
+        self.binding = Some(store);
         self
     }
 
@@ -293,14 +274,14 @@ impl View for TextField {
     type Output = RenderNode;
 
     fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        let (value, binding) = match &self.value {
-            TextFieldValue::Literal(value) => (value.clone(), None),
-            TextFieldValue::Store(store) => (cx.get(*store).clone(), Some(*store)),
-        };
+        let value = self
+            .binding
+            .map(|store| cx.get(store).clone())
+            .unwrap_or_default();
         Element::node(RenderNode::TextField {
             value,
             placeholder: self.placeholder.clone(),
-            binding,
+            binding: self.binding,
             layout: self.layout,
         })
     }
@@ -600,8 +581,8 @@ mod tests {
                 .value
                 .expect("BoundLabelView must be initialized before rendering");
             VStack::new((
-                TextField::new(store),
-                cx.bind(store, |value| Text::new(format!("Stored value: {value}"))),
+                TextField::new().bind(store),
+                cx.watch(store, |value| Text::new(format!("Stored value: {value}"))),
             ))
         }
     }
@@ -614,7 +595,7 @@ mod tests {
         }
 
         fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = RenderNode> {
-            TextField::new(
+            TextField::new().bind(
                 self.value
                     .expect("StoreTextFieldView must be initialized before rendering"),
             )
@@ -652,7 +633,7 @@ mod tests {
         // Verifies desktop layout decisions are retained for the platform backend.
         let app = App::new(
             Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Zintl")
-                .content(HStack::new((Button::new("Save"), TextField::new(""))).spacing(12.0)),
+                .content(HStack::new((Button::new("Save"), TextField::new())).spacing(12.0)),
         );
         let tree = app.render_tree();
         let stack = &tree.children[0];
@@ -714,8 +695,8 @@ mod tests {
     }
 
     #[test]
-    fn store_binding_rebuilds_only_its_dependent_element() {
-        // Verifies cx.bind updates its label without subscribing the enclosing view.
+    fn store_watcher_rebuilds_only_its_dependent_element() {
+        // Verifies cx.watch updates its label without subscribing the enclosing view.
         let renders = Rc::new(Cell::new(0));
         let mut app = App::new(BoundLabelView {
             value: None,
