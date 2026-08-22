@@ -248,15 +248,15 @@ mod backend {
                 let new_window = !windows.contains_key(&window_id);
                 if new_window {
                     let window = application.create_window(()).map_err(AppError::Window)?;
+                    window
+                        .set_bounds(native_rect(bounds))
+                        .map_err(AppError::Window)?;
                     windows.insert(window_id, window);
                 }
                 let window = windows
                     .get(&window_id)
                     .expect("a synchronized window must exist");
                 window.set_title(&title).map_err(AppError::Window)?;
-                window
-                    .set_bounds(native_rect(bounds))
-                    .map_err(AppError::Window)?;
 
                 self.materialize_children(application, window_id)?;
                 if rebuild_structure {

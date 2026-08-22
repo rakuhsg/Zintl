@@ -87,13 +87,13 @@ impl Context<'_> {
             .expect("store handle must belong to this composer")
     }
 
-    pub fn bind<T, F, E>(&self, store: Store<T>, render: F) -> StoreBinding<T, F, E>
+    pub fn watch<T, F, E>(&self, store: Store<T>, render: F) -> StoreWatcher<T, F, E>
     where
         T: 'static,
         F: Fn(&T) -> E + 'static,
         E: IntoElement + 'static,
     {
-        StoreBinding {
+        StoreWatcher {
             store,
             render,
             element: PhantomData,
@@ -115,13 +115,13 @@ impl Context<'_> {
     }
 }
 
-pub struct StoreBinding<T: 'static, F, E> {
+pub struct StoreWatcher<T: 'static, F, E> {
     store: Store<T>,
     render: F,
     element: PhantomData<fn(&T) -> E>,
 }
 
-impl<T: 'static, F: Clone, E> Clone for StoreBinding<T, F, E> {
+impl<T: 'static, F: Clone, E> Clone for StoreWatcher<T, F, E> {
     fn clone(&self) -> Self {
         Self {
             store: self.store,
@@ -131,13 +131,13 @@ impl<T: 'static, F: Clone, E> Clone for StoreBinding<T, F, E> {
     }
 }
 
-struct StoreBindingBuilder<T: 'static, F, E> {
+struct StoreWatcherBuilder<T: 'static, F, E> {
     store: Store<T>,
     render: F,
     element: PhantomData<fn(&T) -> E>,
 }
 
-impl<T, F, E> BoundBuilder<E::Output> for StoreBindingBuilder<T, F, E>
+impl<T, F, E> BoundBuilder<E::Output> for StoreWatcherBuilder<T, F, E>
 where
     T: 'static,
     F: Fn(&T) -> E + 'static,
@@ -152,7 +152,7 @@ where
     }
 }
 
-impl<T, F, E> IntoElement for StoreBinding<T, F, E>
+impl<T, F, E> IntoElement for StoreWatcher<T, F, E>
 where
     T: 'static,
     F: Fn(&T) -> E + 'static,
@@ -163,7 +163,7 @@ where
     fn into_element(self) -> Element<Self::Output> {
         Element::Bound(Bound {
             key: None,
-            builder: Box::new(StoreBindingBuilder {
+            builder: Box::new(StoreWatcherBuilder {
                 store: self.store,
                 render: self.render,
                 element: PhantomData,
