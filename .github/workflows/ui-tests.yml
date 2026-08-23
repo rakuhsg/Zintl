@@ -1,0 +1,34 @@
+name: UI Tests
+
+on:
+  pull_request:
+    paths:
+      - "ui/**"
+      - "platform/zpd-appkit/**"
+      - "platform/ZintlAppkitSupport/**"
+      - "tests/ui/**"
+      - ".github/workflows/ui-tests.yml"
+  push:
+    paths:
+      - "ui/**"
+      - "platform/zpd-appkit/**"
+      - "platform/ZintlAppkitSupport/**"
+      - "tests/ui/**"
+      - ".github/workflows/ui-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xcuitest:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: ./tests/ui/tools/scripts/test.sh
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZintlUITests-xcresult
+          path: tests/ui/target/ZintlUITests.xcresult

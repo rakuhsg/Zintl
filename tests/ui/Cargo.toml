@@ -1,0 +1,13 @@
+[package]
+name = "zintl-ui-test-app"
+edition = "2024"
+publish = false
+build = "tools/rust-build.rs"
+autotests = false
+
+[[bin]]
+name = "zintl-ui-test-app"
+path = "tests/app/main.rs"
+
+[dependencies]
+zintl-desktop = { path = "../../ui/zintl-desktop" }

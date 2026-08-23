@@ -98,6 +98,13 @@ private func withProbe(
   #expect(!nativeWindow.window.isReleasedWhenClosed)
   withZintlString("Zintl") { zintlAppkitWindowSetTitle(ptr: window, title: $0) }
   #expect(nativeWindow.window.title == "Zintl")
+  withZintlString("main-window") {
+    zintlAppkitWindowSetIdentifier(
+      ptr: window,
+      identifier: ZintlOptionalString(value: $0, is_some: true)
+    )
+  }
+  #expect(nativeWindow.window.accessibilityIdentifier() == "main-window")
   nativeWindow.dispatchClickIfOpen()
   let closeButton = try #require(nativeWindow.window.standardWindowButton(.closeButton))
   closeButton.performClick(nil)
@@ -240,7 +247,14 @@ private func withProbe(
     Unmanaged<NSTextField>.fromOpaque(textField).takeUnretainedValue()
   var nativeConstraint: NSLayoutConstraint? =
     Unmanaged<NSLayoutConstraint>.fromOpaque(constraint).takeUnretainedValue()
+  withZintlString("save-button") {
+    zintlAppkitViewSetIdentifier(
+      view: button,
+      identifier: ZintlOptionalString(value: $0, is_some: true)
+    )
+  }
   #expect(nativeButton?.superview != nil)
+  #expect(nativeButton?.accessibilityIdentifier() == "save-button")
   #expect(nativeConstraint?.isActive == true)
   #expect(nativeConstraint?.constant == 20)
 
