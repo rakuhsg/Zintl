@@ -53,6 +53,7 @@ unsafe extern "C" {
     ) -> *const c_void;
     pub fn zintlappkit_show_window(ptr: *const c_void);
     pub fn zintlappkit_window_set_title(ptr: *const c_void, title: NativeString);
+    pub fn zintlappkit_window_set_identifier(ptr: *const c_void, identifier: NativeOptionalString);
     pub fn zintlappkit_window_set_bounds(ptr: *const c_void, bounds: Rect);
     pub fn zintlappkit_window_set_size(ptr: *const c_void, width: f64, height: f64);
     pub fn zintlappkit_window_set_position(ptr: *const c_void, x: f64, y: f64);
@@ -70,6 +71,7 @@ unsafe extern "C" {
     pub fn zintlappkit_view_add_subview(parent: *const c_void, child: *const c_void);
     pub fn zintlappkit_view_remove_from_superview(view: *const c_void);
     pub fn zintlappkit_view_set_frame(view: *const c_void, frame: Rect);
+    pub fn zintlappkit_view_set_identifier(view: *const c_void, identifier: NativeOptionalString);
     pub fn zintlappkit_view_set_translates_autoresizing_mask_into_constraints(
         view: *const c_void,
         enabled: bool,

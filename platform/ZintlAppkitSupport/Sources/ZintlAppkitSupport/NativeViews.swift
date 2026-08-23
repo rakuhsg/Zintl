@@ -175,6 +175,15 @@ func zintlAppkitViewSetFrame(view: UnsafeRawPointer, frame: ZintlRect) {
 }
 
 @MainActor
+@_cdecl("zintlappkit_view_set_identifier")
+func zintlAppkitViewSetIdentifier(
+  view: UnsafeRawPointer,
+  identifier: ZintlOptionalString
+) {
+  zintlView(view).setAccessibilityIdentifier(zintlOptionalString(identifier))
+}
+
+@MainActor
 @_cdecl("zintlappkit_view_set_translates_autoresizing_mask_into_constraints")
 func zintlAppkitViewSetTranslatesAutoresizingMaskIntoConstraints(
   view: UnsafeRawPointer,

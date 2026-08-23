@@ -29,23 +29,28 @@ pub enum RenderNode {
     Text {
         content: String,
         layout: LayoutStyle,
+        id: Option<String>,
     },
     Button {
         title: String,
         layout: LayoutStyle,
+        id: Option<String>,
     },
     TextField {
         value: String,
         placeholder: Option<String>,
         binding: Option<Store<String>>,
         layout: LayoutStyle,
+        id: Option<String>,
     },
     Container {
         layout: LayoutStyle,
+        id: Option<String>,
     },
     Window {
         bounds: Rect,
         title: String,
+        id: Option<String>,
     },
 }
 
@@ -68,19 +73,26 @@ impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
         use zintl_ui_appkit::{NodeKind, ViewKind};
 
         match self {
-            Self::Text { content, layout } => NodeKind::View {
+            Self::Text {
+                content,
+                layout,
+                id,
+            } => NodeKind::View {
                 kind: ViewKind::Label(content.clone()),
                 layout: *layout,
+                id: id.clone(),
             },
-            Self::Button { title, layout } => NodeKind::View {
+            Self::Button { title, layout, id } => NodeKind::View {
                 kind: ViewKind::Button(title.clone()),
                 layout: *layout,
+                id: id.clone(),
             },
             Self::TextField {
                 value,
                 placeholder,
                 binding,
                 layout,
+                id,
             } => NodeKind::View {
                 kind: ViewKind::TextField {
                     value: value.clone(),
@@ -88,14 +100,17 @@ impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
                     on_change: binding.is_some(),
                 },
                 layout: *layout,
+                id: id.clone(),
             },
-            Self::Container { layout } => NodeKind::View {
+            Self::Container { layout, id } => NodeKind::View {
                 kind: ViewKind::Container,
                 layout: *layout,
+                id: id.clone(),
             },
-            Self::Window { bounds, title } => NodeKind::Window {
+            Self::Window { bounds, title, id } => NodeKind::Window {
                 bounds: zintl_ui_appkit::Rect::new(bounds.x, bounds.y, bounds.width, bounds.height),
                 title: title.clone(),
+                id: id.clone(),
             },
         }
     }
@@ -139,6 +154,7 @@ impl_children_tuple!(A:a, B:b, C:c, D:d, E:e, F:f);
 pub struct Window<C = Empty> {
     bounds: Rect,
     title: String,
+    id: Option<String>,
     children: C,
 }
 
@@ -147,16 +163,23 @@ impl Window<Empty> {
         Self {
             bounds,
             title: title.into(),
+            id: None,
             children: Empty,
         }
     }
 }
 
 impl<C> Window<C> {
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
     pub fn content<V>(self, content: V) -> Window<(V,)> {
         Window {
             bounds: self.bounds,
             title: self.title,
+            id: self.id,
             children: (content,),
         }
     }
@@ -169,6 +192,7 @@ impl<C: Children> View for Window<C> {
         Element::node(RenderNode::Window {
             bounds: self.bounds,
             title: self.title.clone(),
+            id: self.id.clone(),
         })
         .with_children(self.children.elements())
     }
@@ -178,6 +202,7 @@ impl<C: Children> View for Window<C> {
 pub struct Text {
     content: String,
     layout: LayoutStyle,
+    id: Option<String>,
 }
 
 impl Text {
@@ -187,7 +212,13 @@ impl Text {
         Self {
             content,
             layout: LayoutStyle::leaf(Size::new(minimum_width, 20.0)),
+            id: None,
         }
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     pub fn minimum_size(mut self, size: Size) -> Self {
@@ -203,6 +234,7 @@ impl View for Text {
         Element::node(RenderNode::Text {
             content: self.content.clone(),
             layout: self.layout,
+            id: self.id.clone(),
         })
     }
 }
@@ -211,6 +243,7 @@ impl View for Text {
 pub struct Button {
     title: String,
     layout: LayoutStyle,
+    id: Option<String>,
 }
 
 impl Button {
@@ -218,7 +251,13 @@ impl Button {
         Self {
             title: title.into(),
             layout: LayoutStyle::leaf(Size::new(80.0, 32.0)),
+            id: None,
         }
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     pub fn minimum_size(mut self, size: Size) -> Self {
@@ -234,6 +273,7 @@ impl View for Button {
         Element::node(RenderNode::Button {
             title: self.title.clone(),
             layout: self.layout,
+            id: self.id.clone(),
         })
     }
 }
@@ -243,6 +283,7 @@ pub struct TextField {
     binding: Option<Store<String>>,
     placeholder: Option<String>,
     layout: LayoutStyle,
+    id: Option<String>,
 }
 
 impl TextField {
@@ -251,7 +292,13 @@ impl TextField {
             binding: None,
             placeholder: None,
             layout: LayoutStyle::leaf(Size::new(160.0, 28.0)),
+            id: None,
         }
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
@@ -283,6 +330,7 @@ impl View for TextField {
             placeholder: self.placeholder.clone(),
             binding: self.binding,
             layout: self.layout,
+            id: self.id.clone(),
         })
     }
 }
@@ -291,6 +339,7 @@ impl View for TextField {
 pub struct HStack<C> {
     children: C,
     layout: LayoutStyle,
+    id: Option<String>,
 }
 
 impl<C> HStack<C> {
@@ -298,7 +347,13 @@ impl<C> HStack<C> {
         Self {
             children,
             layout: LayoutStyle::stack(Axis::Horizontal, 8.0),
+            id: None,
         }
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     pub fn spacing(mut self, spacing: f32) -> Self {
@@ -318,6 +373,7 @@ impl<C: Children> View for HStack<C> {
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
         Element::node(RenderNode::Container {
             layout: self.layout,
+            id: self.id.clone(),
         })
         .with_children(self.children.elements())
     }
@@ -327,6 +383,7 @@ impl<C: Children> View for HStack<C> {
 pub struct VStack<C> {
     children: C,
     layout: LayoutStyle,
+    id: Option<String>,
 }
 
 impl<C> VStack<C> {
@@ -334,7 +391,13 @@ impl<C> VStack<C> {
         Self {
             children,
             layout: LayoutStyle::stack(Axis::Vertical, 8.0),
+            id: None,
         }
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     pub fn spacing(mut self, spacing: f32) -> Self {
@@ -354,6 +417,7 @@ impl<C: Children> View for VStack<C> {
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
         Element::node(RenderNode::Container {
             layout: self.layout,
+            id: self.id.clone(),
         })
         .with_children(self.children.elements())
     }
@@ -623,7 +687,8 @@ mod tests {
             app.render(),
             RenderNode::Window {
                 bounds,
-                title: "Zintl".into()
+                title: "Zintl".into(),
+                id: None,
             }
         );
     }
@@ -642,6 +707,7 @@ mod tests {
             stack.value,
             RenderNode::Container {
                 layout: LayoutStyle::stack(Axis::Horizontal, 12.0),
+                id: None,
             }
         );
         assert!(matches!(
@@ -691,6 +757,26 @@ mod tests {
         assert!(matches!(
             app.render(),
             RenderNode::TextField { value, .. } if value == "typed value"
+        ));
+    }
+
+    #[test]
+    fn view_ids_are_preserved_in_the_render_tree() {
+        // Verifies stable IDs survive declarative rendering for platform accessibility backends.
+        let app = App::new(
+            Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Zintl")
+                .id("main-window")
+                .content(TextField::new().id("name-input")),
+        );
+        let tree = app.render_tree();
+
+        assert!(matches!(
+            &tree.value,
+            RenderNode::Window { id: Some(id), .. } if id == "main-window"
+        ));
+        assert!(matches!(
+            &tree.children[0].value,
+            RenderNode::TextField { id: Some(id), .. } if id == "name-input"
         ));
     }
 

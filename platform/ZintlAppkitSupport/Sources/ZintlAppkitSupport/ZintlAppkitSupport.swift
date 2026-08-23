@@ -781,6 +781,16 @@ func zintlAppkitWindowSetTitle(ptr: UnsafeRawPointer, title: ZintlString) {
 }
 
 @MainActor
+@_cdecl("zintlappkit_window_set_identifier")
+func zintlAppkitWindowSetIdentifier(
+  ptr: UnsafeRawPointer,
+  identifier: ZintlOptionalString
+) {
+  let zintlWindow = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()
+  zintlWindow.window.setAccessibilityIdentifier(zintlOptionalString(identifier))
+}
+
+@MainActor
 @_cdecl("zintlappkit_window_set_bounds")
 func zintlAppkitWindowSetBounds(ptr: UnsafeRawPointer, bounds: ZintlRect) {
   let wnd = Unmanaged<ZintlWindow>.fromOpaque(ptr).takeUnretainedValue()

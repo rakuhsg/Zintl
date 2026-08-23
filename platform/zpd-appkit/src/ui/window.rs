@@ -8,7 +8,7 @@ use std::rc::Rc;
 #[cfg(feature = "wgpu")]
 use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
-use crate::string::NativeString;
+use crate::string::{NativeOptionalString, NativeString};
 use crate::{ffi, runloop::Application};
 
 use super::sidebar::{self, Sidebar, SidebarError};
@@ -214,6 +214,19 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
         // call, and this method runs on the AppKit main thread.
         unsafe {
             ffi::zintlappkit_window_set_title(self.raw.as_ptr(), NativeString::from_str(title))
+        };
+        Ok(())
+    }
+
+    pub fn set_identifier(&self, identifier: Option<&str>) -> Result<(), WindowError> {
+        self.ensure_open()?;
+        // SAFETY: The handle is valid, the optional string borrow covers the
+        // synchronous call, and this method runs on the AppKit main thread.
+        unsafe {
+            ffi::zintlappkit_window_set_identifier(
+                self.raw.as_ptr(),
+                NativeOptionalString::from_option(identifier),
+            )
         };
         Ok(())
     }

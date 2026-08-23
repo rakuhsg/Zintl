@@ -6,6 +6,7 @@ use std::rc::Rc;
 use crate::ffi;
 use crate::geometry::Rect;
 use crate::runloop::{Application, ApplicationDelegate};
+use crate::string::NativeOptionalString;
 
 use super::layout::{Dimension, LayoutAttribute, XAxisAnchor, YAxisAnchor};
 
@@ -118,6 +119,17 @@ impl<'view> ViewRef<'view> {
         unsafe { ffi::zintlappkit_view_set_frame(self.raw.as_ptr(), frame) };
     }
 
+    pub fn set_identifier(self, identifier: Option<&str>) {
+        // SAFETY: The borrowed view is live, the optional string borrow covers
+        // the synchronous call, and this call runs on the main thread.
+        unsafe {
+            ffi::zintlappkit_view_set_identifier(
+                self.raw.as_ptr(),
+                NativeOptionalString::from_option(identifier),
+            );
+        }
+    }
+
     pub fn set_translates_autoresizing_mask_into_constraints(self, enabled: bool) {
         // SAFETY: The borrowed view is live and this call runs on main.
         unsafe {
@@ -191,6 +203,10 @@ pub trait AsView {
 
     fn set_frame(&self, frame: Rect) {
         self.as_view().set_frame(frame);
+    }
+
+    fn set_identifier(&self, identifier: Option<&str>) {
+        self.as_view().set_identifier(identifier);
     }
 
     fn set_translates_autoresizing_mask_into_constraints(&self, enabled: bool) {

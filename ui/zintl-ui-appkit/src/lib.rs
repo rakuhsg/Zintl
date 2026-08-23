@@ -36,8 +36,16 @@ pub enum ViewKind {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
-    Window { bounds: Rect, title: String },
-    View { kind: ViewKind, layout: LayoutStyle },
+    Window {
+        bounds: Rect,
+        title: String,
+        id: Option<String>,
+    },
+    View {
+        kind: ViewKind,
+        layout: LayoutStyle,
+        id: Option<String>,
+    },
 }
 
 pub trait AppKitRenderNode: RenderNode {
@@ -241,7 +249,7 @@ mod backend {
                     .value(window_id)
                     .expect("window nodes have values")
                     .appkit_node();
-                let NodeKind::Window { bounds, title } = description else {
+                let NodeKind::Window { bounds, title, id } = description else {
                     continue;
                 };
 
@@ -257,6 +265,9 @@ mod backend {
                     .get(&window_id)
                     .expect("a synchronized window must exist");
                 window.set_title(&title).map_err(AppError::Window)?;
+                window
+                    .set_identifier(id.as_deref())
+                    .map_err(AppError::Window)?;
 
                 self.materialize_children(application, window_id)?;
                 if rebuild_structure {
@@ -302,7 +313,12 @@ mod backend {
             id: NodeId,
             description: &NodeKind,
         ) -> Result<Option<NativeNode>, AppError> {
-            let NodeKind::View { kind, .. } = description else {
+            let NodeKind::View {
+                kind,
+                id: accessibility_id,
+                ..
+            } = description
+            else {
                 return Ok(None);
             };
             let native = match kind {
@@ -331,6 +347,7 @@ mod backend {
                     NativeNode::TextField(field)
                 }
             };
+            native.as_view().set_identifier(accessibility_id.as_deref());
             Ok(Some(native))
         }
 
@@ -432,6 +449,12 @@ mod backend {
             let Some(native) = self.node(id).native.as_ref() else {
                 return;
             };
+            if let (NodeKind::View { id: old_id, .. }, NodeKind::View { id: new_id, .. }) =
+                (old, new)
+                && old_id != new_id
+            {
+                native.as_view().set_identifier(new_id.as_deref());
+            }
             match (native, old, new) {
                 (
                     NativeNode::Label(field),

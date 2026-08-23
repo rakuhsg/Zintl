@@ -74,6 +74,10 @@ void* zintlappkit_create_window(
 );
 void zintlappkit_show_window(const void* window);
 void zintlappkit_window_set_title(const void* window, ZintlString title);
+void zintlappkit_window_set_identifier(
+    const void* window,
+    ZintlOptionalString identifier
+);
 void zintlappkit_window_set_bounds(const void* window, ZintlRect bounds);
 void zintlappkit_window_set_size(const void* window, double width, double height);
 void zintlappkit_window_set_position(const void* window, double x, double y);
@@ -91,6 +95,10 @@ void zintlappkit_release_view(const void* view);
 void zintlappkit_view_add_subview(const void* parent, const void* child);
 void zintlappkit_view_remove_from_superview(const void* view);
 void zintlappkit_view_set_frame(const void* view, ZintlRect frame);
+void zintlappkit_view_set_identifier(
+    const void* view,
+    ZintlOptionalString identifier
+);
 void zintlappkit_view_set_translates_autoresizing_mask_into_constraints(
     const void* view,
     bool enabled
