@@ -1,14 +1,11 @@
-use std::cell::RefCell;
-
 use crate::native::{self, Strong};
 use crate::runloop::{Application, ApplicationDelegate};
 
 use super::callback;
-use super::view::{AsView, OwnedView, ViewError, ViewRef};
+use super::view::{AsView, ViewActor, ViewError, ViewRef};
 
 pub struct TextField {
-    view: OwnedView,
-    delegate: RefCell<Option<Strong>>,
+    view: ViewActor,
 }
 impl TextField {
     pub fn with_string<D: ApplicationDelegate>(
@@ -53,10 +50,14 @@ impl TextField {
             }
             object
         };
-        Ok(Self {
-            view: OwnedView::new(application, native),
-            delegate: RefCell::new(None),
-        })
+        let view = ViewActor::new(application, native);
+        application
+            .tree()
+            .add_teardown(view.actor(), |field| unsafe {
+                native::send_void_id(field, native::sel(b"setDelegate:\0"), native::NIL)
+            })
+            .map_err(ViewError::from)?;
+        Ok(Self { view })
     }
     pub fn set_string_value(&self, value: &str) -> Result<(), ViewError> {
         let value = native::nsstring(value);
@@ -98,17 +99,27 @@ impl TextField {
             let value = native::send_id(field, native::sel(b"stringValue\0"));
             callback_fn(native::rust_string(value));
         });
-        self.view.as_view().with(|field| unsafe {
-            native::send_void_id(field, native::sel(b"setDelegate:\0"), target.as_ptr())
-        })?;
-        *self.delegate.borrow_mut() = Some(target);
+        self.clear_change_handler()?;
+        let tree = self.view.actor().tree_handle().ok_or(ViewError::Closed)?;
+        let target = tree
+            .replace_owned(self.view.actor(), "delegate", target)
+            .map_err(ViewError::from)?;
+        tree.add_teardown(&target, |target| unsafe { callback::release(target) })
+            .map_err(ViewError::from)?;
+        self.view.as_view().with(|field| {
+            target.with(|target| unsafe {
+                native::send_void_id(field, native::sel(b"setDelegate:\0"), target)
+            })
+        })??;
         Ok(())
     }
     pub fn clear_change_handler(&self) -> Result<(), ViewError> {
         self.view.as_view().with(|field| unsafe {
             native::send_void_id(field, native::sel(b"setDelegate:\0"), native::NIL)
         })?;
-        self.delegate.borrow_mut().take();
+        let tree = self.view.actor().tree_handle().ok_or(ViewError::Closed)?;
+        tree.clear_owned(self.view.actor(), "delegate")
+            .map_err(ViewError::from)?;
         Ok(())
     }
 }

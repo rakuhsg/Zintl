@@ -1,6 +1,7 @@
 //! A main-thread message loop driven by a Core Foundation run loop source.
 
 #![cfg(target_os = "macos")]
+#![forbid(unsafe_code)]
 
 pub use messageloop_core::{SendError, Sender, SenderResult};
 use std::cell::{Cell, RefCell};
@@ -8,14 +9,56 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak};
+use zpd_appkit::actor::{ActorError, ActorRef, ApplicationMessage};
 use zpd_appkit::runloop::{
-    Application, ApplicationDelegate, RunLoopSource, RunLoopSourceError, RunLoopSourceSignaler,
+    Application, ApplicationDelegate, ContextRunLoopSource, RunLoopSourceError,
+    RunLoopSourceSignaler,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageLoopError {
+    NotMainThread,
+    NativeCreationFailed,
+    Application(ActorError),
+}
+
+impl std::fmt::Display for MessageLoopError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotMainThread => {
+                formatter.write_str("the AppKit message loop requires the main thread")
+            }
+            Self::NativeCreationFailed => {
+                formatter.write_str("Core Foundation failed to create a run-loop source")
+            }
+            Self::Application(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for MessageLoopError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Application(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<RunLoopSourceError> for MessageLoopError {
+    fn from(error: RunLoopSourceError) -> Self {
+        match error {
+            RunLoopSourceError::NotCurrent => Self::NotMainThread,
+            RunLoopSourceError::NativeCreationFailed => Self::NativeCreationFailed,
+        }
+    }
+}
 
 struct QueueState<M> {
     messages: VecDeque<M>,
     quit_requested: bool,
     closed: bool,
+    error: Option<MessageLoopError>,
     source: Option<RunLoopSourceSignaler>,
 }
 
@@ -30,6 +73,7 @@ impl<M> SharedState<M> {
                 messages: VecDeque::new(),
                 quit_requested: false,
                 closed: false,
+                error: None,
                 source: None,
             }),
         }
@@ -195,28 +239,55 @@ impl<M: Send + 'static, H: MessageLoopHandler<M>> CallbackState<M, H> {
 /// lifetime. It obtains the native run loop from that application, keeps its
 /// source installed there, and uses the same application to drive and stop the
 /// `AppKit` event loop.
-pub struct MessageLoopAppkit<'application, M, H, D: ApplicationDelegate = ()> {
-    application: &'application Application<D>,
+pub struct MessageLoopAppkit<M, H> {
+    application: ActorRef,
     shared: Arc<SharedState<M>>,
-    _source: RunLoopSource<'application>,
-    _handler: PhantomData<H>,
+    _source: ContextRunLoopSource<SourceContext<M, H>>,
 }
 
-impl<'application, M, H, D> MessageLoopAppkit<'application, M, H, D>
+struct SourceContext<M, H> {
+    callback: Rc<CallbackState<M, H>>,
+    application: ActorRef,
+}
+
+fn perform_source<M, H>(source: &SourceContext<M, H>)
 where
     M: Send + 'static,
-    H: MessageLoopHandler<M> + 'application,
-    D: ApplicationDelegate,
+    H: MessageLoopHandler<M>,
+{
+    if source.callback.perform()
+        && let Err(error) = source.application.send(ApplicationMessage::Stop)
+    {
+        let mut state = source
+            .callback
+            .shared
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .error
+            .get_or_insert(MessageLoopError::Application(error));
+    }
+}
+
+impl<M, H> MessageLoopAppkit<M, H>
+where
+    M: Send + 'static,
+    H: MessageLoopHandler<M>,
 {
     /// Creates one source on the supplied application's main run loop.
     ///
     /// # Errors
     /// Returns an error when called off that run loop or native source
     /// creation fails.
-    pub fn new(
-        application: &'application Application<D>,
+    pub fn new<D: ApplicationDelegate>(
+        application: &Application<D>,
         handler: H,
-    ) -> Result<Self, RunLoopSourceError> {
+    ) -> Result<Self, MessageLoopError> {
+        let application_actor = application.actor_ref();
+        if !application_actor.is_alive() {
+            return Err(MessageLoopError::Application(ActorError::NotActive));
+        }
         let shared = Arc::new(SharedState::new());
         let callback = Rc::new(CallbackState {
             shared: shared.clone(),
@@ -225,12 +296,13 @@ where
             terminated: Cell::new(false),
             performing: Cell::new(false),
         });
-        let source_callback = callback.clone();
-        let source = application.run_loop().create_source(move || {
-            if source_callback.perform() {
-                application.stop();
-            }
-        })?;
+        let source = application.run_loop().create_context_source(
+            SourceContext {
+                callback,
+                application: application_actor.clone(),
+            },
+            perform_source::<M, H>,
+        )?;
         {
             let mut state = shared
                 .queue
@@ -240,10 +312,9 @@ where
         }
 
         Ok(Self {
-            application,
+            application: application_actor,
             shared,
             _source: source,
-            _handler: PhantomData,
         })
     }
 
@@ -255,7 +326,10 @@ where
     }
 
     /// Runs the application's `AppKit` event loop until termination.
-    pub fn run(self) {
+    ///
+    /// # Errors
+    /// Returns an error if the originating Application session has expired or stopping it fails.
+    pub fn run(self) -> Result<(), MessageLoopError> {
         {
             let state = self
                 .shared
@@ -264,11 +338,19 @@ where
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             SharedState::signal_locked(&state);
         }
-        self.application.run();
+        self.application
+            .send(ApplicationMessage::Run)
+            .map_err(MessageLoopError::Application)?;
+        let mut state = self
+            .shared
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.error.take().map_or(Ok(()), Err)
     }
 }
 
-impl<M, H, D: ApplicationDelegate> Drop for MessageLoopAppkit<'_, M, H, D> {
+impl<M, H> Drop for MessageLoopAppkit<M, H> {
     fn drop(&mut self) {
         {
             let mut state = self
@@ -284,4 +366,4 @@ impl<M, H, D: ApplicationDelegate> Drop for MessageLoopAppkit<'_, M, H, D> {
 }
 
 /// Compatibility name matching the existing native implementation.
-pub type AppkitMessageLoop<'application, M, H, D = ()> = MessageLoopAppkit<'application, M, H, D>;
+pub type AppkitMessageLoop<M, H> = MessageLoopAppkit<M, H>;

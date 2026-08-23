@@ -28,27 +28,43 @@ impl From<ActorError> for ViewError {
     fn from(value: ActorError) -> Self {
         match value {
             ActorError::InvalidHierarchy => Self::InvalidHierarchy,
-            ActorError::Dropped | ActorError::NativeReleased => Self::Closed,
+            ActorError::Dropped | ActorError::NativeReleased | ActorError::NotActive => {
+                Self::Closed
+            }
         }
     }
 }
 
-pub(crate) struct OwnedView {
+pub(crate) struct ViewActor {
     actor: ActorRef,
     _main_thread: PhantomData<Rc<()>>,
 }
-impl OwnedView {
+impl ViewActor {
     pub(crate) fn new<D: ApplicationDelegate>(
         application: &Application<D>,
         native: Strong,
     ) -> Self {
+        let actor = application.tree().insert_root(native);
+        application
+            .tree()
+            .add_teardown(&actor, |view| unsafe {
+                native::send_void(view, native::sel(b"removeFromSuperview\0"))
+            })
+            .expect("a newly inserted view actor must be live");
         Self {
-            actor: application.tree().insert_root(native),
+            actor,
             _main_thread: PhantomData,
         }
     }
     #[cfg(feature = "wgpu")]
     pub(crate) fn from_actor(actor: ActorRef) -> Self {
+        actor
+            .tree_handle()
+            .expect("a newly inserted view actor must have a tree")
+            .add_teardown(&actor, |view| unsafe {
+                native::send_void(view, native::sel(b"removeFromSuperview\0"))
+            })
+            .expect("a newly inserted view actor must be live");
         Self {
             actor,
             _main_thread: PhantomData,
@@ -57,22 +73,18 @@ impl OwnedView {
     pub(crate) fn as_view(&self) -> ViewRef<'_> {
         ViewRef { actor: &self.actor }
     }
-    #[cfg(feature = "wgpu")]
     pub(crate) fn actor(&self) -> &ActorRef {
         &self.actor
     }
 }
-impl Drop for OwnedView {
+impl Drop for ViewActor {
     fn drop(&mut self) {
-        let _ = self.actor.with(|view| unsafe {
-            native::send_void(view, native::sel(b"removeFromSuperview\0"));
-        });
         self.actor.remove();
     }
 }
 
 pub struct View {
-    inner: OwnedView,
+    inner: ViewActor,
 }
 impl View {
     pub fn new<D: ApplicationDelegate>(
@@ -90,7 +102,7 @@ impl View {
         }
         .ok_or(ViewError::NativeCreationFailed)?;
         Ok(Self {
-            inner: OwnedView::new(application, native),
+            inner: ViewActor::new(application, native),
         })
     }
 }
@@ -111,25 +123,27 @@ impl<'view> ViewRef<'view> {
     pub(crate) fn with<R>(self, operation: impl FnOnce(native::Id) -> R) -> Result<R, ViewError> {
         self.actor.with(operation).map_err(Into::into)
     }
+    pub(crate) fn actor(self) -> &'view ActorRef {
+        self.actor
+    }
     pub fn add_subview(self, child: &impl AsView) -> Result<(), ViewError> {
         let child = child.as_view();
         if !self.actor.same_tree(child.actor) {
             return Err(ViewError::InvalidHierarchy);
         }
+        let tree = self.actor.tree_handle().ok_or(ViewError::Closed)?;
+        tree.validate_reparent(child.actor, self.actor)
+            .map_err(ViewError::from)?;
         self.with(|parent| {
             child.with(|native_child| {
-                child
-                    .actor
-                    .reparent_to(self.actor)
-                    .map_err(ViewError::from)?;
                 // SAFETY: Both actors are retained for this synchronous hierarchy update.
                 unsafe {
                     native::send_void_id(parent, native::sel(b"addSubview:\0"), native_child)
                 };
-                Ok::<(), ViewError>(())
             })
-        })???;
-        Ok(())
+        })??;
+        tree.reparent(child.actor, self.actor)
+            .map_err(ViewError::from)
     }
     pub fn remove_from_superview(self) -> Result<(), ViewError> {
         self.with(|view| unsafe {

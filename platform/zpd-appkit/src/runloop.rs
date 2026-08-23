@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::actor::ActorTree;
+use crate::actor::{ActorRef, ActorTree, ApplicationMessage};
 use crate::native::{self, CFRunLoopSourceContext, Id, Strong};
 use crate::ui::{CommandError, CommandSet, Window, WindowDelegate, WindowError};
 
@@ -155,6 +155,104 @@ pub struct RunLoopSource<'application> {
     _application: PhantomData<&'application ()>,
     _main_thread: PhantomData<Rc<()>>,
 }
+
+struct ContextSourceCallback<C> {
+    context: C,
+    perform: fn(&C),
+}
+
+unsafe extern "C" fn context_source_perform<C>(info: *mut c_void) {
+    if info.is_null() {
+        return;
+    }
+    if catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: ContextRunLoopSource owns this stable allocation while its source is installed.
+        let callback = unsafe { &*info.cast::<ContextSourceCallback<C>>() };
+        (callback.perform)(&callback.context);
+    }))
+    .is_err()
+    {
+        std::process::abort();
+    }
+}
+
+/// A safe Core Foundation run-loop source owning a concrete callback context.
+pub struct ContextRunLoopSource<C> {
+    state: Arc<Mutex<SourceState>>,
+    _callback: Box<ContextSourceCallback<C>>,
+    _main_thread: PhantomData<Rc<()>>,
+}
+
+impl<C> ContextRunLoopSource<C> {
+    pub fn signaler(&self) -> RunLoopSourceSignaler {
+        RunLoopSourceSignaler {
+            state: self.state.clone(),
+        }
+    }
+}
+
+impl<C> Drop for ContextRunLoopSource<C> {
+    fn drop(&mut self) {
+        remove_source(&self.state);
+    }
+}
+
+impl RunLoop<'_> {
+    /// Creates a source that owns a concrete context and invokes it on this run loop.
+    ///
+    /// # Errors
+    /// Returns an error off the current run loop or when Core Foundation creation fails.
+    pub fn create_context_source<C>(
+        self,
+        context: C,
+        perform: fn(&C),
+    ) -> Result<ContextRunLoopSource<C>, RunLoopSourceError> {
+        if !self.is_current() {
+            return Err(RunLoopSourceError::NotCurrent);
+        }
+        let callback = Box::new(ContextSourceCallback { context, perform });
+        let mut context = CFRunLoopSourceContext {
+            info: std::ptr::from_ref(callback.as_ref()).cast_mut().cast(),
+            perform: Some(context_source_perform::<C>),
+            ..Default::default()
+        };
+        // SAFETY: callback remains stable until the source is removed and invalidated.
+        let source =
+            unsafe { native::CFRunLoopSourceCreate(std::ptr::null(), 0, &raw mut context) };
+        if source.is_null() {
+            return Err(RunLoopSourceError::NativeCreationFailed);
+        }
+        // SAFETY: Both handles are live and owned/borrowed here.
+        unsafe { native::CFRunLoopAddSource(self.raw, source, native::kCFRunLoopCommonModes) };
+        Ok(ContextRunLoopSource {
+            state: Arc::new(Mutex::new(SourceState {
+                run_loop: self.raw as usize,
+                source: Some(source as usize),
+            })),
+            _callback: callback,
+            _main_thread: PhantomData,
+        })
+    }
+}
+
+fn remove_source(state: &Mutex<SourceState>) {
+    let mut state = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(source) = state.source.take() else {
+        return;
+    };
+    // SAFETY: Source owners are main-thread-only and own the installed Core Foundation source.
+    unsafe {
+        native::CFRunLoopRemoveSource(
+            state.run_loop as *mut c_void,
+            source as *mut c_void,
+            native::kCFRunLoopCommonModes,
+        );
+        native::CFRunLoopSourceInvalidate(source as *mut c_void);
+        native::CFRelease(source as *const c_void);
+    }
+}
 impl RunLoopSource<'_> {
     pub fn signaler(&self) -> RunLoopSourceSignaler {
         RunLoopSourceSignaler {
@@ -164,23 +262,7 @@ impl RunLoopSource<'_> {
 }
 impl Drop for RunLoopSource<'_> {
     fn drop(&mut self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(source) = state.source.take() else {
-            return;
-        };
-        // SAFETY: This owner is dropped on the source run-loop thread.
-        unsafe {
-            native::CFRunLoopRemoveSource(
-                state.run_loop as *mut c_void,
-                source as *mut c_void,
-                native::kCFRunLoopCommonModes,
-            );
-            native::CFRunLoopSourceInvalidate(source as *mut c_void);
-            native::CFRelease(source as *const c_void);
-        }
+        remove_source(&self.state);
     }
 }
 
@@ -236,12 +318,7 @@ unsafe extern "C" fn will_terminate(object: Id, _: native::Sel, _: Id) {
     }
 }
 unsafe extern "C" fn delegate_dealloc(object: Id, _: native::Sel) {
-    let cb = unsafe { callbacks(object) };
-    if !cb.is_null() {
-        // SAFETY: The delegate owns exactly one callback allocation.
-        let cb = unsafe { Box::from_raw(cb) };
-        unsafe { (cb.release)(cb.state) };
-    }
+    unsafe { release_callbacks(object) };
     unsafe {
         native::send_super_void(
             object,
@@ -249,6 +326,23 @@ unsafe extern "C" fn delegate_dealloc(object: Id, _: native::Sel) {
             native::sel(b"dealloc\0"),
         )
     };
+}
+
+unsafe fn release_callbacks(object: Id) {
+    let cb = unsafe { callbacks(object) };
+    if !cb.is_null() {
+        // SAFETY: Clearing the ivar transfers the sole callback table allocation to Rust.
+        unsafe {
+            native::set_pointer_ivar(
+                object,
+                c"_zpdCallbacks".as_ptr(),
+                std::ptr::null_mut::<AppCallbacks>(),
+            )
+        };
+        // SAFETY: The delegate owns exactly one callback allocation.
+        let cb = unsafe { Box::from_raw(cb) };
+        unsafe { (cb.release)(cb.state) };
+    }
 }
 fn delegate_class() -> native::Class {
     use std::sync::OnceLock;
@@ -311,21 +405,6 @@ impl RunLoopScheduler {
         }
         true
     }
-    pub fn run(&self) -> Result<(), ApplicationError> {
-        if unsafe { native::pthread_main_np() } == 0 {
-            return Err(ApplicationError::NotMainThread);
-        }
-        if !self.state.active.load(Ordering::Acquire) {
-            return Err(ApplicationError::NotActive);
-        }
-        // SAFETY: NSApplication is driven from the process main thread.
-        unsafe {
-            let app = shared_application();
-            native::send_void_i64(app, native::sel(b"activateIgnoringOtherApps:\0"), 1);
-            native::send_void(app, native::sel(b"run\0"));
-        }
-        Ok(())
-    }
 }
 fn shared_application() -> Id {
     unsafe {
@@ -344,19 +423,18 @@ fn root_tree(app: &Strong) -> ActorTree {
     ROOT_TREE.with(|tree| {
         let mut tree = tree.borrow_mut();
         tree.get_or_insert_with(|| ActorTree::new(app.clone()))
-            .clone()
+            .begin_session()
     })
 }
 
 pub struct Application<D: ApplicationDelegate> {
-    _state: Rc<DelegateState<D>>,
+    _delegate_type: PhantomData<D>,
     scheduler_state: Arc<ActiveState>,
     source: *mut c_void,
     callback: *mut SourceCallback<'static>,
-    _delegate: Strong,
-    app: Strong,
+    delegate: ActorRef,
+    actor: ActorRef,
     tree: ActorTree,
-    command_objects: RefCell<Vec<Strong>>,
     _main_thread: PhantomData<Rc<()>>,
 }
 impl<D: ApplicationDelegate> Application<D> {
@@ -377,6 +455,7 @@ impl<D: ApplicationDelegate> Application<D> {
                 native::send_void_i64(app.as_ptr(), native::sel(b"setActivationPolicy:\0"), 0)
             };
             let tree = root_tree(&app);
+            let actor = tree.root();
             let state = Rc::new(DelegateState {
                 delegate: RefCell::new(delegate),
             });
@@ -401,11 +480,20 @@ impl<D: ApplicationDelegate> Application<D> {
             };
             unsafe {
                 native::send_void_id(
-                    app.as_ptr(),
+                    actor
+                        .with(|id| id)
+                        .map_err(|_| ApplicationError::NotActive)?,
                     native::sel(b"setDelegate:\0"),
                     native_delegate.as_ptr(),
                 )
             };
+            let delegate_actor = tree
+                .insert_child(&actor, native_delegate)
+                .map_err(|_| ApplicationError::NativeCreationFailed)?;
+            tree.add_teardown(&delegate_actor, |delegate| unsafe {
+                release_callbacks(delegate)
+            })
+            .map_err(|_| ApplicationError::NativeCreationFailed)?;
             let callback: Box<SourceCallback<'static>> = Box::new(SourceCallback {
                 callback: RefCell::new(Box::new({
                     let state = state.clone();
@@ -427,7 +515,7 @@ impl<D: ApplicationDelegate> Application<D> {
             let run_loop = unsafe { native::CFRunLoopGetCurrent() };
             unsafe { native::CFRunLoopAddSource(run_loop, source, native::kCFRunLoopCommonModes) };
             Ok(Self {
-                _state: state,
+                _delegate_type: PhantomData,
                 scheduler_state: Arc::new(ActiveState {
                     active: AtomicBool::new(true),
                     run_loop: run_loop as usize,
@@ -435,10 +523,9 @@ impl<D: ApplicationDelegate> Application<D> {
                 }),
                 source,
                 callback,
-                _delegate: native_delegate,
-                app,
+                delegate: delegate_actor,
+                actor,
                 tree,
-                command_objects: RefCell::new(Vec::new()),
                 _main_thread: PhantomData,
             })
         })();
@@ -474,38 +561,21 @@ impl<D: ApplicationDelegate> Application<D> {
     {
         crate::ui::commands::install(self, commands, callback)
     }
-    pub fn run(&self) {
-        self.scheduler()
-            .run()
-            .expect("Application can only run while active on main")
+    pub fn run(&self) -> Result<(), ApplicationError> {
+        self.actor
+            .send(ApplicationMessage::Run)
+            .map_err(|_| ApplicationError::NotActive)
     }
-    pub fn stop(&self) {
-        unsafe {
-            native::send_void_id(self.app.as_ptr(), native::sel(b"stop:\0"), native::NIL);
-            let event = native::send_application_event(
-                native::class(b"NSEvent\0"),
-                native::sel(b"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:\0"),
-            );
-            if !event.is_null() {
-                native::send_void_id_bool(
-                    self.app.as_ptr(),
-                    native::sel(b"postEvent:atStart:\0"),
-                    event,
-                    false,
-                );
-            }
-            native::CFRunLoopStop(self.scheduler_state.run_loop as *mut c_void);
-            native::CFRunLoopWakeUp(self.scheduler_state.run_loop as *mut c_void);
-        }
+    pub fn stop(&self) -> Result<(), ApplicationError> {
+        self.actor
+            .send(ApplicationMessage::Stop)
+            .map_err(|_| ApplicationError::NotActive)
+    }
+    pub fn actor_ref(&self) -> ActorRef {
+        self.actor.clone()
     }
     pub(crate) fn tree(&self) -> &ActorTree {
         &self.tree
-    }
-    pub(crate) fn app(&self) -> Id {
-        self.app.as_ptr()
-    }
-    pub(crate) fn replace_command_objects(&self, objects: Vec<Strong>) {
-        *self.command_objects.borrow_mut() = objects
     }
 }
 impl<D: ApplicationDelegate> Drop for Application<D> {
@@ -513,21 +583,16 @@ impl<D: ApplicationDelegate> Drop for Application<D> {
         self.scheduler_state.active.store(false, Ordering::Release);
         // SAFETY: Clearing the menu detaches unretained action targets before their owners drop.
         unsafe {
-            native::send_void_id(
-                self.app.as_ptr(),
-                native::sel(b"setMainMenu:\0"),
-                native::NIL,
-            );
+            let _ = self
+                .actor
+                .with(|app| native::send_void_id(app, native::sel(b"setMainMenu:\0"), native::NIL));
         }
-        self.command_objects.borrow_mut().clear();
-        self.tree.clear();
+        let _ = self.actor.with(|app| unsafe {
+            native::send_void_id(app, native::sel(b"setDelegate:\0"), native::NIL)
+        });
+        self.delegate.remove();
         // SAFETY: Application owns the delegate binding, CF source, and callback allocation.
         unsafe {
-            native::send_void_id(
-                self.app.as_ptr(),
-                native::sel(b"setDelegate:\0"),
-                native::NIL,
-            );
             native::CFRunLoopRemoveSource(
                 self.scheduler_state.run_loop as *mut c_void,
                 self.source,
@@ -537,8 +602,40 @@ impl<D: ApplicationDelegate> Drop for Application<D> {
             native::CFRelease(self.source);
             drop(Box::from_raw(self.callback));
         }
+        self.tree.end_session();
         INITIALIZED.store(false, Ordering::Release);
     }
+}
+
+pub(crate) fn send_application_message(
+    actor: &ActorRef,
+    message: ApplicationMessage,
+) -> Result<(), crate::actor::ActorError> {
+    actor.with(|app| unsafe {
+        match message {
+            ApplicationMessage::Run => {
+                native::send_void_i64(app, native::sel(b"activateIgnoringOtherApps:\0"), 1);
+                native::send_void(app, native::sel(b"run\0"));
+            }
+            ApplicationMessage::Stop => {
+                native::send_void_id(app, native::sel(b"stop:\0"), native::NIL);
+                let event = native::send_application_event(
+                    native::class(b"NSEvent\0"),
+                    native::sel(b"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:\0"),
+                );
+                if !event.is_null() {
+                    native::send_void_id_bool(
+                        app,
+                        native::sel(b"postEvent:atStart:\0"),
+                        event,
+                        false,
+                    );
+                }
+                native::CFRunLoopStop(native::CFRunLoopGetMain());
+                native::CFRunLoopWakeUp(native::CFRunLoopGetMain());
+            }
+        }
+    })
 }
 
 #[cfg(test)]

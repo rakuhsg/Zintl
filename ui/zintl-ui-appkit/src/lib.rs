@@ -69,13 +69,14 @@ mod backend {
     use std::rc::Rc;
 
     use messageloop_appkit::{
-        AppkitSender, Context as MessageContext, MessageLoopAppkit, MessageLoopHandler, Sender,
+        AppkitSender, Context as MessageContext, MessageLoopAppkit, MessageLoopError,
+        MessageLoopHandler, Sender,
     };
     use zintl_ui::composer::Composer;
     use zintl_ui::renderer::RenderBackend;
     use zintl_ui_layout::{LayoutError, LayoutStyle, LayoutTree, Size};
     use zpd_appkit::geometry::Rect as NativeRect;
-    use zpd_appkit::runloop::{Application, ApplicationError, RunLoopSourceError};
+    use zpd_appkit::runloop::{Application, ApplicationError};
     use zpd_appkit::ui::{
         AsView, Button as NativeButton, CommandError, CommandItem, CommandModifier, CommandRole,
         CommandSet, TextField as NativeTextField, View as NativeView, ViewError, ViewRef,
@@ -91,7 +92,7 @@ mod backend {
         Window(WindowError),
         View(ViewError),
         Layout(LayoutError),
-        RunLoopSource(RunLoopSourceError),
+        MessageLoop(MessageLoopError),
         NoWindow,
         InvalidTree,
     }
@@ -104,7 +105,7 @@ mod backend {
                 Self::Window(error) => error.fmt(formatter),
                 Self::View(error) => error.fmt(formatter),
                 Self::Layout(error) => error.fmt(formatter),
-                Self::RunLoopSource(error) => error.fmt(formatter),
+                Self::MessageLoop(error) => error.fmt(formatter),
                 Self::NoWindow => {
                     formatter.write_str("the rendered tree does not contain a window")
                 }
@@ -121,7 +122,7 @@ mod backend {
                 Self::Window(error) => Some(error),
                 Self::View(error) => Some(error),
                 Self::Layout(error) => Some(error),
-                Self::RunLoopSource(error) => Some(error),
+                Self::MessageLoop(error) => Some(error),
                 Self::NoWindow | Self::InvalidTree => None,
             }
         }
@@ -214,6 +215,33 @@ mod backend {
                 .children
                 .retain(|candidate| *candidate != child);
             self.node_mut(child).parent = None;
+        }
+
+        fn record_error(&mut self, error: AppError) {
+            if self.pending_error.is_none() {
+                self.pending_error = Some(error);
+            }
+        }
+
+        fn remove_subtree(&mut self, id: NodeId) {
+            let Some(children) = self
+                .nodes
+                .get(id.0)
+                .and_then(Option::as_ref)
+                .map(|node| node.children.clone())
+            else {
+                return;
+            };
+            for child in children {
+                self.remove_subtree(child);
+            }
+            self.detach(id);
+            if let Some(mut node) = self.nodes.get_mut(id.0).and_then(Option::take)
+                && let Some(native) = node.native.take()
+                && let Err(error) = native.as_view().remove_from_superview()
+            {
+                self.record_error(AppError::View(error));
+            }
         }
 
         fn window_ids(&self) -> Vec<NodeId> {
@@ -576,7 +604,7 @@ mod backend {
                 .appkit_node();
             let new = value.appkit_node();
             if let Err(error) = self.update_native(id, &old, &new) {
-                self.pending_error = Some(error);
+                self.record_error(error);
             }
             self.node_mut(id).value = Some(value.clone());
             self.layout_dirty = true;
@@ -592,12 +620,7 @@ mod backend {
         }
 
         fn remove(&mut self, id: Self::NodeId) {
-            self.detach(id);
-            if let Some(mut node) = self.nodes.get_mut(id.0).and_then(Option::take)
-                && let Some(native) = node.native.take()
-            {
-                let _ = native.as_view().remove_from_superview();
-            }
+            self.remove_subtree(id);
             self.structure_dirty = true;
             self.layout_dirty = true;
         }
@@ -697,8 +720,8 @@ mod backend {
                 error: error.clone(),
             },
         )
-        .map_err(AppError::RunLoopSource)?;
-        message_loop.run();
+        .map_err(AppError::MessageLoop)?;
+        message_loop.run().map_err(AppError::MessageLoop)?;
         error.borrow_mut().take().map_or(Ok(()), Err)
     }
 
@@ -734,6 +757,26 @@ mod backend {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use zintl_ui::renderer::RenderNode;
+
+        #[derive(Clone, PartialEq)]
+        struct TestNode;
+
+        impl RenderNode for TestNode {
+            fn same_kind(&self, _other: &Self) -> bool {
+                true
+            }
+        }
+
+        impl AppKitRenderNode for TestNode {
+            fn appkit_node(&self) -> NodeKind {
+                NodeKind::View {
+                    kind: ViewKind::Container,
+                    layout: LayoutStyle::leaf(Size::new(0.0, 0.0)),
+                    id: None,
+                }
+            }
+        }
 
         #[test]
         fn converts_taffy_top_origin_to_cgrect_bottom_origin() {
@@ -749,6 +792,22 @@ mod backend {
                 native_frame(frame, 100.0),
                 NativeRect::new(12.0, 48.0, 80.0, 32.0)
             );
+        }
+
+        #[test]
+        fn removing_backend_parent_removes_its_descendants() {
+            // Verifies renderer removal cannot leave detached descendants in backend storage.
+            let mut backend = AppKitBackend::<TestNode>::new();
+            let parent = backend.create(&TestNode);
+            let child = backend.create(&TestNode);
+            backend.insert_child(backend.root(), 0, parent);
+            backend.insert_child(parent, 0, child);
+
+            backend.remove(parent);
+
+            assert!(backend.nodes[parent.0].is_none());
+            assert!(backend.nodes[child.0].is_none());
+            assert!(backend.children(backend.root()).is_empty());
         }
     }
 }

@@ -40,21 +40,25 @@ impl std::fmt::Display for SidebarError {
 impl std::error::Error for SidebarError {}
 
 pub(crate) struct SidebarNative {
-    content_controller: Strong,
+    content_controller: ActorRef,
     root: ActorRef,
-    _objects: Vec<Strong>,
 }
 impl SidebarNative {
     pub(crate) fn clear(self, window: &ActorRef) -> Result<(), WindowError> {
         window
-            .with(|window| unsafe {
-                native::send_void_id(
-                    window,
-                    native::sel(b"setContentViewController:\0"),
-                    self.content_controller.as_ptr(),
-                );
+            .with(|window| {
+                self.content_controller.with(|controller| unsafe {
+                    native::send_void_id(
+                        window,
+                        native::sel(b"setContentViewController:\0"),
+                        controller,
+                    );
+                })
             })
-            .map_err(Into::into)
+            .map_err(WindowError::from)?
+            .map_err(WindowError::from)?;
+        self.root.remove();
+        Ok(())
     }
 }
 
@@ -64,9 +68,25 @@ impl Drop for SidebarNative {
     }
 }
 
+struct ActorRollback(Option<ActorRef>);
+
+impl ActorRollback {
+    fn disarm(&mut self) {
+        self.0.take();
+    }
+}
+
+impl Drop for ActorRollback {
+    fn drop(&mut self) {
+        if let Some(actor) = self.0.take() {
+            actor.remove();
+        }
+    }
+}
+
 pub(crate) fn install<F>(
     window: &ActorRef,
-    content: &ActorRef,
+    content_controller: &ActorRef,
     sidebar: &Sidebar,
     callback_fn: F,
 ) -> Result<SidebarNative, SidebarError>
@@ -75,21 +95,18 @@ where
 {
     let callback_fn = Rc::new(RefCell::new(callback_fn));
     let tree = window.tree_handle().ok_or(SidebarError::Closed)?;
-    let content_controller = native::alloc_init(b"NSViewController\0");
-    content
-        .with(|view| unsafe {
-            native::send_void_id(
-                content_controller.as_ptr(),
-                native::sel(b"setView:\0"),
-                view,
-            )
-        })
+    let split = native::alloc_init(b"NSSplitViewController\0");
+    let root = tree
+        .insert_child(window, split)
         .map_err(|_| SidebarError::Closed)?;
-
+    let mut rollback = ActorRollback(Some(root.clone()));
     let sidebar_controller = native::alloc_init(b"NSViewController\0");
+    let sidebar_controller_actor = tree
+        .insert_child(&root, sidebar_controller.clone())
+        .map_err(|_| SidebarError::Closed)?;
     let stack = native::alloc_init(b"NSStackView\0");
     let stack_actor = tree
-        .insert_child(window, stack.clone())
+        .insert_child(&sidebar_controller_actor, stack.clone())
         .map_err(|_| SidebarError::Closed)?;
     unsafe {
         native::send_void_i64(stack.as_ptr(), native::sel(b"setOrientation:\0"), 1);
@@ -100,7 +117,6 @@ where
             stack.as_ptr(),
         );
     }
-    let mut objects = vec![sidebar_controller.clone(), stack.clone()];
     for section in &sidebar.sections {
         if let Some(title) = &section.title {
             let label = text_label(title)?;
@@ -113,12 +129,9 @@ where
                     label.as_ptr(),
                 )
             };
-            objects.push(label);
         }
         for item in &section.items {
             let button = native::alloc_init(b"NSButton\0");
-            tree.insert_child(&stack_actor, button.clone())
-                .map_err(|_| SidebarError::Closed)?;
             let title = native::nsstring(&item.title);
             unsafe {
                 native::send_void_id(button.as_ptr(), native::sel(b"setTitle:\0"), title.as_ptr());
@@ -171,11 +184,21 @@ where
                     button.as_ptr(),
                 );
             }
-            objects.push(target);
-            objects.push(button);
+            let button_actor = tree
+                .insert_child(&stack_actor, button)
+                .map_err(|_| SidebarError::Closed)?;
+            tree.add_teardown(&button_actor, |button| unsafe {
+                native::send_void_id(button, native::sel(b"setTarget:\0"), native::NIL);
+                native::send_void_id(button, native::sel(b"setAction:\0"), native::NIL);
+            })
+            .map_err(|_| SidebarError::Closed)?;
+            let target = tree
+                .insert_child(&button_actor, target)
+                .map_err(|_| SidebarError::Closed)?;
+            tree.add_teardown(&target, |target| unsafe { callback::release(target) })
+                .map_err(|_| SidebarError::Closed)?;
         }
     }
-    let split = native::alloc_init(b"NSSplitViewController\0");
     let sidebar_item = unsafe {
         Strong::retain(native::send_id_id(
             native::class(b"NSSplitViewItem\0"),
@@ -188,7 +211,9 @@ where
         Strong::retain(native::send_id_id(
             native::class(b"NSSplitViewItem\0"),
             native::sel(b"splitViewItemWithViewController:\0"),
-            content_controller.as_ptr(),
+            content_controller
+                .with(|id| id)
+                .map_err(|_| SidebarError::Closed)?,
         ))
     }
     .ok_or(SidebarError::NativeCreationFailed)?;
@@ -204,30 +229,32 @@ where
             360.0,
         );
         native::send_void_id(
-            split.as_ptr(),
+            root.with(|id| id).map_err(|_| SidebarError::Closed)?,
             native::sel(b"addSplitViewItem:\0"),
             sidebar_item.as_ptr(),
         );
         native::send_void_id(
-            split.as_ptr(),
+            root.with(|id| id).map_err(|_| SidebarError::Closed)?,
             native::sel(b"addSplitViewItem:\0"),
             content_item.as_ptr(),
         );
     }
     window
-        .with(|window| unsafe {
-            native::send_void_id(
-                window,
-                native::sel(b"setContentViewController:\0"),
-                split.as_ptr(),
-            )
+        .with(|window| {
+            root.with(|split| unsafe {
+                native::send_void_id(window, native::sel(b"setContentViewController:\0"), split)
+            })
         })
+        .map_err(|_| SidebarError::Closed)?
         .map_err(|_| SidebarError::Closed)?;
-    objects.extend([sidebar_item, content_item, split]);
+    tree.insert_child(&root, sidebar_item)
+        .map_err(|_| SidebarError::Closed)?;
+    tree.insert_child(&root, content_item)
+        .map_err(|_| SidebarError::Closed)?;
+    rollback.disarm();
     Ok(SidebarNative {
-        content_controller,
-        root: stack_actor,
-        _objects: objects,
+        content_controller: content_controller.clone(),
+        root,
     })
 }
 

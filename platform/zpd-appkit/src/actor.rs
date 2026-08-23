@@ -1,4 +1,5 @@
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::{Rc, Weak};
@@ -6,10 +7,17 @@ use std::rc::{Rc, Weak};
 use crate::native::{self, Id, Strong};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ActorError {
+pub enum ActorError {
     Dropped,
     NativeReleased,
+    NotActive,
     InvalidHierarchy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplicationMessage {
+    Run,
+    Stop,
 }
 
 struct WeakSlot {
@@ -41,31 +49,52 @@ impl Drop for WeakSlot {
 
 struct ActorInner {
     native: Pin<Box<WeakSlot>>,
+    alive: Cell<bool>,
 }
 
 #[derive(Clone)]
-pub(crate) struct ActorRef {
+pub struct ActorRef {
     inner: Weak<ActorInner>,
     tree: Weak<RefCell<TreeInner>>,
     id: NodeId,
+    session: u64,
     _main_thread: PhantomData<Rc<()>>,
 }
 
 impl ActorRef {
     pub(crate) fn with<R>(&self, operation: impl FnOnce(Id) -> R) -> Result<R, ActorError> {
+        let tree = self.tree.upgrade().ok_or(ActorError::Dropped)?;
+        if tree.borrow().active_session != Some(self.session) {
+            return Err(ActorError::NotActive);
+        }
         let inner = self.inner.upgrade().ok_or(ActorError::Dropped)?;
+        if !inner.alive.get() {
+            return Err(ActorError::Dropped);
+        }
         let native = inner.native.load().ok_or(ActorError::NativeReleased)?;
         Ok(operation(native.as_ptr()))
     }
 
-    pub(crate) fn is_alive(&self) -> bool {
-        self.inner
+    pub fn is_alive(&self) -> bool {
+        self.tree
             .upgrade()
-            .is_some_and(|inner| inner.native.load().is_some())
+            .is_some_and(|tree| tree.borrow().active_session == Some(self.session))
+            && self
+                .inner
+                .upgrade()
+                .is_some_and(|inner| inner.alive.get() && inner.native.load().is_some())
+    }
+
+    pub fn send(&self, message: ApplicationMessage) -> Result<(), ActorError> {
+        let tree = self.tree.upgrade().ok_or(ActorError::Dropped)?;
+        if tree.borrow().root != self.id {
+            return Err(ActorError::InvalidHierarchy);
+        }
+        crate::runloop::send_application_message(self, message)
     }
 
     pub(crate) fn same_tree(&self, other: &Self) -> bool {
-        Weak::ptr_eq(&self.tree, &other.tree)
+        self.session == other.session && Weak::ptr_eq(&self.tree, &other.tree)
     }
 
     pub(crate) fn remove(&self) {
@@ -74,20 +103,35 @@ impl ActorRef {
         }
     }
 
-    pub(crate) fn reparent_to(&self, parent: &Self) -> Result<(), ActorError> {
-        let tree = self.tree.upgrade().ok_or(ActorError::Dropped)?;
-        ActorTree { inner: tree }.reparent(self, parent)
-    }
-
     pub(crate) fn move_to_root(&self) -> Result<(), ActorError> {
         let tree = self.tree.upgrade().ok_or(ActorError::Dropped)?;
-        ActorTree { inner: tree }.move_to_root(self)
+        ActorTree {
+            inner: tree,
+            session: self.session,
+        }
+        .move_to_root(self)
     }
 
     pub(crate) fn tree_handle(&self) -> Option<ActorTree> {
-        self.tree.upgrade().map(|inner| ActorTree { inner })
+        self.tree.upgrade().map(|inner| ActorTree {
+            inner,
+            session: self.session,
+        })
     }
 }
+
+impl std::fmt::Display for ActorError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Dropped => "the actor was dropped",
+            Self::NativeReleased => "the native object was released",
+            Self::NotActive => "the actor session is not active",
+            Self::InvalidHierarchy => "the actor hierarchy is invalid",
+        })
+    }
+}
+
+impl std::error::Error for ActorError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NodeId {
@@ -99,8 +143,11 @@ struct Node {
     generation: u32,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
+    dependencies: Vec<NodeId>,
+    dependents: Vec<NodeId>,
+    owned: HashMap<&'static str, NodeId>,
     actor: Rc<ActorInner>,
-    attachments: Vec<Strong>,
+    teardown: Vec<Box<dyn FnOnce(Id)>>,
     _native: Strong,
     root: bool,
 }
@@ -109,17 +156,21 @@ struct TreeInner {
     nodes: Vec<Option<Node>>,
     generations: Vec<u32>,
     root: NodeId,
+    active_session: Option<u64>,
+    next_session: u64,
 }
 
 #[derive(Clone)]
 pub(crate) struct ActorTree {
     inner: Rc<RefCell<TreeInner>>,
+    session: u64,
 }
 
 impl ActorTree {
     pub(crate) fn new(root: Strong) -> Self {
         let actor = Rc::new(ActorInner {
             native: WeakSlot::new(root.as_ptr()),
+            alive: Cell::new(true),
         });
         let root_id = NodeId {
             index: 0,
@@ -131,14 +182,43 @@ impl ActorTree {
                     generation: 0,
                     parent: None,
                     children: Vec::new(),
+                    dependencies: Vec::new(),
+                    dependents: Vec::new(),
+                    owned: HashMap::new(),
                     actor,
-                    attachments: Vec::new(),
+                    teardown: Vec::new(),
                     _native: root,
                     root: true,
                 })],
                 generations: vec![0],
                 root: root_id,
+                active_session: Some(0),
+                next_session: 1,
             })),
+            session: 0,
+        }
+    }
+
+    pub(crate) fn begin_session(&self) -> Self {
+        self.clear();
+        let session = {
+            let mut tree = self.inner.borrow_mut();
+            let session = tree.next_session;
+            tree.next_session = tree.next_session.wrapping_add(1);
+            tree.active_session = Some(session);
+            session
+        };
+        Self {
+            inner: self.inner.clone(),
+            session,
+        }
+    }
+
+    pub(crate) fn end_session(&self) {
+        self.clear();
+        let mut tree = self.inner.borrow_mut();
+        if tree.active_session == Some(self.session) {
+            tree.active_session = None;
         }
     }
 
@@ -160,12 +240,16 @@ impl ActorTree {
         if !Weak::ptr_eq(&parent.tree, &Rc::downgrade(&self.inner)) {
             return Err(ActorError::InvalidHierarchy);
         }
+        if parent.session != self.session || !parent.is_alive() {
+            return Err(ActorError::Dropped);
+        }
         Ok(self.insert(parent.id, native))
     }
 
     fn insert(&self, parent: NodeId, native: Strong) -> ActorRef {
         let actor = Rc::new(ActorInner {
             native: WeakSlot::new(native.as_ptr()),
+            alive: Cell::new(true),
         });
         let mut tree = self.inner.borrow_mut();
         let index = tree
@@ -185,8 +269,11 @@ impl ActorTree {
             generation: id.generation,
             parent: Some(parent),
             children: Vec::new(),
+            dependencies: Vec::new(),
+            dependents: Vec::new(),
+            owned: HashMap::new(),
             actor: actor.clone(),
-            attachments: Vec::new(),
+            teardown: Vec::new(),
             _native: native,
             root: false,
         });
@@ -198,6 +285,7 @@ impl ActorTree {
             inner: Rc::downgrade(&actor),
             tree: Rc::downgrade(&self.inner),
             id,
+            session: self.session,
             _main_thread: PhantomData,
         }
     }
@@ -209,27 +297,90 @@ impl ActorTree {
             inner: Rc::downgrade(&node.actor),
             tree: Rc::downgrade(&self.inner),
             id,
+            session: self.session,
             _main_thread: PhantomData,
         })
     }
 
-    pub(crate) fn attach(&self, owner: &ActorRef, attachment: Strong) -> Result<(), ActorError> {
+    pub(crate) fn add_teardown(
+        &self,
+        owner: &ActorRef,
+        teardown: impl FnOnce(Id) + 'static,
+    ) -> Result<(), ActorError> {
         let mut tree = self.inner.borrow_mut();
-        let node = tree.node_mut(owner.id).ok_or(ActorError::Dropped)?;
-        node.attachments.push(attachment);
+        tree.node_mut(owner.id)
+            .ok_or(ActorError::Dropped)?
+            .teardown
+            .push(Box::new(teardown));
+        Ok(())
+    }
+
+    pub(crate) fn add_dependency(
+        &self,
+        dependent: &ActorRef,
+        dependency: &ActorRef,
+    ) -> Result<(), ActorError> {
+        if !dependent.same_tree(dependency) {
+            return Err(ActorError::InvalidHierarchy);
+        }
+        let mut tree = self.inner.borrow_mut();
+        tree.node(dependent.id).ok_or(ActorError::Dropped)?;
+        tree.node(dependency.id).ok_or(ActorError::Dropped)?;
+        if !tree
+            .node(dependent.id)
+            .is_some_and(|node| node.dependencies.contains(&dependency.id))
+        {
+            tree.node_mut(dependent.id)
+                .expect("dependent was validated")
+                .dependencies
+                .push(dependency.id);
+            tree.node_mut(dependency.id)
+                .expect("dependency was validated")
+                .dependents
+                .push(dependent.id);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn replace_owned(
+        &self,
+        owner: &ActorRef,
+        slot: &'static str,
+        native: Strong,
+    ) -> Result<ActorRef, ActorError> {
+        self.clear_owned(owner, slot)?;
+        let actor = self.insert_child(owner, native)?;
+        self.inner
+            .borrow_mut()
+            .node_mut(owner.id)
+            .ok_or(ActorError::Dropped)?
+            .owned
+            .insert(slot, actor.id);
+        Ok(actor)
+    }
+
+    pub(crate) fn clear_owned(
+        &self,
+        owner: &ActorRef,
+        slot: &'static str,
+    ) -> Result<(), ActorError> {
+        let child = self
+            .inner
+            .borrow_mut()
+            .node_mut(owner.id)
+            .ok_or(ActorError::Dropped)?
+            .owned
+            .remove(slot);
+        if let Some(child) = child {
+            TreeInner::remove_subtree(&self.inner, child);
+        }
         Ok(())
     }
 
     pub(crate) fn reparent(&self, child: &ActorRef, parent: &ActorRef) -> Result<(), ActorError> {
-        if !child.same_tree(parent) || child.id == parent.id {
-            return Err(ActorError::InvalidHierarchy);
-        }
+        self.validate_reparent(child, parent)?;
         let mut tree = self.inner.borrow_mut();
-        if tree.is_descendant(parent.id, child.id) {
-            return Err(ActorError::InvalidHierarchy);
-        }
         let old_parent = tree.node(child.id).ok_or(ActorError::Dropped)?.parent;
-        tree.node(parent.id).ok_or(ActorError::Dropped)?;
         if let Some(old_parent) = old_parent
             && let Some(node) = tree.node_mut(old_parent)
         {
@@ -240,6 +391,26 @@ impl ActorTree {
             .ok_or(ActorError::Dropped)?
             .children
             .push(child.id);
+        Ok(())
+    }
+
+    pub(crate) fn validate_reparent(
+        &self,
+        child: &ActorRef,
+        parent: &ActorRef,
+    ) -> Result<(), ActorError> {
+        if !child.same_tree(parent) || child.id == parent.id {
+            return Err(ActorError::InvalidHierarchy);
+        }
+        if !child.is_alive() || !parent.is_alive() {
+            return Err(ActorError::Dropped);
+        }
+        let tree = self.inner.borrow();
+        if tree.is_descendant(parent.id, child.id) {
+            return Err(ActorError::InvalidHierarchy);
+        }
+        tree.node(child.id).ok_or(ActorError::Dropped)?;
+        tree.node(parent.id).ok_or(ActorError::Dropped)?;
         Ok(())
     }
 
@@ -295,16 +466,34 @@ impl TreeInner {
     }
 
     fn remove_subtree(tree: &Rc<RefCell<Self>>, id: NodeId) {
-        let children = {
+        let dependents = {
             let tree = tree.borrow();
             let Some(node) = tree.node(id) else {
+                return;
+            };
+            node.dependents.clone()
+        };
+        for dependent in dependents {
+            Self::remove_subtree(tree, dependent);
+        }
+        let (children, native, teardown) = {
+            let mut tree = tree.borrow_mut();
+            let Some(node) = tree.node_mut(id) else {
                 return;
             };
             if node.root {
                 return;
             }
-            node.children.clone()
+            node.actor.alive.set(false);
+            (
+                node.children.clone(),
+                node._native.as_ptr(),
+                std::mem::take(&mut node.teardown),
+            )
         };
+        for cleanup in teardown.into_iter().rev() {
+            cleanup(native);
+        }
         for child in children {
             Self::remove_subtree(tree, child);
         }
@@ -315,9 +504,18 @@ impl TreeInner {
             };
             if let Some(parent) = tree.node_mut(parent) {
                 parent.children.retain(|candidate| *candidate != id);
+                parent.owned.retain(|_, candidate| *candidate != id);
+            }
+            let node = tree.nodes[id.index].take();
+            if let Some(node) = &node {
+                for dependency in &node.dependencies {
+                    if let Some(dependency) = tree.node_mut(*dependency) {
+                        dependency.dependents.retain(|candidate| *candidate != id);
+                    }
+                }
             }
             tree.generations[id.index] = tree.generations[id.index].wrapping_add(1);
-            tree.nodes[id.index].take()
+            node
         };
         drop(node);
     }
@@ -424,5 +622,46 @@ mod tests {
         let weak = WeakSlot::new(native.as_ptr());
         drop(native);
         assert!(weak.load().is_none());
+    }
+
+    #[test]
+    fn application_session_actor_does_not_revive() {
+        // Verifies an NSApp-style root ActorRef stays invalid after a later session begins.
+        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
+        let first = tree.begin_session();
+        let stale = first.root();
+        first.end_session();
+        assert_eq!(stale.with(|_| ()), Err(ActorError::NotActive));
+
+        let second = tree.begin_session();
+        assert!(second.root().is_alive());
+        assert_eq!(stale.with(|_| ()), Err(ActorError::NotActive));
+    }
+
+    #[test]
+    fn replacing_owned_child_releases_the_previous_object() {
+        // Verifies named Actor ownership replaces and releases native attachments exactly once.
+        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
+        let owner = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let first = crate::native::alloc_init(b"NSObject\0");
+        let first_weak = WeakSlot::new(first.as_ptr());
+        tree.replace_owned(&owner, "delegate", first).unwrap();
+        let second = crate::native::alloc_init(b"NSObject\0");
+        let second_weak = WeakSlot::new(second.as_ptr());
+        tree.replace_owned(&owner, "delegate", second).unwrap();
+        assert!(first_weak.load().is_none());
+        tree.clear_owned(&owner, "delegate").unwrap();
+        assert!(second_weak.load().is_none());
+    }
+
+    #[test]
+    fn dependency_removal_invalidates_dependent_actor() {
+        // Verifies removing a referenced view also removes its constraint-like dependent Actor.
+        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
+        let dependency = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let dependent = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        tree.add_dependency(&dependent, &dependency).unwrap();
+        dependency.remove();
+        assert_eq!(dependent.with(|_| ()), Err(ActorError::Dropped));
     }
 }

@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use crate::actor::ActorRef;
 use crate::native::{self, Strong};
 
 use super::{ViewError, ViewRef};
@@ -43,6 +44,9 @@ impl<'view> XAxisAnchor<'view> {
         other: Self,
         constant: f64,
     ) -> Result<LayoutConstraint<'view>, ViewError> {
+        if !self.view.actor().same_tree(other.view.actor()) {
+            return Err(ViewError::InvalidHierarchy);
+        }
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -58,6 +62,9 @@ impl<'view> XAxisAnchor<'view> {
         other: Self,
         constant: f64,
     ) -> Result<LayoutConstraint<'view>, ViewError> {
+        if !self.view.actor().same_tree(other.view.actor()) {
+            return Err(ViewError::InvalidHierarchy);
+        }
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -73,6 +80,9 @@ impl<'view> XAxisAnchor<'view> {
         other: Self,
         constant: f64,
     ) -> Result<LayoutConstraint<'view>, ViewError> {
+        if !self.view.actor().same_tree(other.view.actor()) {
+            return Err(ViewError::InvalidHierarchy);
+        }
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -99,6 +109,9 @@ impl<'view> YAxisAnchor<'view> {
         other: Self,
         constant: f64,
     ) -> Result<LayoutConstraint<'view>, ViewError> {
+        if !self.view.actor().same_tree(other.view.actor()) {
+            return Err(ViewError::InvalidHierarchy);
+        }
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -114,6 +127,9 @@ impl<'view> YAxisAnchor<'view> {
         other: Self,
         constant: f64,
     ) -> Result<LayoutConstraint<'view>, ViewError> {
+        if !self.view.actor().same_tree(other.view.actor()) {
+            return Err(ViewError::InvalidHierarchy);
+        }
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -129,6 +145,9 @@ impl<'view> YAxisAnchor<'view> {
         other: Self,
         constant: f64,
     ) -> Result<LayoutConstraint<'view>, ViewError> {
+        if !self.view.actor().same_tree(other.view.actor()) {
+            return Err(ViewError::InvalidHierarchy);
+        }
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -156,6 +175,9 @@ impl<'view> Dimension<'view> {
         multiplier: f64,
         constant: f64,
     ) -> Result<LayoutConstraint<'view>, ViewError> {
+        if !self.view.actor().same_tree(other.view.actor()) {
+            return Err(ViewError::InvalidHierarchy);
+        }
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -197,7 +219,8 @@ impl<'view> Dimension<'view> {
 }
 
 pub struct LayoutConstraint<'view> {
-    native: Strong,
+    actor: ActorRef,
+    endpoints: Vec<ActorRef>,
     _view: PhantomData<&'view ()>,
 }
 impl<'view> LayoutConstraint<'view> {
@@ -210,16 +233,12 @@ impl<'view> LayoutConstraint<'view> {
         multiplier: f64,
         constant: f64,
     ) -> Result<Self, ViewError> {
-        let second_native = second.with(|id| id)?;
-        Self::new(
-            first,
-            first_attribute,
-            relation,
-            second_native,
-            second_attribute,
-            multiplier,
-            constant,
-        )
+        let native = first.with(|first_native| {
+            second.with(|second_native| unsafe {
+                native::send_constraint(native::class(b"NSLayoutConstraint\0"), native::sel(b"constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:\0"), first_native, first_attribute as i64, relation as i64, second_native, second_attribute as i64, multiplier, constant)
+            })
+        })??;
+        Self::from_native(first, Some(second), native)
     }
     fn constant(
         first: ViewRef<'view>,
@@ -227,29 +246,39 @@ impl<'view> LayoutConstraint<'view> {
         relation: LayoutRelation,
         constant: f64,
     ) -> Result<Self, ViewError> {
-        Self::new(
-            first,
-            first_attribute,
-            relation,
-            native::NIL,
-            LayoutAttribute::NotAnAttribute,
-            1.0,
-            constant,
-        )
+        let native = first.with(|first_native| unsafe {
+            native::send_constraint(native::class(b"NSLayoutConstraint\0"), native::sel(b"constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:\0"), first_native, first_attribute as i64, relation as i64, native::NIL, LayoutAttribute::NotAnAttribute as i64, 1.0, constant)
+        })?;
+        Self::from_native(first, None, native)
     }
-    fn new(
+    fn from_native(
         first: ViewRef<'view>,
-        first_attribute: LayoutAttribute,
-        relation: LayoutRelation,
-        second: native::Id,
-        second_attribute: LayoutAttribute,
-        multiplier: f64,
-        constant: f64,
+        second: Option<ViewRef<'view>>,
+        native_id: native::Id,
     ) -> Result<Self, ViewError> {
-        first.with(|first| unsafe {
-            let value = native::send_constraint(native::class(b"NSLayoutConstraint\0"), native::sel(b"constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:\0"), first, first_attribute as i64, relation as i64, second, second_attribute as i64, multiplier, constant);
-            Strong::retain(value).map(|native| Self { native, _view: PhantomData }).ok_or(ViewError::NativeCreationFailed)
-        })?
+        // SAFETY: NSLayoutConstraint factory methods return an autoreleased live object.
+        let native = unsafe { Strong::retain(native_id) }.ok_or(ViewError::NativeCreationFailed)?;
+        let tree = first.actor().tree_handle().ok_or(ViewError::Closed)?;
+        let actor = tree
+            .insert_child(first.actor(), native)
+            .map_err(ViewError::from)?;
+        tree.add_dependency(&actor, first.actor())
+            .map_err(ViewError::from)?;
+        let mut endpoints = vec![first.actor().clone()];
+        if let Some(second) = second {
+            tree.add_dependency(&actor, second.actor())
+                .map_err(ViewError::from)?;
+            endpoints.push(second.actor().clone());
+        }
+        tree.add_teardown(&actor, |constraint| unsafe {
+            native::send_void_bool(constraint, native::sel(b"setActive:\0"), false)
+        })
+        .map_err(ViewError::from)?;
+        Ok(Self {
+            actor,
+            endpoints,
+            _view: PhantomData,
+        })
     }
     pub fn activate(constraints: &[Self]) -> Result<(), ViewError> {
         for value in constraints {
@@ -264,19 +293,31 @@ impl<'view> LayoutConstraint<'view> {
         Ok(())
     }
     pub fn set_active(&self, active: bool) -> Result<(), ViewError> {
-        unsafe {
-            native::send_void_bool(self.native.as_ptr(), native::sel(b"setActive:\0"), active)
-        };
-        Ok(())
+        self.ensure_endpoints()?;
+        self.actor
+            .with(|constraint| unsafe {
+                native::send_void_bool(constraint, native::sel(b"setActive:\0"), active)
+            })
+            .map_err(ViewError::from)
     }
     pub fn set_priority(&self, priority: f32) -> Result<(), ViewError> {
-        unsafe {
-            native::send_void_f32(
-                self.native.as_ptr(),
-                native::sel(b"setPriority:\0"),
-                priority,
-            )
-        };
-        Ok(())
+        self.ensure_endpoints()?;
+        self.actor
+            .with(|constraint| unsafe {
+                native::send_void_f32(constraint, native::sel(b"setPriority:\0"), priority)
+            })
+            .map_err(ViewError::from)
+    }
+    fn ensure_endpoints(&self) -> Result<(), ViewError> {
+        if self.endpoints.iter().all(ActorRef::is_alive) {
+            Ok(())
+        } else {
+            Err(ViewError::Closed)
+        }
+    }
+}
+impl Drop for LayoutConstraint<'_> {
+    fn drop(&mut self) {
+        self.actor.remove();
     }
 }

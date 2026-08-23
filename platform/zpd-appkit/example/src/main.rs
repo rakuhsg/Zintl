@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     window.show()?;
 
-    application.run();
+    application.run()?;
     Ok(())
 }
 

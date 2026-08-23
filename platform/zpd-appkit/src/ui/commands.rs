@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::actor::{ActorRef, ActorTree};
 use crate::native::{self, Strong};
 use crate::runloop::{Application, ApplicationDelegate};
 
@@ -45,10 +46,14 @@ pub enum CommandRole {
 #[derive(Clone, Copy, Debug)]
 pub enum CommandError {
     NativeCreationFailed,
+    Closed,
 }
 impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AppKit failed to install commands")
+        f.write_str(match self {
+            Self::NativeCreationFailed => "AppKit failed to install commands",
+            Self::Closed => "the application is not active",
+        })
     }
 }
 impl std::error::Error for CommandError {}
@@ -63,48 +68,50 @@ where
     F: FnMut(&str) + 'static,
 {
     let callback_fn = Rc::new(RefCell::new(callback_fn));
-    let mut objects = Vec::new();
+    let tree = application.tree();
+    let app = application.actor_ref();
+    app.with(|app| unsafe {
+        native::send_void_id(app, native::sel(b"setMainMenu:\0"), native::NIL)
+    })
+    .map_err(|_| CommandError::Closed)?;
     let main_menu = native::alloc_init(b"NSMenu\0");
-    if let Some(menu) = &commands.app_menu {
-        add_menu(
-            application,
-            &main_menu,
-            "",
-            &menu.items,
-            &callback_fn,
-            &mut objects,
-        )?;
-    }
-    for menu in &commands.menus {
-        add_menu(
-            application,
-            &main_menu,
-            &menu.title,
-            &menu.items,
-            &callback_fn,
-            &mut objects,
-        )?;
+    let main = tree
+        .replace_owned(&app, "commands", main_menu)
+        .map_err(|_| CommandError::Closed)?;
+    let build_result = (|| {
+        if let Some(menu) = &commands.app_menu {
+            add_menu(tree, &app, &main, "", &menu.items, &callback_fn)?;
+        }
+        for menu in &commands.menus {
+            add_menu(tree, &app, &main, &menu.title, &menu.items, &callback_fn)?;
+        }
+        Ok::<(), CommandError>(())
+    })();
+    if let Err(error) = build_result {
+        let _ = tree.clear_owned(&app, "commands");
+        return Err(error);
     }
     // SAFETY: NSApplication retains the installed main menu.
-    unsafe {
-        native::send_void_id(
-            application.app(),
-            native::sel(b"setMainMenu:\0"),
-            main_menu.as_ptr(),
-        )
-    };
-    objects.push(main_menu);
-    application.replace_command_objects(objects);
+    let install_result = app.with(|app| {
+        main.with(|main| unsafe { native::send_void_id(app, native::sel(b"setMainMenu:\0"), main) })
+    });
+    match install_result {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) | Err(_) => {
+            let _ = tree.clear_owned(&app, "commands");
+            return Err(CommandError::Closed);
+        }
+    }
     Ok(())
 }
 
 fn add_menu<F>(
-    application: &impl ApplicationAccess,
-    main: &Strong,
+    tree: &ActorTree,
+    application: &ActorRef,
+    main: &ActorRef,
     title: &str,
     items: &[CommandItem],
     callback_fn: &Rc<RefCell<F>>,
-    objects: &mut Vec<Strong>,
 ) -> Result<(), CommandError>
 where
     F: FnMut(&str) + 'static,
@@ -120,12 +127,17 @@ where
             menu.as_ptr(),
         );
         native::send_void_id(
-            main.as_ptr(),
+            main.with(|id| id).map_err(|_| CommandError::Closed)?,
             native::sel(b"addItem:\0"),
             container.as_ptr(),
         );
     }
-    objects.push(container);
+    let container = tree
+        .insert_child(main, container)
+        .map_err(|_| CommandError::Closed)?;
+    let menu = tree
+        .insert_child(&container, menu)
+        .map_err(|_| CommandError::Closed)?;
     for item in items {
         let item_title = native::nsstring(&item.title);
         let key = native::nsstring(
@@ -148,21 +160,25 @@ where
             );
             Strong::from_retained(value).ok_or(CommandError::NativeCreationFailed)?
         };
-        let app = application.app_id();
+        let app = application.clone();
         let command_id = item.id.clone();
         let role = item.role;
         let callback_fn = callback_fn.clone();
         let target = callback::target(move |_| match role {
-            Some(CommandRole::About) => unsafe {
-                native::send_void_id(
-                    app,
-                    native::sel(b"orderFrontStandardAboutPanel:\0"),
-                    native::NIL,
-                )
-            },
-            Some(CommandRole::Quit) => unsafe {
-                native::send_void_id(app, native::sel(b"terminate:\0"), native::NIL)
-            },
+            Some(CommandRole::About) => {
+                let _ = app.with(|app| unsafe {
+                    native::send_void_id(
+                        app,
+                        native::sel(b"orderFrontStandardAboutPanel:\0"),
+                        native::NIL,
+                    )
+                });
+            }
+            Some(CommandRole::Quit) => {
+                let _ = app.with(|app| unsafe {
+                    native::send_void_id(app, native::sel(b"terminate:\0"), native::NIL)
+                });
+            }
             None => {
                 if let Some(id) = command_id.as_deref() {
                     let Ok(mut callback) = callback_fn.try_borrow_mut() else {
@@ -197,23 +213,24 @@ where
                 item.enabled,
             );
             native::send_void_id(
-                menu.as_ptr(),
+                menu.with(|id| id).map_err(|_| CommandError::Closed)?,
                 native::sel(b"addItem:\0"),
                 native_item.as_ptr(),
             );
         }
-        objects.push(target);
-        objects.push(native_item);
+        let item = tree
+            .insert_child(&menu, native_item)
+            .map_err(|_| CommandError::Closed)?;
+        tree.add_teardown(&item, |item| unsafe {
+            native::send_void_id(item, native::sel(b"setTarget:\0"), native::NIL);
+            native::send_void_id(item, native::sel(b"setAction:\0"), native::NIL);
+        })
+        .map_err(|_| CommandError::Closed)?;
+        let target = tree
+            .insert_child(&item, target)
+            .map_err(|_| CommandError::Closed)?;
+        tree.add_teardown(&target, |target| unsafe { callback::release(target) })
+            .map_err(|_| CommandError::Closed)?;
     }
-    objects.push(menu);
     Ok(())
-}
-
-trait ApplicationAccess {
-    fn app_id(&self) -> native::Id;
-}
-impl<D: ApplicationDelegate> ApplicationAccess for Application<D> {
-    fn app_id(&self) -> native::Id {
-        self.app()
-    }
 }

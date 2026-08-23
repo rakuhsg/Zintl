@@ -1,9 +1,23 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
+use zpd_appkit::actor::{ActorError, ApplicationMessage};
 use zpd_appkit::geometry::Rect;
-use zpd_appkit::runloop::Application;
+use zpd_appkit::runloop::{Application, ApplicationDelegate};
 use zpd_appkit::ui::{
     AsView, Button, CommandItem, CommandMenu, CommandModifier, CommandSet, LayoutConstraint,
     Sidebar, SidebarItem, SidebarSection, TextField, ViewError,
 };
+
+struct DropDelegate(Rc<Cell<usize>>);
+
+impl ApplicationDelegate for DropDelegate {}
+
+impl Drop for DropDelegate {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() + 1);
+    }
+}
 
 fn main() {
     // Verifies the raw Objective-C backend creates, relates, and tears down native actors on main.
@@ -76,7 +90,7 @@ fn main() {
         let surface = window
             .create_wgpu_surface(Rect::new(0.0, 0.0, 64.0, 64.0))
             .unwrap();
-        assert!(!surface.metal_layer().unwrap().as_ptr().is_null());
+        assert!(!surface.metal_layer().unwrap().as_ptr().unwrap().is_null());
         assert!(surface.drawable_size().unwrap().width >= 64);
     }
     drop(constraints);
@@ -84,8 +98,16 @@ fn main() {
     assert_eq!(label.set_string_value("expired"), Err(ViewError::Closed));
     drop(button);
     drop(label);
+    let stale_application = application.actor_ref();
     drop(application);
     // Verifies the process-wide NSApp root can host a fresh Application session.
-    let application = Application::new(()).unwrap();
+    let drops = Rc::new(Cell::new(0));
+    let application = Application::new(DropDelegate(drops.clone())).unwrap();
+    assert_eq!(
+        stale_application.send(ApplicationMessage::Stop),
+        Err(ActorError::NotActive)
+    );
     drop(application);
+    // Verifies the Actor-owned Objective-C delegate releases its Rust state exactly once.
+    assert_eq!(drops.get(), 1);
 }

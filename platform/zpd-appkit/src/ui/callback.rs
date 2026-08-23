@@ -28,11 +28,7 @@ unsafe extern "C" fn invoke(object: Id, _: native::Sel, sender: Id) {
 }
 
 unsafe extern "C" fn dealloc(object: Id, _: native::Sel) {
-    let callback = unsafe { callback(object) };
-    if !callback.is_null() {
-        // SAFETY: The target owns exactly one callback allocation.
-        unsafe { drop(Box::from_raw(callback)) };
-    }
+    unsafe { release(object) };
     unsafe {
         native::send_super_void(
             object,
@@ -40,6 +36,22 @@ unsafe extern "C" fn dealloc(object: Id, _: native::Sel) {
             native::sel(b"dealloc\0"),
         )
     };
+}
+
+pub(crate) unsafe fn release(object: Id) {
+    let callback = unsafe { callback(object) };
+    if !callback.is_null() {
+        // SAFETY: Clearing the ivar transfers the sole allocation back to Rust.
+        unsafe {
+            native::set_pointer_ivar(
+                object,
+                c"_zpdCallback".as_ptr(),
+                std::ptr::null_mut::<Callback>(),
+            )
+        };
+        // SAFETY: The target owns exactly one callback allocation.
+        unsafe { drop(Box::from_raw(callback)) };
+    }
 }
 
 fn target_class() -> native::Class {
@@ -122,5 +134,34 @@ mod tests {
         });
         drop(target);
         assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    fn actor_owned_target_replacement_releases_each_callback_once() {
+        // Verifies Actor attachment replacement drops old and current callback state once each.
+        let tree = crate::actor::ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
+        let owner = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let drops = Rc::new(Cell::new(0));
+        let first = DropProbe(drops.clone());
+        tree.replace_owned(
+            &owner,
+            "target",
+            super::target(move |_| {
+                let _ = &first;
+            }),
+        )
+        .unwrap();
+        let second = DropProbe(drops.clone());
+        tree.replace_owned(
+            &owner,
+            "target",
+            super::target(move |_| {
+                let _ = &second;
+            }),
+        )
+        .unwrap();
+        assert_eq!(drops.get(), 1);
+        tree.clear_owned(&owner, "target").unwrap();
+        assert_eq!(drops.get(), 2);
     }
 }
