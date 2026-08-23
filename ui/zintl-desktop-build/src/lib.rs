@@ -1,9 +1,20 @@
+//! Build-script support for applications using `zintl-desktop`.
+
+/// Configures the final application binary for `zintl-desktop`.
+///
+/// Call this function from the application's `build.rs`. On macOS, it adds
+/// the Swift runtime search paths required by Zintl's AppKit support library.
+/// On other platforms, it does nothing.
+pub fn configure() {
+    configure_platform();
+}
+
 #[cfg(target_os = "macos")]
-fn main() {
+fn configure_platform() {
     use std::process::Command;
 
-    // Cargo does not propagate rustc-link-arg values from library dependencies
-    // to the final executable, so the consumer must carry Swift's runtime paths.
+    println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
+
     let developer_dir = Command::new("xcode-select")
         .arg("--print-path")
         .output()
@@ -19,11 +30,15 @@ fn main() {
     let swift_runtime =
         format!("{developer_dir}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx");
 
+    emit_rpath(&swift_runtime);
+    emit_rpath("/usr/lib/swift");
+}
+
+#[cfg(target_os = "macos")]
+fn emit_rpath(path: &str) {
     println!("cargo:rustc-link-arg=-rpath");
-    println!("cargo:rustc-link-arg={swift_runtime}");
-    println!("cargo:rustc-link-arg=-rpath");
-    println!("cargo:rustc-link-arg=/usr/lib/swift");
+    println!("cargo:rustc-link-arg={path}");
 }
 
 #[cfg(not(target_os = "macos"))]
-fn main() {}
+fn configure_platform() {}
