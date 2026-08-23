@@ -1,4 +1,5 @@
 mod button;
+mod callback;
 pub(crate) mod commands;
 mod layout;
 mod sidebar;

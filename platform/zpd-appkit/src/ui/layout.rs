@@ -1,15 +1,13 @@
-use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::ptr::NonNull;
-use std::rc::Rc;
 
-use crate::ffi;
+use crate::native::{self, Strong};
 
-use super::ViewRef;
+use super::{ViewError, ViewRef};
 
 #[derive(Clone, Copy)]
-#[repr(i32)]
+#[repr(i64)]
 pub(crate) enum LayoutAttribute {
+    NotAnAttribute = 0,
     Left = 1,
     Right = 2,
     Top = 3,
@@ -22,11 +20,9 @@ pub(crate) enum LayoutAttribute {
     CenterY = 10,
     LastBaseline = 11,
     FirstBaseline = 12,
-    NotAnAttribute = 0,
 }
-
 #[derive(Clone, Copy)]
-#[repr(i32)]
+#[repr(i64)]
 enum LayoutRelation {
     LessThanOrEqual = -1,
     Equal = 0,
@@ -38,13 +34,15 @@ pub struct XAxisAnchor<'view> {
     view: ViewRef<'view>,
     attribute: LayoutAttribute,
 }
-
 impl<'view> XAxisAnchor<'view> {
     pub(crate) fn new(view: ViewRef<'view>, attribute: LayoutAttribute) -> Self {
         Self { view, attribute }
     }
-
-    pub fn constraint_equal_to(self, other: Self, constant: f64) -> LayoutConstraint<'view> {
+    pub fn constraint_equal_to(
+        self,
+        other: Self,
+        constant: f64,
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -55,12 +53,11 @@ impl<'view> XAxisAnchor<'view> {
             constant,
         )
     }
-
     pub fn constraint_greater_than_or_equal_to(
         self,
         other: Self,
         constant: f64,
-    ) -> LayoutConstraint<'view> {
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -71,12 +68,11 @@ impl<'view> XAxisAnchor<'view> {
             constant,
         )
     }
-
     pub fn constraint_less_than_or_equal_to(
         self,
         other: Self,
         constant: f64,
-    ) -> LayoutConstraint<'view> {
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -94,13 +90,15 @@ pub struct YAxisAnchor<'view> {
     view: ViewRef<'view>,
     attribute: LayoutAttribute,
 }
-
 impl<'view> YAxisAnchor<'view> {
     pub(crate) fn new(view: ViewRef<'view>, attribute: LayoutAttribute) -> Self {
         Self { view, attribute }
     }
-
-    pub fn constraint_equal_to(self, other: Self, constant: f64) -> LayoutConstraint<'view> {
+    pub fn constraint_equal_to(
+        self,
+        other: Self,
+        constant: f64,
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -111,12 +109,11 @@ impl<'view> YAxisAnchor<'view> {
             constant,
         )
     }
-
     pub fn constraint_greater_than_or_equal_to(
         self,
         other: Self,
         constant: f64,
-    ) -> LayoutConstraint<'view> {
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -127,12 +124,11 @@ impl<'view> YAxisAnchor<'view> {
             constant,
         )
     }
-
     pub fn constraint_less_than_or_equal_to(
         self,
         other: Self,
         constant: f64,
-    ) -> LayoutConstraint<'view> {
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -150,18 +146,16 @@ pub struct Dimension<'view> {
     view: ViewRef<'view>,
     attribute: LayoutAttribute,
 }
-
 impl<'view> Dimension<'view> {
     pub(crate) fn new(view: ViewRef<'view>, attribute: LayoutAttribute) -> Self {
         Self { view, attribute }
     }
-
     pub fn constraint_equal_to(
         self,
         other: Self,
         multiplier: f64,
         constant: f64,
-    ) -> LayoutConstraint<'view> {
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::between(
             self.view,
             self.attribute,
@@ -172,15 +166,16 @@ impl<'view> Dimension<'view> {
             constant,
         )
     }
-
-    pub fn constraint_equal_to_constant(self, constant: f64) -> LayoutConstraint<'view> {
+    pub fn constraint_equal_to_constant(
+        self,
+        constant: f64,
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::constant(self.view, self.attribute, LayoutRelation::Equal, constant)
     }
-
     pub fn constraint_greater_than_or_equal_to_constant(
         self,
         constant: f64,
-    ) -> LayoutConstraint<'view> {
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::constant(
             self.view,
             self.attribute,
@@ -188,11 +183,10 @@ impl<'view> Dimension<'view> {
             constant,
         )
     }
-
     pub fn constraint_less_than_or_equal_to_constant(
         self,
         constant: f64,
-    ) -> LayoutConstraint<'view> {
+    ) -> Result<LayoutConstraint<'view>, ViewError> {
         LayoutConstraint::constant(
             self.view,
             self.attribute,
@@ -202,13 +196,10 @@ impl<'view> Dimension<'view> {
     }
 }
 
-/// Owns a strong reference to an AppKit `NSLayoutConstraint`.
 pub struct LayoutConstraint<'view> {
-    raw: NonNull<c_void>,
+    native: Strong,
     _view: PhantomData<&'view ()>,
-    _main_thread: PhantomData<Rc<()>>,
 }
-
 impl<'view> LayoutConstraint<'view> {
     fn between(
         first: ViewRef<'view>,
@@ -218,84 +209,74 @@ impl<'view> LayoutConstraint<'view> {
         second_attribute: LayoutAttribute,
         multiplier: f64,
         constant: f64,
-    ) -> Self {
+    ) -> Result<Self, ViewError> {
+        let second_native = second.with(|id| id)?;
         Self::new(
             first,
             first_attribute,
             relation,
-            Some((second, second_attribute)),
+            second_native,
+            second_attribute,
             multiplier,
             constant,
         )
     }
-
     fn constant(
         first: ViewRef<'view>,
         first_attribute: LayoutAttribute,
         relation: LayoutRelation,
         constant: f64,
-    ) -> Self {
-        Self::new(first, first_attribute, relation, None, 1.0, constant)
+    ) -> Result<Self, ViewError> {
+        Self::new(
+            first,
+            first_attribute,
+            relation,
+            native::NIL,
+            LayoutAttribute::NotAnAttribute,
+            1.0,
+            constant,
+        )
     }
-
     fn new(
         first: ViewRef<'view>,
         first_attribute: LayoutAttribute,
         relation: LayoutRelation,
-        second: Option<(ViewRef<'view>, LayoutAttribute)>,
+        second: native::Id,
+        second_attribute: LayoutAttribute,
         multiplier: f64,
         constant: f64,
-    ) -> Self {
-        let (second_view, second_attribute) = second
-            .map(|(view, attribute)| (view.as_ptr(), attribute))
-            .unwrap_or((std::ptr::null_mut(), LayoutAttribute::NotAnAttribute));
-        // SAFETY: The views are live on the AppKit main thread. AppKit returns
-        // a +1 retained constraint.
-        let raw = unsafe {
-            ffi::zintlappkit_layout_constraint_create(
-                first.as_ptr(),
-                first_attribute as i32,
-                relation as i32,
-                second_view,
-                second_attribute as i32,
-                multiplier,
-                constant,
+    ) -> Result<Self, ViewError> {
+        first.with(|first| unsafe {
+            let value = native::send_constraint(native::class(b"NSLayoutConstraint\0"), native::sel(b"constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:\0"), first, first_attribute as i64, relation as i64, second, second_attribute as i64, multiplier, constant);
+            Strong::retain(value).map(|native| Self { native, _view: PhantomData }).ok_or(ViewError::NativeCreationFailed)
+        })?
+    }
+    pub fn activate(constraints: &[Self]) -> Result<(), ViewError> {
+        for value in constraints {
+            value.set_active(true)?;
+        }
+        Ok(())
+    }
+    pub fn deactivate(constraints: &[Self]) -> Result<(), ViewError> {
+        for value in constraints {
+            value.set_active(false)?;
+        }
+        Ok(())
+    }
+    pub fn set_active(&self, active: bool) -> Result<(), ViewError> {
+        unsafe {
+            native::send_void_bool(self.native.as_ptr(), native::sel(b"setActive:\0"), active)
+        };
+        Ok(())
+    }
+    pub fn set_priority(&self, priority: f32) -> Result<(), ViewError> {
+        unsafe {
+            native::send_void_f32(
+                self.native.as_ptr(),
+                native::sel(b"setPriority:\0"),
+                priority,
             )
         };
-        Self {
-            raw: NonNull::new(raw).expect("AppKit failed to create a layout constraint"),
-            _view: PhantomData,
-            _main_thread: PhantomData,
-        }
-    }
-
-    pub fn activate(constraints: &[Self]) {
-        for constraint in constraints {
-            constraint.set_active(true);
-        }
-    }
-
-    pub fn deactivate(constraints: &[Self]) {
-        for constraint in constraints {
-            constraint.set_active(false);
-        }
-    }
-
-    pub fn set_active(&self, active: bool) {
-        // SAFETY: The retained constraint is live and accessed on main.
-        unsafe { ffi::zintlappkit_layout_constraint_set_active(self.raw.as_ptr(), active) };
-    }
-
-    pub fn set_priority(&self, priority: f32) {
-        // SAFETY: The retained constraint is live and accessed on main.
-        unsafe { ffi::zintlappkit_layout_constraint_set_priority(self.raw.as_ptr(), priority) };
-    }
-}
-
-impl Drop for LayoutConstraint<'_> {
-    fn drop(&mut self) {
-        // SAFETY: This releases the wrapper's strong reference exactly once.
-        // An active constraint remains retained by AppKit's layout engine.
-        unsafe { ffi::zintlappkit_release_layout_constraint(self.raw.as_ptr()) };
+        Ok(())
     }
 }

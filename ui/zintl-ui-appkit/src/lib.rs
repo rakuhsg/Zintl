@@ -156,6 +156,7 @@ mod backend {
         sender: Option<AppkitSender<Message>>,
         structure_dirty: bool,
         layout_dirty: bool,
+        pending_error: Option<AppError>,
     }
 
     impl<R: AppKitRenderNode> Default for AppKitBackend<R> {
@@ -176,6 +177,7 @@ mod backend {
                 sender: None,
                 structure_dirty: true,
                 layout_dirty: true,
+                pending_error: None,
             }
         }
 
@@ -233,6 +235,9 @@ mod backend {
             windows: &mut HashMap<NodeId, NativeWindow<'application, ()>>,
             sender: AppkitSender<Message>,
         ) -> Result<(), AppError> {
+            if let Some(error) = self.pending_error.take() {
+                return Err(error);
+            }
             self.sender = Some(sender);
             let window_ids = self.window_ids();
             if window_ids.is_empty() {
@@ -272,7 +277,7 @@ mod backend {
                 self.materialize_children(application, window_id)?;
                 if rebuild_structure {
                     let content = window.content_view().map_err(AppError::Window)?;
-                    self.attach_children(content, window_id);
+                    self.attach_children(content, window_id)?;
                 }
                 if update_layout {
                     self.layout_window(window_id, bounds)?;
@@ -340,37 +345,54 @@ mod backend {
                 } => {
                     let field =
                         NativeTextField::with_string(application, value).map_err(AppError::View)?;
-                    field.set_placeholder_string(placeholder.as_deref());
+                    field
+                        .set_placeholder_string(placeholder.as_deref())
+                        .map_err(AppError::View)?;
                     if *on_change {
-                        self.install_change_handler(&field, id);
+                        self.install_change_handler(&field, id)?;
                     }
                     NativeNode::TextField(field)
                 }
             };
-            native.as_view().set_identifier(accessibility_id.as_deref());
+            native
+                .as_view()
+                .set_identifier(accessibility_id.as_deref())
+                .map_err(AppError::View)?;
             Ok(Some(native))
         }
 
-        fn install_change_handler(&self, field: &NativeTextField, id: NodeId) {
+        fn install_change_handler(
+            &self,
+            field: &NativeTextField,
+            id: NodeId,
+        ) -> Result<(), AppError> {
             let sender = self
                 .sender
                 .as_ref()
                 .expect("the AppKit event sender is installed before native views")
                 .clone();
-            field.set_change_handler(move |value| {
-                let _ = sender.send(Message::Event(Event::TextChanged { node: id, value }));
-            });
+            field
+                .set_change_handler(move |value| {
+                    let _ = sender.send(Message::Event(Event::TextChanged { node: id, value }));
+                })
+                .map_err(AppError::View)
         }
 
-        fn attach_children(&self, parent: ViewRef<'_>, parent_id: NodeId) {
+        fn attach_children(&self, parent: ViewRef<'_>, parent_id: NodeId) -> Result<(), AppError> {
             for child in self.children(parent_id) {
                 let Some(native) = self.node(*child).native.as_ref() else {
                     continue;
                 };
-                native.as_view().remove_from_superview();
-                parent.add_subview(&native.as_view());
-                self.attach_children(native.as_view(), *child);
+                native
+                    .as_view()
+                    .remove_from_superview()
+                    .map_err(AppError::View)?;
+                parent
+                    .add_subview(&native.as_view())
+                    .map_err(AppError::View)?;
+                self.attach_children(native.as_view(), *child)?;
             }
+            Ok(())
         }
 
         fn layout_window(&self, window_id: NodeId, bounds: Rect) -> Result<(), AppError> {
@@ -437,7 +459,8 @@ mod backend {
             if let Some(native) = self.node(node.node).native.as_ref() {
                 native
                     .as_view()
-                    .set_frame(native_frame(frame, parent_height));
+                    .set_frame(native_frame(frame, parent_height))
+                    .map_err(AppError::View)?;
             }
             for child in &node.children {
                 self.apply_layout(child, layout, frame.height)?;
@@ -445,15 +468,23 @@ mod backend {
             Ok(())
         }
 
-        fn update_native(&self, id: NodeId, old: &NodeKind, new: &NodeKind) {
+        fn update_native(
+            &self,
+            id: NodeId,
+            old: &NodeKind,
+            new: &NodeKind,
+        ) -> Result<(), AppError> {
             let Some(native) = self.node(id).native.as_ref() else {
-                return;
+                return Ok(());
             };
             if let (NodeKind::View { id: old_id, .. }, NodeKind::View { id: new_id, .. }) =
                 (old, new)
                 && old_id != new_id
             {
-                native.as_view().set_identifier(new_id.as_deref());
+                native
+                    .as_view()
+                    .set_identifier(new_id.as_deref())
+                    .map_err(AppError::View)?;
             }
             match (native, old, new) {
                 (
@@ -466,7 +497,7 @@ mod backend {
                         kind: ViewKind::Label(new),
                         ..
                     },
-                ) if old != new => field.set_string_value(new),
+                ) if old != new => field.set_string_value(new).map_err(AppError::View)?,
                 (
                     NativeNode::Button(button),
                     NodeKind::View {
@@ -477,7 +508,7 @@ mod backend {
                         kind: ViewKind::Button(new),
                         ..
                     },
-                ) if old != new => button.set_title(new),
+                ) if old != new => button.set_title(new).map_err(AppError::View)?,
                 (
                     NativeNode::TextField(field),
                     NodeKind::View {
@@ -498,20 +529,23 @@ mod backend {
                         ..
                     },
                 ) => {
-                    if field.string_value() != *value {
-                        field.set_string_value(value);
+                    if field.string_value().map_err(AppError::View)? != *value {
+                        field.set_string_value(value).map_err(AppError::View)?;
                     }
-                    field.set_placeholder_string(placeholder.as_deref());
+                    field
+                        .set_placeholder_string(placeholder.as_deref())
+                        .map_err(AppError::View)?;
                     if old_handler != on_change {
                         if *on_change {
-                            self.install_change_handler(field, id);
+                            self.install_change_handler(field, id)?;
                         } else {
-                            field.clear_change_handler();
+                            field.clear_change_handler().map_err(AppError::View)?;
                         }
                     }
                 }
                 _ => {}
             }
+            Ok(())
         }
     }
 
@@ -541,7 +575,9 @@ mod backend {
                 .expect("render nodes have values")
                 .appkit_node();
             let new = value.appkit_node();
-            self.update_native(id, &old, &new);
+            if let Err(error) = self.update_native(id, &old, &new) {
+                self.pending_error = Some(error);
+            }
             self.node_mut(id).value = Some(value.clone());
             self.layout_dirty = true;
         }
@@ -560,7 +596,7 @@ mod backend {
             if let Some(mut node) = self.nodes.get_mut(id.0).and_then(Option::take)
                 && let Some(native) = node.native.take()
             {
-                native.as_view().remove_from_superview();
+                let _ = native.as_view().remove_from_superview();
             }
             self.structure_dirty = true;
             self.layout_dirty = true;

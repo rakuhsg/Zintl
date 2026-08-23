@@ -1,10 +1,10 @@
-//! Safe, main-thread-aware Rust ownership wrappers for Zintl's AppKit FFI.
-//!
-//! The final application must link `ZintlAppkitSupport`. Raw native handles
-//! and callback pointers remain private to this crate.
+//! Safe, main-thread-aware Rust ownership wrappers for AppKit.
 
-mod ffi;
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+compile_error!("zpd-appkit supports Apple Silicon macOS only");
+
+mod actor;
 pub mod geometry;
+mod native;
 pub mod runloop;
-mod string;
 pub mod ui;

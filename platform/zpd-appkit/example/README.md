@@ -1,5 +1,8 @@
 # zpd-appkit example
 
+The backend calls AppKit through the Objective-C runtime directly and supports
+Apple Silicon macOS. No Swift support library or Swift runtime rpath is needed.
+
 This example installs an application menu and a custom **Example** menu, then
 creates and shows an AppKit window with an `NSTextField` label, editable text
 field, and `NSButton` laid out using Auto Layout. Selecting **Example > Print

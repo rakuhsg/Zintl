@@ -3,11 +3,10 @@ name = "zpd-appkit"
 edition = "2024"
 version.workspace = true
 license.workspace = true
-links = "ZintlAppkitSupport"
-
-[dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
 [features]
 wgpu = []
+
+[[test]]
+name = "native"
+path = "tests/native.rs"
+harness = false
