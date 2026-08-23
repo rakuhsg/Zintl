@@ -21,14 +21,14 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 			);
-			path = "../../tests/xcui";
+			path = xcui;
 			sourceTree = "<group>";
 		};
 		A10000000000000000000002 /* Support */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 			);
-			path = "../support";
+			path = "../tools/support";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */

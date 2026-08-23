@@ -7,7 +7,7 @@
   <key>CFBundleExecutable</key>
   <string>ZintlUITestApp</string>
   <key>CFBundleIdentifier</key>
-  <string>dev.zintl.ui-test-app</string>
+  <string>org.zintl.ui-test-app</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>

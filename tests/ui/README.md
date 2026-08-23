@@ -17,5 +17,5 @@ Run one test class:
 ```
 
 Rust fixture scenarios live under `tests/app/scenarios`. XCUITest sources live
-under `tests/xcui`; new Swift files in that directory are discovered by the
-Xcode project automatically.
+under `tests/xcui`; new Swift files in that directory are discovered by
+`tests/ZintlUITests.xcodeproj` automatically.

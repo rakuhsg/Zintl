@@ -14,7 +14,7 @@ if [ -e "$result_path" ]; then
 fi
 
 xcodebuild test \
-    -project "$ui_test_root/tools/xcode/ZintlUITests.xcodeproj" \
+    -project "$ui_test_root/tests/ZintlUITests.xcodeproj" \
     -scheme ZintlUITests \
     -destination "platform=macOS" \
     -resultBundlePath "$result_path" \
