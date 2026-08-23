@@ -354,14 +354,67 @@ mod tests {
 
     #[test]
     fn parent_removal_invalidates_its_descendants() {
-        // Verifies subtree teardown invalidates every child ActorRef.
+        // Verifies removing a native-owned subtree drops its actors and Objective-C objects.
+        // SAFETY: NSAutoreleasePool implements alloc/init and drain with these signatures.
+        let autorelease_pool = unsafe {
+            let allocated = native::send_id(
+                native::class(b"NSAutoreleasePool\0"),
+                native::sel(b"alloc\0"),
+            );
+            native::send_id(allocated, native::sel(b"init\0"))
+        };
         let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
-        let parent = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let parent = tree.insert_root(crate::native::alloc_init(b"NSMutableArray\0"));
         let child = tree
             .insert_child(&parent, crate::native::alloc_init(b"NSObject\0"))
             .unwrap();
+
+        parent
+            .with(|parent_native| {
+                child.with(|child_native| {
+                    // SAFETY: The receiver is a live NSMutableArray and addObject: retains
+                    // the live NSObject for the native parent-child ownership relationship.
+                    unsafe {
+                        native::send_void_id(
+                            parent_native,
+                            native::sel(b"addObject:\0"),
+                            child_native,
+                        )
+                    };
+                })
+            })
+            .unwrap()
+            .unwrap();
+
+        let native_hierarchy_matches = parent
+            .with(|parent_native| {
+                child.with(|child_native| {
+                    // SAFETY: The receiver is a live NSMutableArray and containsObject: accepts
+                    // the live NSObject and returns an Objective-C BOOL.
+                    unsafe {
+                        native::send_bool_id(
+                            parent_native,
+                            native::sel(b"containsObject:\0"),
+                            child_native,
+                        )
+                    }
+                })
+            })
+            .unwrap()
+            .unwrap();
+        assert!(native_hierarchy_matches);
+
+        let parent_native = parent.with(WeakSlot::new).unwrap();
+        let child_native = child.with(WeakSlot::new).unwrap();
         parent.remove();
+
+        assert_eq!(parent.with(|_| ()), Err(ActorError::Dropped));
         assert_eq!(child.with(|_| ()), Err(ActorError::Dropped));
+
+        // SAFETY: drain consumes the live autorelease pool created at the start of this test.
+        unsafe { native::send_void(autorelease_pool, native::sel(b"drain\0")) };
+        assert!(parent_native.load().is_none());
+        assert!(child_native.load().is_none());
     }
 
     #[test]
