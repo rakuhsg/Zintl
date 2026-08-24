@@ -2,7 +2,6 @@
 name = "zintl-ui-test-app"
 edition = "2024"
 publish = false
-build = "tools/rust-build.rs"
 autotests = false
 
 [[bin]]

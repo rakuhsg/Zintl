@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    application.run();
+    application.run()?;
     worker.join().expect("worker thread panicked");
     Ok(())
 }

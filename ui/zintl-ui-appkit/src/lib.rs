@@ -69,13 +69,14 @@ mod backend {
     use std::rc::Rc;
 
     use messageloop_appkit::{
-        AppkitSender, Context as MessageContext, MessageLoopAppkit, MessageLoopHandler, Sender,
+        AppkitSender, Context as MessageContext, MessageLoopAppkit, MessageLoopError,
+        MessageLoopHandler, Sender,
     };
     use zintl_ui::composer::Composer;
     use zintl_ui::renderer::RenderBackend;
     use zintl_ui_layout::{LayoutError, LayoutStyle, LayoutTree, Size};
     use zpd_appkit::geometry::Rect as NativeRect;
-    use zpd_appkit::runloop::{Application, ApplicationError, RunLoopSourceError};
+    use zpd_appkit::runloop::{Application, ApplicationError};
     use zpd_appkit::ui::{
         AsView, Button as NativeButton, CommandError, CommandItem, CommandModifier, CommandRole,
         CommandSet, TextField as NativeTextField, View as NativeView, ViewError, ViewRef,
@@ -91,7 +92,7 @@ mod backend {
         Window(WindowError),
         View(ViewError),
         Layout(LayoutError),
-        RunLoopSource(RunLoopSourceError),
+        MessageLoop(MessageLoopError),
         NoWindow,
         InvalidTree,
     }
@@ -104,7 +105,7 @@ mod backend {
                 Self::Window(error) => error.fmt(formatter),
                 Self::View(error) => error.fmt(formatter),
                 Self::Layout(error) => error.fmt(formatter),
-                Self::RunLoopSource(error) => error.fmt(formatter),
+                Self::MessageLoop(error) => error.fmt(formatter),
                 Self::NoWindow => {
                     formatter.write_str("the rendered tree does not contain a window")
                 }
@@ -121,7 +122,7 @@ mod backend {
                 Self::Window(error) => Some(error),
                 Self::View(error) => Some(error),
                 Self::Layout(error) => Some(error),
-                Self::RunLoopSource(error) => Some(error),
+                Self::MessageLoop(error) => Some(error),
                 Self::NoWindow | Self::InvalidTree => None,
             }
         }
@@ -156,6 +157,7 @@ mod backend {
         sender: Option<AppkitSender<Message>>,
         structure_dirty: bool,
         layout_dirty: bool,
+        pending_error: Option<AppError>,
     }
 
     impl<R: AppKitRenderNode> Default for AppKitBackend<R> {
@@ -176,6 +178,7 @@ mod backend {
                 sender: None,
                 structure_dirty: true,
                 layout_dirty: true,
+                pending_error: None,
             }
         }
 
@@ -214,6 +217,33 @@ mod backend {
             self.node_mut(child).parent = None;
         }
 
+        fn record_error(&mut self, error: AppError) {
+            if self.pending_error.is_none() {
+                self.pending_error = Some(error);
+            }
+        }
+
+        fn remove_subtree(&mut self, id: NodeId) {
+            let Some(children) = self
+                .nodes
+                .get(id.0)
+                .and_then(Option::as_ref)
+                .map(|node| node.children.clone())
+            else {
+                return;
+            };
+            for child in children {
+                self.remove_subtree(child);
+            }
+            self.detach(id);
+            if let Some(mut node) = self.nodes.get_mut(id.0).and_then(Option::take)
+                && let Some(native) = node.native.take()
+                && let Err(error) = native.as_view().remove_from_superview()
+            {
+                self.record_error(AppError::View(error));
+            }
+        }
+
         fn window_ids(&self) -> Vec<NodeId> {
             self.children(NodeId(0))
                 .iter()
@@ -233,6 +263,9 @@ mod backend {
             windows: &mut HashMap<NodeId, NativeWindow<'application, ()>>,
             sender: AppkitSender<Message>,
         ) -> Result<(), AppError> {
+            if let Some(error) = self.pending_error.take() {
+                return Err(error);
+            }
             self.sender = Some(sender);
             let window_ids = self.window_ids();
             if window_ids.is_empty() {
@@ -272,7 +305,7 @@ mod backend {
                 self.materialize_children(application, window_id)?;
                 if rebuild_structure {
                     let content = window.content_view().map_err(AppError::Window)?;
-                    self.attach_children(content, window_id);
+                    self.attach_children(content, window_id)?;
                 }
                 if update_layout {
                     self.layout_window(window_id, bounds)?;
@@ -340,37 +373,54 @@ mod backend {
                 } => {
                     let field =
                         NativeTextField::with_string(application, value).map_err(AppError::View)?;
-                    field.set_placeholder_string(placeholder.as_deref());
+                    field
+                        .set_placeholder_string(placeholder.as_deref())
+                        .map_err(AppError::View)?;
                     if *on_change {
-                        self.install_change_handler(&field, id);
+                        self.install_change_handler(&field, id)?;
                     }
                     NativeNode::TextField(field)
                 }
             };
-            native.as_view().set_identifier(accessibility_id.as_deref());
+            native
+                .as_view()
+                .set_identifier(accessibility_id.as_deref())
+                .map_err(AppError::View)?;
             Ok(Some(native))
         }
 
-        fn install_change_handler(&self, field: &NativeTextField, id: NodeId) {
+        fn install_change_handler(
+            &self,
+            field: &NativeTextField,
+            id: NodeId,
+        ) -> Result<(), AppError> {
             let sender = self
                 .sender
                 .as_ref()
                 .expect("the AppKit event sender is installed before native views")
                 .clone();
-            field.set_change_handler(move |value| {
-                let _ = sender.send(Message::Event(Event::TextChanged { node: id, value }));
-            });
+            field
+                .set_change_handler(move |value| {
+                    let _ = sender.send(Message::Event(Event::TextChanged { node: id, value }));
+                })
+                .map_err(AppError::View)
         }
 
-        fn attach_children(&self, parent: ViewRef<'_>, parent_id: NodeId) {
+        fn attach_children(&self, parent: ViewRef<'_>, parent_id: NodeId) -> Result<(), AppError> {
             for child in self.children(parent_id) {
                 let Some(native) = self.node(*child).native.as_ref() else {
                     continue;
                 };
-                native.as_view().remove_from_superview();
-                parent.add_subview(&native.as_view());
-                self.attach_children(native.as_view(), *child);
+                native
+                    .as_view()
+                    .remove_from_superview()
+                    .map_err(AppError::View)?;
+                parent
+                    .add_subview(&native.as_view())
+                    .map_err(AppError::View)?;
+                self.attach_children(native.as_view(), *child)?;
             }
+            Ok(())
         }
 
         fn layout_window(&self, window_id: NodeId, bounds: Rect) -> Result<(), AppError> {
@@ -437,7 +487,8 @@ mod backend {
             if let Some(native) = self.node(node.node).native.as_ref() {
                 native
                     .as_view()
-                    .set_frame(native_frame(frame, parent_height));
+                    .set_frame(native_frame(frame, parent_height))
+                    .map_err(AppError::View)?;
             }
             for child in &node.children {
                 self.apply_layout(child, layout, frame.height)?;
@@ -445,15 +496,23 @@ mod backend {
             Ok(())
         }
 
-        fn update_native(&self, id: NodeId, old: &NodeKind, new: &NodeKind) {
+        fn update_native(
+            &self,
+            id: NodeId,
+            old: &NodeKind,
+            new: &NodeKind,
+        ) -> Result<(), AppError> {
             let Some(native) = self.node(id).native.as_ref() else {
-                return;
+                return Ok(());
             };
             if let (NodeKind::View { id: old_id, .. }, NodeKind::View { id: new_id, .. }) =
                 (old, new)
                 && old_id != new_id
             {
-                native.as_view().set_identifier(new_id.as_deref());
+                native
+                    .as_view()
+                    .set_identifier(new_id.as_deref())
+                    .map_err(AppError::View)?;
             }
             match (native, old, new) {
                 (
@@ -466,7 +525,7 @@ mod backend {
                         kind: ViewKind::Label(new),
                         ..
                     },
-                ) if old != new => field.set_string_value(new),
+                ) if old != new => field.set_string_value(new).map_err(AppError::View)?,
                 (
                     NativeNode::Button(button),
                     NodeKind::View {
@@ -477,7 +536,7 @@ mod backend {
                         kind: ViewKind::Button(new),
                         ..
                     },
-                ) if old != new => button.set_title(new),
+                ) if old != new => button.set_title(new).map_err(AppError::View)?,
                 (
                     NativeNode::TextField(field),
                     NodeKind::View {
@@ -498,20 +557,23 @@ mod backend {
                         ..
                     },
                 ) => {
-                    if field.string_value() != *value {
-                        field.set_string_value(value);
+                    if field.string_value().map_err(AppError::View)? != *value {
+                        field.set_string_value(value).map_err(AppError::View)?;
                     }
-                    field.set_placeholder_string(placeholder.as_deref());
+                    field
+                        .set_placeholder_string(placeholder.as_deref())
+                        .map_err(AppError::View)?;
                     if old_handler != on_change {
                         if *on_change {
-                            self.install_change_handler(field, id);
+                            self.install_change_handler(field, id)?;
                         } else {
-                            field.clear_change_handler();
+                            field.clear_change_handler().map_err(AppError::View)?;
                         }
                     }
                 }
                 _ => {}
             }
+            Ok(())
         }
     }
 
@@ -541,7 +603,9 @@ mod backend {
                 .expect("render nodes have values")
                 .appkit_node();
             let new = value.appkit_node();
-            self.update_native(id, &old, &new);
+            if let Err(error) = self.update_native(id, &old, &new) {
+                self.record_error(error);
+            }
             self.node_mut(id).value = Some(value.clone());
             self.layout_dirty = true;
         }
@@ -556,12 +620,7 @@ mod backend {
         }
 
         fn remove(&mut self, id: Self::NodeId) {
-            self.detach(id);
-            if let Some(mut node) = self.nodes.get_mut(id.0).and_then(Option::take)
-                && let Some(native) = node.native.take()
-            {
-                native.as_view().remove_from_superview();
-            }
+            self.remove_subtree(id);
             self.structure_dirty = true;
             self.layout_dirty = true;
         }
@@ -661,8 +720,8 @@ mod backend {
                 error: error.clone(),
             },
         )
-        .map_err(AppError::RunLoopSource)?;
-        message_loop.run();
+        .map_err(AppError::MessageLoop)?;
+        message_loop.run().map_err(AppError::MessageLoop)?;
         error.borrow_mut().take().map_or(Ok(()), Err)
     }
 
@@ -698,6 +757,26 @@ mod backend {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use zintl_ui::renderer::RenderNode;
+
+        #[derive(Clone, PartialEq)]
+        struct TestNode;
+
+        impl RenderNode for TestNode {
+            fn same_kind(&self, _other: &Self) -> bool {
+                true
+            }
+        }
+
+        impl AppKitRenderNode for TestNode {
+            fn appkit_node(&self) -> NodeKind {
+                NodeKind::View {
+                    kind: ViewKind::Container,
+                    layout: LayoutStyle::leaf(Size::new(0.0, 0.0)),
+                    id: None,
+                }
+            }
+        }
 
         #[test]
         fn converts_taffy_top_origin_to_cgrect_bottom_origin() {
@@ -713,6 +792,22 @@ mod backend {
                 native_frame(frame, 100.0),
                 NativeRect::new(12.0, 48.0, 80.0, 32.0)
             );
+        }
+
+        #[test]
+        fn removing_backend_parent_removes_its_descendants() {
+            // Verifies renderer removal cannot leave detached descendants in backend storage.
+            let mut backend = AppKitBackend::<TestNode>::new();
+            let parent = backend.create(&TestNode);
+            let child = backend.create(&TestNode);
+            backend.insert_child(backend.root(), 0, parent);
+            backend.insert_child(parent, 0, child);
+
+            backend.remove(parent);
+
+            assert!(backend.nodes[parent.0].is_none());
+            assert!(backend.nodes[child.0].is_none());
+            assert!(backend.children(backend.root()).is_empty());
         }
     }
 }
