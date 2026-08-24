@@ -52,6 +52,22 @@ struct ActorInner {
     alive: Cell<bool>,
 }
 
+/// A non-retaining observation of an Objective-C object's lifetime.
+///
+/// This handle is independent of its Actor node, so it can distinguish an
+/// invalidated Actor from a native object that is still retained elsewhere.
+pub struct NativeWeakRef {
+    native: Pin<Box<WeakSlot>>,
+    _main_thread: PhantomData<Rc<()>>,
+}
+
+impl NativeWeakRef {
+    /// Returns whether the observed Objective-C object has not been deallocated.
+    pub fn is_alive(&self) -> bool {
+        self.native.load().is_some()
+    }
+}
+
 #[derive(Clone)]
 pub struct ActorRef {
     inner: Weak<ActorInner>,
@@ -83,6 +99,17 @@ impl ActorRef {
                 .inner
                 .upgrade()
                 .is_some_and(|inner| inner.alive.get() && inner.native.load().is_some())
+    }
+
+    /// Creates a non-retaining handle that can observe native deallocation.
+    ///
+    /// # Errors
+    /// Returns an error when this Actor or its Application session is no longer active.
+    pub fn downgrade_native(&self) -> Result<NativeWeakRef, ActorError> {
+        self.with(|native| NativeWeakRef {
+            native: WeakSlot::new(native),
+            _main_thread: PhantomData,
+        })
     }
 
     pub fn send(&self, message: ApplicationMessage) -> Result<(), ActorError> {

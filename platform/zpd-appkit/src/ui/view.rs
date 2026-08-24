@@ -126,6 +126,10 @@ impl<'view> ViewRef<'view> {
     pub(crate) fn actor(self) -> &'view ActorRef {
         self.actor
     }
+    /// Returns a weak reference to this view's Actor.
+    pub fn actor_ref(self) -> ActorRef {
+        self.actor.clone()
+    }
     pub fn add_subview(self, child: &impl AsView) -> Result<(), ViewError> {
         let child = child.as_view();
         if !self.actor.same_tree(child.actor) {

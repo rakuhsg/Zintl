@@ -8,6 +8,7 @@ use zpd_appkit::ui::{
     AsView, Button, CommandItem, CommandMenu, CommandModifier, CommandSet, LayoutConstraint,
     Sidebar, SidebarItem, SidebarSection, TextField, ViewError,
 };
+use zpd_appkit::with_autorelease_pool;
 
 struct DropDelegate(Rc<Cell<usize>>);
 
@@ -22,6 +23,42 @@ impl Drop for DropDelegate {
 fn main() {
     // Verifies the raw Objective-C backend creates, relates, and tears down native actors on main.
     let application = Application::new(()).unwrap();
+
+    let (window_native, content_native, button_native) = with_autorelease_pool(|| {
+        let window = application.create_window(()).unwrap();
+        let content = window.content_view().unwrap();
+        let button = Button::with_title(&application, "Child").unwrap();
+        content.add_subview(&button).unwrap();
+
+        // Verifies a real Window -> content view -> Button hierarchy is alive
+        // in both the Actor Tree and Objective-C before Window destruction.
+        let window_actor = window.actor_ref();
+        let content_actor = content.actor_ref();
+        let button_actor = button.as_view().actor_ref();
+        let window_native = window_actor.downgrade_native().unwrap();
+        let content_native = content_actor.downgrade_native().unwrap();
+        let button_native = button_actor.downgrade_native().unwrap();
+        assert!(window_actor.is_alive());
+        assert!(content_actor.is_alive());
+        assert!(button_actor.is_alive());
+        assert!(window_native.is_alive());
+        assert!(content_native.is_alive());
+        assert!(button_native.is_alive());
+
+        drop(window);
+        assert!(!window_actor.is_alive());
+        assert!(!content_actor.is_alive());
+        assert!(!button_actor.is_alive());
+        assert_eq!(button.set_title("expired"), Err(ViewError::Closed));
+        drop(button);
+        (window_native, content_native, button_native)
+    });
+    // Verifies autorelease processing leaves no Objective-C object from the
+    // destroyed Window subtree alive.
+    assert!(!window_native.is_alive());
+    assert!(!content_native.is_alive());
+    assert!(!button_native.is_alive());
+
     application
         .set_commands(
             &CommandSet {

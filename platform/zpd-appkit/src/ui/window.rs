@@ -405,7 +405,6 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
             .tree()
             .replace_owned(&actor, "content-controller", controller)
             .map_err(WindowError::from)?;
-
         let class = window_delegate_class();
         let native_delegate = unsafe {
             let object = native::send_id(
@@ -463,6 +462,10 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
     }
     pub fn is_closed(&self) -> bool {
         self.ensure_open().is_err()
+    }
+    /// Returns a weak reference to this window's Actor.
+    pub fn actor_ref(&self) -> ActorRef {
+        self.actor.clone()
     }
     pub fn show(&self) -> Result<(), WindowError> {
         self.ensure_open()?;
