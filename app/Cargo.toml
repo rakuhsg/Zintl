@@ -1,7 +1,0 @@
-[workspace]
-resolver = "3"
-members = ["zintl-app", "zintl-deno", "zintl-native", "zintl-render", "zintl-wgpu"]
-
-[workspace.package]
-version = "0.1.0"
-license = "Apache-2.0 OR MIT"
