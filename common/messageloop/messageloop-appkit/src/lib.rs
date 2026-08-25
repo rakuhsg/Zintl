@@ -235,10 +235,10 @@ impl<M: Send + 'static, H: MessageLoopHandler<M>> CallbackState<M, H> {
 
 /// A single-source dispatcher owned and run by the process main thread.
 ///
-/// This message loop holds an [`Application`] reference for its entire
-/// lifetime. It obtains the native run loop from that application, keeps its
-/// source installed there, and uses the same application to drive and stop the
-/// `AppKit` event loop.
+/// This message loop holds a non-owning actor handle to the supplied
+/// [`Application`] session. It installs its source on that application's native
+/// run loop and uses the handle to drive and stop the `AppKit` event loop.
+/// Running the loop after that session ends returns [`ActorError::NotActive`].
 pub struct MessageLoopAppkit<M, H> {
     application: ActorRef,
     shared: Arc<SharedState<M>>,
