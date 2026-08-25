@@ -182,7 +182,6 @@ send!(send_void_size, (), (a: Size));
 send!(send_void_point, (), (a: Point));
 send!(send_bool, bool, ());
 send!(send_bool_id, bool, (a: Id));
-send!(send_i64, Integer, ());
 send!(send_u64, UInteger, ());
 send!(send_f64, f64, ());
 send!(send_rect, Rect, ());
@@ -265,13 +264,6 @@ pub unsafe fn send_super_void(receiver: Id, superclass: Class, selector: Sel) {
     let function: unsafe extern "C" fn(*mut Super, Sel) =
         unsafe { transmute(objc_msgSendSuper as Imp) };
     unsafe { function(&mut value, selector) };
-}
-
-pub unsafe fn send_super_void_id(superclass: *mut Super, selector: Sel, value: Id) {
-    // SAFETY: The cast matches an Objective-C super send with one object argument.
-    let function: unsafe extern "C" fn(*mut Super, Sel, Id) =
-        unsafe { transmute(objc_msgSendSuper as Imp) };
-    unsafe { function(superclass, selector, value) };
 }
 
 pub struct Strong(NonNull<c_void>);

@@ -90,14 +90,13 @@ impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
             Self::TextField {
                 value,
                 placeholder,
-                binding,
+                binding: _,
                 layout,
                 id,
             } => NodeKind::View {
                 kind: ViewKind::TextField {
                     value: value.clone(),
                     placeholder: placeholder.clone(),
-                    on_change: binding.is_some(),
                 },
                 layout: *layout,
                 id: id.clone(),
@@ -561,7 +560,7 @@ impl App {
     #[cfg(target_os = "macos")]
     pub fn run(self) -> Result<(), AppError> {
         zintl_ui_appkit::run_composer(self.composer, |composer, event| match event {
-            zintl_ui_appkit::Event::TextChanged { node, value } => {
+            zintl_ui_appkit::Event::TextChanged { node, value, .. } => {
                 let store = match composer.backend().value(node) {
                     Some(RenderNode::TextField {
                         binding: Some(store),
@@ -574,6 +573,7 @@ impl App {
                 });
                 composer.flush();
             }
+            _ => {}
         })
     }
 

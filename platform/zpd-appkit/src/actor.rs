@@ -6,6 +6,38 @@ use std::rc::{Rc, Weak};
 
 use crate::native::{self, Id, Strong};
 
+/// Opaque identity of an Actor node within one Application session.
+///
+/// IDs remain distinct when an Actor slot is reused or a new Application
+/// session starts. They do not retain the native object or its Actor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NodeId {
+    session: u64,
+    index: usize,
+    generation: u32,
+}
+
+/// A semantic event emitted by a Window or one of its attached controls.
+///
+/// `window` identifies the containing Window and `target` identifies the Actor
+/// that emitted the event. For Window lifecycle events both IDs are equal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowEvent {
+    pub window: NodeId,
+    pub target: NodeId,
+    pub kind: WindowEventKind,
+}
+
+/// Semantic AppKit events supported by the Actor tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowEventKind {
+    Created,
+    WillClose,
+    DidClose,
+    ButtonClicked,
+    TextChanged { value: String },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActorError {
     Dropped,
@@ -72,12 +104,21 @@ impl NativeWeakRef {
 pub struct ActorRef {
     inner: Weak<ActorInner>,
     tree: Weak<RefCell<TreeInner>>,
-    id: NodeId,
+    id: NodeKey,
     session: u64,
     _main_thread: PhantomData<Rc<()>>,
 }
 
 impl ActorRef {
+    /// Returns this Actor's non-retaining identity.
+    pub fn node_id(&self) -> NodeId {
+        NodeId {
+            session: self.session,
+            index: self.id.index,
+            generation: self.id.generation,
+        }
+    }
+
     pub(crate) fn with<R>(&self, operation: impl FnOnce(Id) -> R) -> Result<R, ActorError> {
         let tree = self.tree.upgrade().ok_or(ActorError::Dropped)?;
         if tree.borrow().active_session != Some(self.session) {
@@ -161,30 +202,38 @@ impl std::fmt::Display for ActorError {
 impl std::error::Error for ActorError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NodeId {
+struct NodeKey {
     index: usize,
     generation: u32,
 }
 
 struct Node {
     generation: u32,
-    parent: Option<NodeId>,
-    children: Vec<NodeId>,
-    dependencies: Vec<NodeId>,
-    dependents: Vec<NodeId>,
-    owned: HashMap<&'static str, NodeId>,
+    parent: Option<NodeKey>,
+    children: Vec<NodeKey>,
+    dependencies: Vec<NodeKey>,
+    dependents: Vec<NodeKey>,
+    owned: HashMap<&'static str, NodeKey>,
     actor: Rc<ActorInner>,
     teardown: Vec<Box<dyn FnOnce(Id)>>,
     _native: Strong,
     root: bool,
+    window: bool,
+}
+
+struct EventHandler {
+    id: u64,
+    callback: Box<dyn FnMut(WindowEvent)>,
 }
 
 struct TreeInner {
     nodes: Vec<Option<Node>>,
     generations: Vec<u32>,
-    root: NodeId,
+    root: NodeKey,
     active_session: Option<u64>,
     next_session: u64,
+    event_handler: Option<EventHandler>,
+    next_event_handler: u64,
 }
 
 #[derive(Clone)]
@@ -199,7 +248,7 @@ impl ActorTree {
             native: WeakSlot::new(root.as_ptr()),
             alive: Cell::new(true),
         });
-        let root_id = NodeId {
+        let root_id = NodeKey {
             index: 0,
             generation: 0,
         };
@@ -216,11 +265,14 @@ impl ActorTree {
                     teardown: Vec::new(),
                     _native: root,
                     root: true,
+                    window: false,
                 })],
                 generations: vec![0],
                 root: root_id,
                 active_session: Some(0),
                 next_session: 1,
+                event_handler: None,
+                next_event_handler: 0,
             })),
             session: 0,
         }
@@ -246,6 +298,7 @@ impl ActorTree {
         let mut tree = self.inner.borrow_mut();
         if tree.active_session == Some(self.session) {
             tree.active_session = None;
+            tree.event_handler = None;
         }
     }
 
@@ -257,6 +310,16 @@ impl ActorTree {
     pub(crate) fn insert_root(&self, native: Strong) -> ActorRef {
         let root = self.inner.borrow().root;
         self.insert(root, native)
+    }
+
+    pub(crate) fn insert_window(&self, native: Strong) -> ActorRef {
+        let actor = self.insert_root(native);
+        self.inner
+            .borrow_mut()
+            .node_mut(actor.id)
+            .expect("a newly inserted window must be live")
+            .window = true;
+        actor
     }
 
     pub(crate) fn insert_child(
@@ -273,7 +336,7 @@ impl ActorTree {
         Ok(self.insert(parent.id, native))
     }
 
-    fn insert(&self, parent: NodeId, native: Strong) -> ActorRef {
+    fn insert(&self, parent: NodeKey, native: Strong) -> ActorRef {
         let actor = Rc::new(ActorInner {
             native: WeakSlot::new(native.as_ptr()),
             alive: Cell::new(true),
@@ -288,7 +351,7 @@ impl ActorTree {
             tree.nodes.push(None);
             tree.generations.push(0);
         }
-        let id = NodeId {
+        let id = NodeKey {
             index,
             generation: tree.generations[index],
         };
@@ -303,6 +366,7 @@ impl ActorTree {
             teardown: Vec::new(),
             _native: native,
             root: false,
+            window: false,
         });
         tree.node_mut(parent)
             .expect("parent must be live")
@@ -317,7 +381,7 @@ impl ActorTree {
         }
     }
 
-    pub(crate) fn actor_ref(&self, id: NodeId) -> Option<ActorRef> {
+    fn actor_ref(&self, id: NodeKey) -> Option<ActorRef> {
         let tree = self.inner.borrow();
         let node = tree.node(id)?;
         Some(ActorRef {
@@ -327,6 +391,81 @@ impl ActorTree {
             session: self.session,
             _main_thread: PhantomData,
         })
+    }
+
+    pub(crate) fn emit(&self, target: &ActorRef, kind: WindowEventKind) {
+        if target.session != self.session || !target.is_alive() {
+            return;
+        }
+        let event = {
+            let tree = self.inner.borrow();
+            let mut current = Some(target.id);
+            let mut window = None;
+            while let Some(id) = current {
+                let Some(node) = tree.node(id) else { return };
+                if node.window {
+                    window = Some(id);
+                    break;
+                }
+                current = node.parent;
+            }
+            let Some(window) = window else { return };
+            WindowEvent {
+                window: self.public_id(window),
+                target: target.node_id(),
+                kind,
+            }
+        };
+        let mut callback = {
+            let mut tree = self.inner.borrow_mut();
+            tree.event_handler.take()
+        };
+        if let Some(handler) = callback.as_mut() {
+            (handler.callback)(event);
+        }
+        let mut tree = self.inner.borrow_mut();
+        if tree.event_handler.is_none() {
+            tree.event_handler = callback;
+        }
+    }
+
+    pub(crate) fn set_event_handler(
+        &self,
+        callback: impl FnMut(WindowEvent) + 'static,
+    ) -> Result<u64, ActorError> {
+        let mut tree = self.inner.borrow_mut();
+        if tree.active_session != Some(self.session) {
+            return Err(ActorError::NotActive);
+        }
+        if tree.event_handler.is_some() {
+            return Err(ActorError::InvalidHierarchy);
+        }
+        let id = tree.next_event_handler;
+        tree.next_event_handler = tree.next_event_handler.wrapping_add(1);
+        tree.event_handler = Some(EventHandler {
+            id,
+            callback: Box::new(callback),
+        });
+        Ok(id)
+    }
+
+    pub(crate) fn clear_event_handler(&self, id: u64) {
+        let mut tree = self.inner.borrow_mut();
+        if tree
+            .event_handler
+            .as_ref()
+            .is_some_and(|handler| handler.id == id)
+        {
+            tree.event_handler = None;
+        }
+    }
+
+    fn public_id(&self, id: NodeKey) -> NodeId {
+        NodeId {
+            session: self.session,
+            index: id.index,
+            generation: id.generation,
+        }
     }
 
     pub(crate) fn add_teardown(
@@ -467,21 +606,21 @@ impl ActorTree {
 }
 
 impl TreeInner {
-    fn node(&self, id: NodeId) -> Option<&Node> {
+    fn node(&self, id: NodeKey) -> Option<&Node> {
         self.nodes
             .get(id.index)?
             .as_ref()
             .filter(|node| node.generation == id.generation)
     }
 
-    fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+    fn node_mut(&mut self, id: NodeKey) -> Option<&mut Node> {
         self.nodes
             .get_mut(id.index)?
             .as_mut()
             .filter(|node| node.generation == id.generation)
     }
 
-    fn is_descendant(&self, candidate: NodeId, ancestor: NodeId) -> bool {
+    fn is_descendant(&self, candidate: NodeKey, ancestor: NodeKey) -> bool {
         let mut parent = self.node(candidate).and_then(|node| node.parent);
         while let Some(id) = parent {
             if id == ancestor {
@@ -492,7 +631,7 @@ impl TreeInner {
         false
     }
 
-    fn remove_subtree(tree: &Rc<RefCell<Self>>, id: NodeId) {
+    fn remove_subtree(tree: &Rc<RefCell<Self>>, id: NodeKey) {
         let dependents = {
             let tree = tree.borrow();
             let Some(node) = tree.node(id) else {
@@ -561,6 +700,55 @@ mod tests {
         assert!(child.is_alive());
         tree.remove(&child);
         assert_eq!(child.with(|_| ()), Err(ActorError::Dropped));
+    }
+
+    #[test]
+    fn public_ids_distinguish_reused_slots_and_sessions() {
+        // Verifies public IDs cannot alias after Actor slot reuse or Application restart.
+        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
+        let first = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let first_id = first.node_id();
+        tree.remove(&first);
+        let second = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        assert_ne!(first_id, second.node_id());
+
+        let next_session = tree.begin_session();
+        let third = next_session.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        assert_ne!(second.node_id(), third.node_id());
+    }
+
+    #[test]
+    fn events_resolve_the_containing_window() {
+        // Verifies a control event carries both its target and nearest Window IDs.
+        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
+        let window = tree.insert_window(crate::native::alloc_init(b"NSObject\0"));
+        let child = tree
+            .insert_child(&window, crate::native::alloc_init(b"NSObject\0"))
+            .unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let received = events.clone();
+        let handler = tree
+            .set_event_handler(move |event| received.borrow_mut().push(event))
+            .unwrap();
+        assert_eq!(
+            tree.set_event_handler(|_| ()),
+            Err(ActorError::InvalidHierarchy)
+        );
+
+        tree.emit(&child, WindowEventKind::ButtonClicked);
+        child.move_to_root().unwrap();
+        tree.emit(&child, WindowEventKind::ButtonClicked);
+        tree.clear_event_handler(handler);
+        tree.emit(&child, WindowEventKind::ButtonClicked);
+
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[WindowEvent {
+                window: window.node_id(),
+                target: child.node_id(),
+                kind: WindowEventKind::ButtonClicked,
+            }]
+        );
     }
 
     #[test]

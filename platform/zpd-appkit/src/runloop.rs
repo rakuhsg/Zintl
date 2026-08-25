@@ -6,9 +6,9 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::actor::{ActorRef, ActorTree, ApplicationMessage};
+use crate::actor::{ActorRef, ActorTree, ApplicationMessage, WindowEvent};
 use crate::native::{self, CFRunLoopSourceContext, Id, Strong};
-use crate::ui::{CommandError, CommandSet, Window, WindowDelegate, WindowError};
+use crate::ui::{CommandError, CommandSet, Window, WindowError};
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -25,6 +25,7 @@ pub enum ApplicationError {
     AlreadyInitialized,
     NotActive,
     NativeCreationFailed,
+    EventHandlerAlreadyRegistered,
 }
 impl std::fmt::Display for ApplicationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -33,10 +34,29 @@ impl std::fmt::Display for ApplicationError {
             Self::AlreadyInitialized => "AppKit is already initialized",
             Self::NotActive => "AppKit is not active",
             Self::NativeCreationFailed => "AppKit failed to create a native object",
+            Self::EventHandlerAlreadyRegistered => {
+                "an AppKit window event handler is already registered"
+            }
         })
     }
 }
 impl std::error::Error for ApplicationError {}
+
+/// Active registration for the Application's single Window event callback.
+///
+/// Dropping this value unregisters the callback. Events emitted before a
+/// registration exists or after it is dropped are ignored.
+pub struct WindowEventRegistration<'application> {
+    tree: ActorTree,
+    id: u64,
+    _application: PhantomData<&'application ()>,
+}
+
+impl Drop for WindowEventRegistration<'_> {
+    fn drop(&mut self) {
+        self.tree.clear_event_handler(self.id);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunLoopSourceError {
@@ -549,11 +569,31 @@ impl<D: ApplicationDelegate> Application<D> {
     pub fn schedule(&self) {
         debug_assert!(self.scheduler().schedule())
     }
-    pub fn create_window<W: WindowDelegate>(
+    pub fn create_window(&self) -> Result<Window<'_>, WindowError> {
+        Window::new(self)
+    }
+    /// Registers the sole semantic Window event callback for this Application.
+    ///
+    /// The callback runs synchronously at the AppKit event source. Consumers
+    /// should enqueue work instead of invoking re-entrant UI processing.
+    pub fn on(
         &self,
-        delegate: W,
-    ) -> Result<Window<'_, W>, WindowError> {
-        Window::new(self, delegate)
+        callback: impl FnMut(WindowEvent) + 'static,
+    ) -> Result<WindowEventRegistration<'_>, ApplicationError> {
+        let id = self
+            .tree
+            .set_event_handler(callback)
+            .map_err(|error| match error {
+                crate::actor::ActorError::InvalidHierarchy => {
+                    ApplicationError::EventHandlerAlreadyRegistered
+                }
+                _ => ApplicationError::NotActive,
+            })?;
+        Ok(WindowEventRegistration {
+            tree: self.tree.clone(),
+            id,
+            _application: PhantomData,
+        })
     }
     pub fn set_commands<F>(&self, commands: &CommandSet, callback: F) -> Result<(), CommandError>
     where

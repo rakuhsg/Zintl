@@ -25,7 +25,7 @@ fn main() {
     let application = Application::new(()).unwrap();
 
     let (window_native, content_native, button_native) = with_autorelease_pool(|| {
-        let window = application.create_window(()).unwrap();
+        let window = application.create_window().unwrap();
         let content = window.content_view().unwrap();
         let button = Button::with_title(&application, "Child").unwrap();
         content.add_subview(&button).unwrap();
@@ -78,7 +78,7 @@ fn main() {
             |_| {},
         )
         .unwrap();
-    let window = application.create_window(()).unwrap();
+    let window = application.create_window().unwrap();
     let content = window.content_view().unwrap();
     let label = TextField::label_with_string(&application, "Actor Tree").unwrap();
     let button = Button::with_title(&application, "Close").unwrap();

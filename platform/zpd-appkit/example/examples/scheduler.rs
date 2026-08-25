@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         scheduler: application.scheduler(),
     };
 
-    let window = application.create_window(())?;
+    let window = application.create_window()?;
     window.set_size(480.0, 300.0)?;
     window.show()?;
 

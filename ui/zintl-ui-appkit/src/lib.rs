@@ -30,7 +30,6 @@ pub enum ViewKind {
     TextField {
         value: String,
         placeholder: Option<String>,
-        on_change: bool,
     },
 }
 
@@ -57,30 +56,47 @@ pub struct NodeId(usize);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    TextChanged { node: NodeId, value: String },
+    WindowCreated {
+        window: NodeId,
+    },
+    WindowWillClose {
+        window: NodeId,
+    },
+    WindowDidClose {
+        window: NodeId,
+    },
+    ButtonClicked {
+        window: NodeId,
+        node: NodeId,
+    },
+    TextChanged {
+        window: NodeId,
+        node: NodeId,
+        value: String,
+    },
 }
 
 #[cfg(target_os = "macos")]
 mod backend {
     use std::cell::RefCell;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::error::Error;
     use std::fmt;
     use std::rc::Rc;
 
     use messageloop_appkit::{
-        AppkitSender, Context as MessageContext, MessageLoopAppkit, MessageLoopError,
-        MessageLoopHandler, Sender,
+        Context as MessageContext, MessageLoopAppkit, MessageLoopError, MessageLoopHandler,
     };
     use zintl_ui::composer::Composer;
     use zintl_ui::renderer::RenderBackend;
     use zintl_ui_layout::{LayoutError, LayoutStyle, LayoutTree, Size};
+    use zpd_appkit::actor::{NodeId as NativeNodeId, WindowEvent, WindowEventKind};
     use zpd_appkit::geometry::Rect as NativeRect;
     use zpd_appkit::runloop::{Application, ApplicationError};
     use zpd_appkit::ui::{
         AsView, Button as NativeButton, CommandError, CommandItem, CommandModifier, CommandRole,
         CommandSet, TextField as NativeTextField, View as NativeView, ViewError, ViewRef,
-        Window as NativeWindow, WindowAppMenu, WindowError,
+        WindowAppMenu, WindowError,
     };
 
     use super::{AppKitRenderNode, Event, NodeId, NodeKind, Rect, ViewKind};
@@ -154,7 +170,9 @@ mod backend {
 
     pub struct AppKitBackend<R: AppKitRenderNode> {
         nodes: Vec<Option<BackendNode<R>>>,
-        sender: Option<AppkitSender<Message>>,
+        windows: HashMap<NodeId, NativeNodeId>,
+        native_nodes: HashMap<NativeNodeId, NodeId>,
+        retired_windows: Vec<NativeNodeId>,
         structure_dirty: bool,
         layout_dirty: bool,
         pending_error: Option<AppError>,
@@ -175,7 +193,9 @@ mod backend {
                     children: Vec::new(),
                     native: None,
                 })],
-                sender: None,
+                windows: HashMap::new(),
+                native_nodes: HashMap::new(),
+                retired_windows: Vec::new(),
                 structure_dirty: true,
                 layout_dirty: true,
                 pending_error: None,
@@ -236,11 +256,17 @@ mod backend {
                 self.remove_subtree(child);
             }
             self.detach(id);
+            if let Some(window) = self.windows.remove(&id) {
+                self.retired_windows.push(window);
+            }
             if let Some(mut node) = self.nodes.get_mut(id.0).and_then(Option::take)
                 && let Some(native) = node.native.take()
-                && let Err(error) = native.as_view().remove_from_superview()
             {
-                self.record_error(AppError::View(error));
+                self.native_nodes
+                    .remove(&native.as_view().actor_ref().node_id());
+                if let Err(error) = native.as_view().remove_from_superview() {
+                    self.record_error(AppError::View(error));
+                }
             }
         }
 
@@ -257,23 +283,22 @@ mod backend {
                 .collect()
         }
 
-        fn synchronize<'application>(
+        fn synchronize<'application, 'windows>(
             &mut self,
             application: &'application Application<()>,
-            windows: &mut HashMap<NodeId, NativeWindow<'application, ()>>,
-            sender: AppkitSender<Message>,
+            cx: &MessageContext<'_, 'windows, Message>,
         ) -> Result<(), AppError> {
             if let Some(error) = self.pending_error.take() {
                 return Err(error);
             }
-            self.sender = Some(sender);
+            for window in self.retired_windows.drain(..) {
+                cx.remove_window(window);
+            }
             let window_ids = self.window_ids();
             if window_ids.is_empty() {
                 return Err(AppError::NoWindow);
             }
 
-            let live: HashSet<_> = window_ids.iter().copied().collect();
-            windows.retain(|id, _| live.contains(id));
             let rebuild_structure = self.structure_dirty;
             let update_layout = self.layout_dirty || rebuild_structure;
 
@@ -286,33 +311,42 @@ mod backend {
                     continue;
                 };
 
-                let new_window = !windows.contains_key(&window_id);
+                let new_window = self
+                    .windows
+                    .get(&window_id)
+                    .is_none_or(|id| !cx.contains_window(*id));
                 if new_window {
-                    let window = application.create_window(()).map_err(AppError::Window)?;
+                    let native_id = cx.create_window().map_err(AppError::Window)?;
+                    self.windows.insert(window_id, native_id);
+                }
+                let native_id = self.windows[&window_id];
+                cx.with_window(native_id, |window| -> Result<(), AppError> {
                     window
                         .set_bounds(native_rect(bounds))
                         .map_err(AppError::Window)?;
-                    windows.insert(window_id, window);
-                }
-                let window = windows
-                    .get(&window_id)
-                    .expect("a synchronized window must exist");
-                window.set_title(&title).map_err(AppError::Window)?;
-                window
-                    .set_identifier(id.as_deref())
-                    .map_err(AppError::Window)?;
+                    window.set_title(&title).map_err(AppError::Window)?;
+                    window
+                        .set_identifier(id.as_deref())
+                        .map_err(AppError::Window)
+                })
+                .ok_or(AppError::Window(WindowError::Closed))??;
 
                 self.materialize_children(application, window_id)?;
                 if rebuild_structure {
-                    let content = window.content_view().map_err(AppError::Window)?;
-                    self.attach_children(content, window_id)?;
+                    cx.with_window(native_id, |window| -> Result<(), AppError> {
+                        let content = window.content_view().map_err(AppError::Window)?;
+                        self.attach_children(content, window_id)
+                    })
+                    .ok_or(AppError::Window(WindowError::Closed))??;
                 }
                 if update_layout {
                     self.layout_window(window_id, bounds)?;
                 }
 
                 if new_window {
-                    window.show().map_err(AppError::Window)?;
+                    cx.with_window(native_id, |window| window.show())
+                        .ok_or(AppError::Window(WindowError::Closed))?
+                        .map_err(AppError::Window)?;
                 }
             }
             self.structure_dirty = false;
@@ -341,7 +375,7 @@ mod backend {
         }
 
         fn create_native(
-            &self,
+            &mut self,
             application: &Application<()>,
             id: NodeId,
             description: &NodeKind,
@@ -366,19 +400,12 @@ mod backend {
                 ViewKind::Button(title) => NativeNode::Button(
                     NativeButton::with_title(application, title).map_err(AppError::View)?,
                 ),
-                ViewKind::TextField {
-                    value,
-                    placeholder,
-                    on_change,
-                } => {
+                ViewKind::TextField { value, placeholder } => {
                     let field =
                         NativeTextField::with_string(application, value).map_err(AppError::View)?;
                     field
                         .set_placeholder_string(placeholder.as_deref())
                         .map_err(AppError::View)?;
-                    if *on_change {
-                        self.install_change_handler(&field, id)?;
-                    }
                     NativeNode::TextField(field)
                 }
             };
@@ -386,24 +413,9 @@ mod backend {
                 .as_view()
                 .set_identifier(accessibility_id.as_deref())
                 .map_err(AppError::View)?;
+            self.native_nodes
+                .insert(native.as_view().actor_ref().node_id(), id);
             Ok(Some(native))
-        }
-
-        fn install_change_handler(
-            &self,
-            field: &NativeTextField,
-            id: NodeId,
-        ) -> Result<(), AppError> {
-            let sender = self
-                .sender
-                .as_ref()
-                .expect("the AppKit event sender is installed before native views")
-                .clone();
-            field
-                .set_change_handler(move |value| {
-                    let _ = sender.send(Message::Event(Event::TextChanged { node: id, value }));
-                })
-                .map_err(AppError::View)
         }
 
         fn attach_children(&self, parent: ViewRef<'_>, parent_id: NodeId) -> Result<(), AppError> {
@@ -540,20 +552,11 @@ mod backend {
                 (
                     NativeNode::TextField(field),
                     NodeKind::View {
-                        kind:
-                            ViewKind::TextField {
-                                on_change: old_handler,
-                                ..
-                            },
+                        kind: ViewKind::TextField { .. },
                         ..
                     },
                     NodeKind::View {
-                        kind:
-                            ViewKind::TextField {
-                                value,
-                                placeholder,
-                                on_change,
-                            },
+                        kind: ViewKind::TextField { value, placeholder },
                         ..
                     },
                 ) => {
@@ -563,17 +566,34 @@ mod backend {
                     field
                         .set_placeholder_string(placeholder.as_deref())
                         .map_err(AppError::View)?;
-                    if old_handler != on_change {
-                        if *on_change {
-                            self.install_change_handler(field, id)?;
-                        } else {
-                            field.clear_change_handler().map_err(AppError::View)?;
-                        }
-                    }
                 }
                 _ => {}
             }
             Ok(())
+        }
+
+        fn translate_event(&self, event: WindowEvent) -> Option<Event> {
+            let window = self
+                .windows
+                .iter()
+                .find_map(|(ui, native)| (*native == event.window).then_some(*ui))?;
+            match event.kind {
+                WindowEventKind::Created => Some(Event::WindowCreated { window }),
+                WindowEventKind::WillClose => Some(Event::WindowWillClose { window }),
+                WindowEventKind::DidClose => Some(Event::WindowDidClose { window }),
+                WindowEventKind::ButtonClicked => {
+                    let node = *self.native_nodes.get(&event.target)?;
+                    Some(Event::ButtonClicked { window, node })
+                }
+                WindowEventKind::TextChanged { value } => {
+                    let node = *self.native_nodes.get(&event.target)?;
+                    Some(Event::TextChanged {
+                        window,
+                        node,
+                        value,
+                    })
+                }
+            }
         }
     }
 
@@ -642,7 +662,13 @@ mod backend {
     }
 
     enum Message {
-        Event(Event),
+        Window(WindowEvent),
+    }
+
+    impl From<WindowEvent> for Message {
+        fn from(event: WindowEvent) -> Self {
+            Self::Window(event)
+        }
     }
 
     struct AppHandler<'application, R, F>
@@ -651,7 +677,6 @@ mod backend {
     {
         application: &'application Application<()>,
         composer: Composer<R, AppKitBackend<R>>,
-        windows: HashMap<NodeId, NativeWindow<'application, ()>>,
         on_event: F,
         error: Rc<RefCell<Option<AppError>>>,
     }
@@ -661,12 +686,12 @@ mod backend {
         R: AppKitRenderNode,
         F: FnMut(&mut Composer<R, AppKitBackend<R>>, Event),
     {
-        fn synchronize(&mut self, cx: &MessageContext<'_, Message>) -> bool {
-            match self.composer.backend_mut().synchronize(
-                self.application,
-                &mut self.windows,
-                cx.sender(),
-            ) {
+        fn synchronize(&mut self, cx: &MessageContext<'_, '_, Message>) -> bool {
+            match self
+                .composer
+                .backend_mut()
+                .synchronize(self.application, cx)
+            {
                 Ok(()) => true,
                 Err(error) => {
                     *self.error.borrow_mut() = Some(error);
@@ -682,14 +707,16 @@ mod backend {
         R: AppKitRenderNode,
         F: FnMut(&mut Composer<R, AppKitBackend<R>>, Event),
     {
-        fn init(&mut self, cx: &MessageContext<'_, Message>) {
+        fn init(&mut self, cx: &MessageContext<'_, '_, Message>) {
             self.synchronize(cx);
         }
 
-        fn on(&mut self, cx: &MessageContext<'_, Message>, message: Message) {
+        fn on(&mut self, cx: &MessageContext<'_, '_, Message>, message: Message) {
             match message {
-                Message::Event(event) => {
-                    (self.on_event)(&mut self.composer, event);
+                Message::Window(event) => {
+                    if let Some(event) = self.composer.backend().translate_event(event) {
+                        (self.on_event)(&mut self.composer, event);
+                    }
                     self.synchronize(cx);
                 }
             }
@@ -715,7 +742,6 @@ mod backend {
             AppHandler {
                 application: &application,
                 composer,
-                windows: HashMap::new(),
                 on_event,
                 error: error.clone(),
             },

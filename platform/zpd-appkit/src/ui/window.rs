@@ -1,10 +1,9 @@
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use crate::actor::{ActorError, ActorRef};
+use crate::actor::{ActorError, ActorRef, WindowEventKind};
 #[cfg(feature = "wgpu")]
 use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
@@ -17,14 +16,6 @@ use super::view::AsView;
 #[cfg(feature = "wgpu")]
 use super::view::native_rect;
 use super::view::{ViewError, ViewRef};
-
-pub trait WindowDelegate: 'static {
-    fn did_create(&mut self) {}
-    fn will_close(&mut self) {}
-    fn did_close(&mut self) {}
-    fn did_click(&mut self) {}
-}
-impl WindowDelegate for () {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowError {
@@ -60,62 +51,39 @@ impl From<ViewError> for WindowError {
     }
 }
 
-struct WindowState<D> {
-    delegate: RefCell<D>,
+struct WindowState {
     closed: Cell<bool>,
     actor: RefCell<Option<ActorRef>>,
 }
-impl<D: WindowDelegate> WindowState<D> {
-    fn invoke(&self, operation: impl FnOnce(&mut D)) {
-        if catch_unwind(AssertUnwindSafe(|| {
-            let Ok(mut delegate) = self.delegate.try_borrow_mut() else {
-                std::process::abort()
-            };
-            operation(&mut delegate);
-        }))
-        .is_err()
-        {
-            std::process::abort()
-        }
-    }
+impl WindowState {
     fn close(&self) {
         if self.closed.replace(true) {
             return;
         }
-        self.invoke(WindowDelegate::will_close);
-        self.invoke(WindowDelegate::did_close);
         if let Some(actor) = self.actor.borrow_mut().take() {
+            if let Some(tree) = actor.tree_handle() {
+                tree.emit(&actor, WindowEventKind::WillClose);
+                tree.emit(&actor, WindowEventKind::DidClose);
+            }
             actor.remove();
-        }
-    }
-
-    fn click(&self) {
-        if !self.closed.get() {
-            self.invoke(WindowDelegate::did_click);
         }
     }
 }
 
 struct DelegateBox {
     state: *const (),
-    close: unsafe fn(*const ()),
-    release: unsafe fn(*const ()),
 }
-unsafe fn close_state<D: WindowDelegate>(raw: *const ()) {
-    // SAFETY: raw is an Rc pointer retained for the delegate lifetime.
-    let state = unsafe { Rc::from_raw(raw.cast::<WindowState<D>>()) };
+unsafe fn close_state(raw: *const ()) {
+    // SAFETY: The delegate owns a live Rc pointer. A temporary strong count
+    // keeps the state alive when close synchronously tears down that delegate.
+    unsafe { Rc::increment_strong_count(raw.cast::<WindowState>()) };
+    // SAFETY: The increment above created the reference consumed here.
+    let state = unsafe { Rc::from_raw(raw.cast::<WindowState>()) };
     state.close();
-    let _ = Rc::into_raw(state);
 }
-unsafe fn release_state<D>(raw: *const ()) {
+unsafe fn release_state(raw: *const ()) {
     // SAFETY: This consumes the delegate's transferred Rc reference.
-    unsafe { drop(Rc::from_raw(raw.cast::<WindowState<D>>())) };
-}
-unsafe fn click_state<D: WindowDelegate>(raw: *const ()) {
-    // SAFETY: raw is an Rc pointer retained for the window lifetime.
-    let state = unsafe { Rc::from_raw(raw.cast::<WindowState<D>>()) };
-    state.click();
-    let _ = Rc::into_raw(state);
+    unsafe { drop(Rc::from_raw(raw.cast::<WindowState>())) };
 }
 unsafe fn delegate_box(object: Id) -> *mut DelegateBox {
     unsafe { native::get_pointer_ivar(object, c"_zpdWindowState".as_ptr()) }
@@ -125,7 +93,7 @@ unsafe extern "C" fn window_will_close(object: Id, _: native::Sel, _: Id) {
     // ivar state alive if closing removes the owning Actor subtree synchronously.
     let _receiver = unsafe { Strong::retain(object) };
     if let Some(state) = unsafe { delegate_box(object).as_ref() } {
-        unsafe { (state.close)(state.state) }
+        unsafe { close_state(state.state) }
     }
 }
 unsafe extern "C" fn delegate_dealloc(object: Id, _: native::Sel) {
@@ -152,7 +120,7 @@ unsafe fn release_delegate_box(object: Id) {
         };
         // SAFETY: The native delegate owns exactly one DelegateBox.
         let state = unsafe { Box::from_raw(state) };
-        unsafe { (state.release)(state.state) };
+        unsafe { release_state(state.state) };
     }
 }
 fn window_delegate_class() -> native::Class {
@@ -188,101 +156,6 @@ fn window_delegate_class() -> native::Class {
     }) as native::Class
 }
 
-struct ClickBox {
-    state: *const (),
-    click: unsafe fn(*const ()),
-    release: unsafe fn(*const ()),
-}
-
-unsafe fn click_box(object: Id) -> *mut ClickBox {
-    // SAFETY: ZpdRustWindow registers this pointer-sized ivar before use.
-    unsafe { native::get_pointer_ivar(object, c"_zpdClickState".as_ptr()) }
-}
-
-unsafe extern "C" fn send_event(object: Id, _: native::Sel, event: Id) {
-    // SAFETY: NSEvent.type returns an integer enum; 2 is leftMouseUp.
-    let event_type = unsafe { native::send_i64(event, native::sel(b"type\0")) };
-    if event_type == 2
-        && let Some(state) = unsafe { click_box(object).as_ref() }
-    {
-        // SAFETY: The window owns the callback state for this dispatch.
-        unsafe { (state.click)(state.state) };
-    }
-    let mut superclass = native::Super {
-        receiver: object,
-        superclass: native::class(b"NSWindow\0"),
-    };
-    // SAFETY: objc_msgSendSuper is wrapped by a typed NSWindow sendEvent helper.
-    unsafe { native::send_super_void_id(&mut superclass, native::sel(b"sendEvent:\0"), event) };
-}
-
-unsafe extern "C" fn window_dealloc(object: Id, _: native::Sel) {
-    unsafe { release_click_box(object) };
-    // SAFETY: Continue normal NSWindow destruction after releasing Rust state.
-    unsafe {
-        native::send_super_void(
-            object,
-            native::class(b"NSWindow\0"),
-            native::sel(b"dealloc\0"),
-        )
-    };
-}
-
-unsafe fn release_click_box(object: Id) {
-    // SAFETY: ZpdRustWindow exclusively owns its ClickBox allocation.
-    let state = unsafe { click_box(object) };
-    if !state.is_null() {
-        // SAFETY: Clearing the ivar transfers the sole ClickBox allocation to Rust.
-        unsafe {
-            native::set_pointer_ivar(
-                object,
-                c"_zpdClickState".as_ptr(),
-                std::ptr::null_mut::<ClickBox>(),
-            )
-        };
-        // SAFETY: This is the single allocation installed during window creation.
-        let state = unsafe { Box::from_raw(state) };
-        // SAFETY: release matches the generic state type used at creation.
-        unsafe { (state.release)(state.state) };
-    }
-}
-
-fn window_class() -> native::Class {
-    static CLASS: OnceLock<usize> = OnceLock::new();
-    *CLASS.get_or_init(|| {
-        // SAFETY: Registration occurs exactly once before any instance is allocated.
-        unsafe {
-            let class = native::objc_allocateClassPair(
-                native::class(b"NSWindow\0"),
-                c"ZpdRustWindow".as_ptr(),
-                0,
-            );
-            assert!(!class.is_null());
-            assert!(native::class_addIvar(
-                class,
-                c"_zpdClickState".as_ptr(),
-                std::mem::size_of::<Id>(),
-                3,
-                c"^v".as_ptr(),
-            ));
-            native::add_method(
-                class,
-                b"sendEvent:\0",
-                send_event as unsafe extern "C" fn(_, _, _),
-                b"v@:@\0",
-            );
-            native::add_method(
-                class,
-                b"dealloc\0",
-                window_dealloc as unsafe extern "C" fn(_, _),
-                b"v@:\0",
-            );
-            native::objc_registerClassPair(class);
-            class as usize
-        }
-    }) as native::Class
-}
-
 struct ActorRollback(Option<ActorRef>);
 
 impl ActorRollback {
@@ -299,22 +172,19 @@ impl Drop for ActorRollback {
     }
 }
 
-pub struct Window<'application, D: WindowDelegate> {
+pub struct Window<'application> {
     actor: ActorRef,
     content: ActorRef,
     content_controller: ActorRef,
     sidebar: RefCell<Option<SidebarNative>>,
-    _delegate: PhantomData<D>,
     _application: PhantomData<&'application Application<()>>,
     _main_thread: PhantomData<Rc<()>>,
 }
-impl<'application, D: WindowDelegate> Window<'application, D> {
+impl<'application> Window<'application> {
     pub(crate) fn new<A: ApplicationDelegate>(
         application: &'application Application<A>,
-        delegate: D,
     ) -> Result<Self, WindowError> {
         let state = Rc::new(WindowState {
-            delegate: RefCell::new(delegate),
             closed: Cell::new(false),
             actor: std::cell::RefCell::new(None),
         });
@@ -328,7 +198,7 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
         // SAFETY: This is NSWindow's arm64 designated initializer signature.
         let native_window = unsafe {
             Strong::from_retained(native::send_id_rect_u64_u64_bool(
-                native::send_id(window_class(), native::sel(b"alloc\0")),
+                native::send_id(native::class(b"NSWindow\0"), native::sel(b"alloc\0")),
                 native::sel(b"initWithContentRect:styleMask:backing:defer:\0"),
                 frame,
                 (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3),
@@ -337,18 +207,6 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
             ))
         }
         .ok_or(WindowError::NativeCreationFailed)?;
-        // SAFETY: The subclass owns this click callback allocation until dealloc.
-        unsafe {
-            native::set_pointer_ivar(
-                native_window.as_ptr(),
-                c"_zpdClickState".as_ptr(),
-                Box::into_raw(Box::new(ClickBox {
-                    state: Rc::into_raw(state.clone()).cast(),
-                    click: click_state::<D>,
-                    release: release_state::<D>,
-                })),
-            );
-        }
         unsafe {
             native::send_void_bool(
                 native_window.as_ptr(),
@@ -356,7 +214,7 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
                 false,
             )
         };
-        let actor = application.tree().insert_root(native_window);
+        let actor = application.tree().insert_window(native_window);
         let mut rollback = ActorRollback(Some(actor.clone()));
         *state.actor.borrow_mut() = Some(actor.clone());
         application
@@ -368,7 +226,6 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
                     native::sel(b"setContentViewController:\0"),
                     native::NIL,
                 );
-                release_click_box(window);
             })
             .map_err(WindowError::from)?;
 
@@ -416,8 +273,6 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
                 c"_zpdWindowState".as_ptr(),
                 Box::into_raw(Box::new(DelegateBox {
                     state: Rc::into_raw(state.clone()).cast(),
-                    close: close_state::<D>,
-                    release: release_state::<D>,
                 })),
             );
             Strong::from_retained(object).ok_or(WindowError::NativeCreationFailed)?
@@ -441,14 +296,13 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
                 release_delegate_box(delegate)
             })
             .map_err(WindowError::from)?;
-        state.invoke(WindowDelegate::did_create);
+        application.tree().emit(&actor, WindowEventKind::Created);
         rollback.disarm();
         Ok(Self {
             actor,
             content,
             content_controller,
             sidebar: RefCell::new(None),
-            _delegate: PhantomData,
             _application: PhantomData,
             _main_thread: PhantomData,
         })
@@ -596,7 +450,7 @@ impl<'application, D: WindowDelegate> Window<'application, D> {
         WgpuSurface::new(&self.actor, &self.content, rect)
     }
 }
-impl<D: WindowDelegate> Drop for Window<'_, D> {
+impl Drop for Window<'_> {
     fn drop(&mut self) {
         self.sidebar.borrow_mut().take();
         if self.actor.is_alive() {
@@ -741,45 +595,4 @@ impl AsView for WgpuSurface<'_> {
 #[cfg(feature = "wgpu")]
 fn window_tree(actor: &ActorRef) -> Result<crate::actor::ActorTree, WindowError> {
     actor.tree_handle().ok_or(WindowError::Closed)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    use super::{WindowDelegate, WindowState};
-
-    struct Probe {
-        clicks: Rc<Cell<usize>>,
-        closes: Rc<Cell<usize>>,
-    }
-    impl WindowDelegate for Probe {
-        fn did_click(&mut self) {
-            self.clicks.set(self.clicks.get() + 1);
-        }
-        fn did_close(&mut self) {
-            self.closes.set(self.closes.get() + 1);
-        }
-    }
-
-    #[test]
-    fn window_state_ignores_clicks_after_close() {
-        // Verifies NSWindow event forwarding cannot call a delegate after actor closure.
-        let clicks = Rc::new(Cell::new(0));
-        let closes = Rc::new(Cell::new(0));
-        let state = WindowState {
-            delegate: std::cell::RefCell::new(Probe {
-                clicks: clicks.clone(),
-                closes: closes.clone(),
-            }),
-            closed: Cell::new(false),
-            actor: std::cell::RefCell::new(None),
-        };
-        state.click();
-        state.close();
-        state.click();
-        assert_eq!(clicks.get(), 1);
-        assert_eq!(closes.get(), 1);
-    }
 }

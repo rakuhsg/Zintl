@@ -1,3 +1,4 @@
+use crate::actor::WindowEventKind;
 use crate::native::{self, Strong};
 use crate::runloop::{Application, ApplicationDelegate};
 
@@ -24,6 +25,28 @@ impl Button {
             value
         };
         let view = ViewActor::new(application, native);
+        let actor = view.actor().clone();
+        let target = callback::target(move |_| {
+            if let Some(tree) = actor.tree_handle() {
+                tree.emit(&actor, WindowEventKind::ButtonClicked);
+            }
+        });
+        let tree = view.actor().tree_handle().ok_or(ViewError::Closed)?;
+        let target = tree
+            .replace_owned(view.actor(), "action-target", target)
+            .map_err(ViewError::from)?;
+        tree.add_teardown(&target, |target| unsafe { callback::release(target) })
+            .map_err(ViewError::from)?;
+        view.as_view().with(|button| {
+            target.with(|target| unsafe {
+                native::send_void_id(button, native::sel(b"setTarget:\0"), target);
+                native::send_void_id(
+                    button,
+                    native::sel(b"setAction:\0"),
+                    native::sel(b"invoke:\0"),
+                );
+            })
+        })??;
         application
             .tree()
             .add_teardown(view.actor(), |button| unsafe {
@@ -38,40 +61,6 @@ impl Button {
         self.view.as_view().with(|button| unsafe {
             native::send_void_id(button, native::sel(b"setTitle:\0"), title.as_ptr())
         })
-    }
-    pub fn set_action<F>(&self, mut action: F) -> Result<(), ViewError>
-    where
-        F: FnMut() + 'static,
-    {
-        let target = callback::target(move |_| action());
-        self.clear_action()?;
-        let tree = self.view.actor().tree_handle().ok_or(ViewError::Closed)?;
-        let target = tree
-            .replace_owned(self.view.actor(), "action-target", target)
-            .map_err(ViewError::from)?;
-        tree.add_teardown(&target, |target| unsafe { callback::release(target) })
-            .map_err(ViewError::from)?;
-        self.view.as_view().with(|button| {
-            target.with(|target| unsafe {
-                native::send_void_id(button, native::sel(b"setTarget:\0"), target);
-                native::send_void_id(
-                    button,
-                    native::sel(b"setAction:\0"),
-                    native::sel(b"invoke:\0"),
-                );
-            })
-        })??;
-        Ok(())
-    }
-    pub fn clear_action(&self) -> Result<(), ViewError> {
-        self.view.as_view().with(|button| unsafe {
-            native::send_void_id(button, native::sel(b"setTarget:\0"), native::NIL);
-            native::send_void_id(button, native::sel(b"setAction:\0"), native::NIL);
-        })?;
-        let tree = self.view.actor().tree_handle().ok_or(ViewError::Closed)?;
-        tree.clear_owned(self.view.actor(), "action-target")
-            .map_err(ViewError::from)?;
-        Ok(())
     }
 }
 impl AsView for Button {
