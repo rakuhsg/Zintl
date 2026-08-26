@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use crate::actor::{ActorError, ActorRef, WindowEventKind};
+use crate::actor::{ActorError, ActorRef, EventRouteToken, WindowEventKind};
 #[cfg(feature = "wgpu")]
 use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
@@ -183,6 +183,7 @@ pub struct Window<'application> {
 impl<'application> Window<'application> {
     pub(crate) fn new<A: ApplicationDelegate>(
         application: &'application Application<A>,
+        event_route: Option<EventRouteToken>,
     ) -> Result<Self, WindowError> {
         let state = Rc::new(WindowState {
             closed: Cell::new(false),
@@ -215,6 +216,9 @@ impl<'application> Window<'application> {
             )
         };
         let actor = application.tree().insert_window(native_window);
+        actor
+            .set_event_route(event_route)
+            .map_err(WindowError::from)?;
         let mut rollback = ActorRollback(Some(actor.clone()));
         *state.actor.borrow_mut() = Some(actor.clone());
         application

@@ -2,6 +2,7 @@
 
 pub mod composer;
 pub mod element;
+pub mod event;
 pub mod hook;
 pub mod renderer;
 pub mod sequence;

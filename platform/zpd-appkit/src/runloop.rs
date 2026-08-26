@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::actor::{ActorRef, ActorTree, ApplicationMessage, WindowEvent};
+use crate::actor::{ActorRef, ActorTree, ApplicationMessage, EventRouteToken, WindowEvent};
 use crate::native::{self, CFRunLoopSourceContext, Id, Strong};
 use crate::ui::{CommandError, CommandSet, Window, WindowError};
 
@@ -570,7 +570,16 @@ impl<D: ApplicationDelegate> Application<D> {
         debug_assert!(self.scheduler().schedule())
     }
     pub fn create_window(&self) -> Result<Window<'_>, WindowError> {
-        Window::new(self)
+        self.create_window_with_event_route(None)
+    }
+
+    /// Creates a Window whose Actor carries an opaque event route before the
+    /// `Created` event is emitted.
+    pub fn create_window_with_event_route(
+        &self,
+        route: Option<EventRouteToken>,
+    ) -> Result<Window<'_>, WindowError> {
+        Window::new(self, route)
     }
     /// Registers the sole semantic Window event callback for this Application.
     ///

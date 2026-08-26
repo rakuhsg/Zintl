@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(target_os = "macos")]
 use std::thread;
 #[cfg(target_os = "macos")]
-use zpd_appkit::actor::{WindowEvent, WindowEventKind};
+use zpd_appkit::actor::{EventRouteToken, WindowEvent, WindowEventKind};
 #[cfg(target_os = "macos")]
 use zpd_appkit::runloop::Application;
 
@@ -36,7 +36,9 @@ struct Handler {
 impl MessageLoopHandler<Message> for Handler {
     fn init(&mut self, cx: &Context<'_, '_, Message>) {
         assert_eq!(thread::current().id(), self.main_thread);
-        let window = cx.create_window().unwrap();
+        let window = cx
+            .create_window_with_event_route(Some(EventRouteToken::new(7)))
+            .unwrap();
         assert!(cx.contains_window(window));
         assert!(cx.remove_window(window));
     }
@@ -52,6 +54,7 @@ impl MessageLoopHandler<Message> for Handler {
             }
             Message::Stop => cx.request_termination(),
             Message::Window(event) => {
+                assert_eq!(event.route, Some(EventRouteToken::new(7)));
                 if matches!(&event.kind, WindowEventKind::DidClose) {
                     assert!(!cx.contains_window(event.window));
                 }

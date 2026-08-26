@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     LayoutConstraint::activate(&constraints)?;
     drop(constraints);
 
-    let button_id = button.as_view().actor_ref().node_id();
+    let button_id = button.as_view().actor_ref().actor_id();
     let _events = application.on(move |event| {
         if event.target == button_id
             && matches!(event.kind, WindowEventKind::ButtonClicked)

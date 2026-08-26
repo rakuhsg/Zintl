@@ -10,7 +10,8 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak};
 use zpd_appkit::actor::{
-    ActorError, ActorRef, ApplicationMessage, NodeId, WindowEvent, WindowEventKind,
+    ActorError, ActorId, ActorRef, ApplicationMessage, EventRouteToken, WindowEvent,
+    WindowEventKind,
 };
 use zpd_appkit::runloop::{
     Application, ApplicationDelegate, ApplicationError, ContextRunLoopSource, RunLoopSourceError,
@@ -167,13 +168,22 @@ impl<'application, M: Send + 'static> Context<'_, 'application, M> {
     }
 
     /// Creates a Window owned by this message loop and returns its Actor ID.
-    pub fn create_window(&self) -> Result<NodeId, WindowError> {
-        self.windows.create()
+    pub fn create_window(&self) -> Result<ActorId, WindowError> {
+        self.create_window_with_event_route(None)
+    }
+
+    /// Creates an owned Window whose Actor carries `event_route` before its
+    /// `Created` event is emitted.
+    pub fn create_window_with_event_route(
+        &self,
+        event_route: Option<EventRouteToken>,
+    ) -> Result<ActorId, WindowError> {
+        self.windows.create(event_route)
     }
 
     #[must_use]
     /// Returns whether the message loop still owns the identified Window.
-    pub fn contains_window(&self, id: NodeId) -> bool {
+    pub fn contains_window(&self, id: ActorId) -> bool {
         self.windows.windows.borrow().contains_key(&id)
     }
 
@@ -182,14 +192,14 @@ impl<'application, M: Send + 'static> Context<'_, 'application, M> {
     /// The operation must not mutate the Window registry through this Context.
     pub fn with_window<R>(
         &self,
-        id: NodeId,
+        id: ActorId,
         operation: impl FnOnce(&Window<'application>) -> R,
     ) -> Option<R> {
         self.windows.windows.borrow().get(&id).map(operation)
     }
 
     /// Closes and removes an owned Window.
-    pub fn remove_window(&self, id: NodeId) -> bool {
+    pub fn remove_window(&self, id: ActorId) -> bool {
         self.windows.windows.borrow_mut().remove(&id).is_some()
     }
 }
@@ -207,14 +217,16 @@ pub trait MessageLoopHandler<M> {
 pub use MessageLoopHandler as MessageHandler;
 
 struct WindowRegistry<'application> {
-    create_window: Box<dyn Fn() -> Result<Window<'application>, WindowError> + 'application>,
-    windows: RefCell<HashMap<NodeId, Window<'application>>>,
+    create_window: Box<
+        dyn Fn(Option<EventRouteToken>) -> Result<Window<'application>, WindowError> + 'application,
+    >,
+    windows: RefCell<HashMap<ActorId, Window<'application>>>,
 }
 
 impl WindowRegistry<'_> {
-    fn create(&self) -> Result<NodeId, WindowError> {
-        let window = (self.create_window)()?;
-        let id = window.actor_ref().node_id();
+    fn create(&self, event_route: Option<EventRouteToken>) -> Result<ActorId, WindowError> {
+        let window = (self.create_window)(event_route)?;
+        let id = window.actor_ref().actor_id();
         self.windows.borrow_mut().insert(id, window);
         Ok(id)
     }
@@ -364,7 +376,9 @@ where
         let callback = Rc::new(CallbackState {
             shared: shared.clone(),
             windows: WindowRegistry {
-                create_window: Box::new(move || application.create_window()),
+                create_window: Box::new(move |route| {
+                    application.create_window_with_event_route(route)
+                }),
                 windows: RefCell::new(HashMap::new()),
             },
             handler: RefCell::new(handler),

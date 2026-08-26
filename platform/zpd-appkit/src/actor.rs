@@ -11,10 +11,29 @@ use crate::native::{self, Id, Strong};
 /// IDs remain distinct when an Actor slot is reused or a new Application
 /// session starts. They do not retain the native object or its Actor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NodeId {
+pub struct ActorId {
     session: u64,
     index: usize,
     generation: u32,
+}
+
+/// Backend-defined event route carried by an Actor without interpreting it.
+///
+/// The Actor tree only transports this token to its window event callback. Its
+/// owner is responsible for validating the token before dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EventRouteToken(u64);
+
+impl EventRouteToken {
+    /// Creates a token from a backend-owned representation.
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the backend-owned representation.
+    pub fn get(self) -> u64 {
+        self.0
+    }
 }
 
 /// A semantic event emitted by a Window or one of its attached controls.
@@ -23,8 +42,10 @@ pub struct NodeId {
 /// that emitted the event. For Window lifecycle events both IDs are equal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowEvent {
-    pub window: NodeId,
-    pub target: NodeId,
+    pub window: ActorId,
+    pub target: ActorId,
+    /// The route attached to `target` when the event was emitted.
+    pub route: Option<EventRouteToken>,
     pub kind: WindowEventKind,
 }
 
@@ -111,12 +132,25 @@ pub struct ActorRef {
 
 impl ActorRef {
     /// Returns this Actor's non-retaining identity.
-    pub fn node_id(&self) -> NodeId {
-        NodeId {
+    pub fn actor_id(&self) -> ActorId {
+        ActorId {
             session: self.session,
             index: self.id.index,
             generation: self.id.generation,
         }
+    }
+
+    /// Replaces the opaque event route associated with this Actor.
+    pub fn set_event_route(&self, route: Option<EventRouteToken>) -> Result<(), ActorError> {
+        let tree = self.tree.upgrade().ok_or(ActorError::Dropped)?;
+        if tree.borrow().active_session != Some(self.session) {
+            return Err(ActorError::NotActive);
+        }
+        tree.borrow_mut()
+            .node_mut(self.id)
+            .ok_or(ActorError::Dropped)?
+            .event_route = route;
+        Ok(())
     }
 
     pub(crate) fn with<R>(&self, operation: impl FnOnce(Id) -> R) -> Result<R, ActorError> {
@@ -219,6 +253,7 @@ struct Node {
     _native: Strong,
     root: bool,
     window: bool,
+    event_route: Option<EventRouteToken>,
 }
 
 struct EventHandler {
@@ -266,6 +301,7 @@ impl ActorTree {
                     _native: root,
                     root: true,
                     window: false,
+                    event_route: None,
                 })],
                 generations: vec![0],
                 root: root_id,
@@ -367,6 +403,7 @@ impl ActorTree {
             _native: native,
             root: false,
             window: false,
+            event_route: None,
         });
         tree.node_mut(parent)
             .expect("parent must be live")
@@ -412,7 +449,8 @@ impl ActorTree {
             let Some(window) = window else { return };
             WindowEvent {
                 window: self.public_id(window),
-                target: target.node_id(),
+                target: target.actor_id(),
+                route: tree.node(target.id).and_then(|node| node.event_route),
                 kind,
             }
         };
@@ -460,8 +498,8 @@ impl ActorTree {
         }
     }
 
-    fn public_id(&self, id: NodeKey) -> NodeId {
-        NodeId {
+    fn public_id(&self, id: NodeKey) -> ActorId {
+        ActorId {
             session: self.session,
             index: id.index,
             generation: id.generation,
@@ -707,14 +745,14 @@ mod tests {
         // Verifies public IDs cannot alias after Actor slot reuse or Application restart.
         let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
         let first = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
-        let first_id = first.node_id();
+        let first_id = first.actor_id();
         tree.remove(&first);
         let second = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
-        assert_ne!(first_id, second.node_id());
+        assert_ne!(first_id, second.actor_id());
 
         let next_session = tree.begin_session();
         let third = next_session.insert_root(crate::native::alloc_init(b"NSObject\0"));
-        assert_ne!(second.node_id(), third.node_id());
+        assert_ne!(second.actor_id(), third.actor_id());
     }
 
     #[test]
@@ -725,6 +763,8 @@ mod tests {
         let child = tree
             .insert_child(&window, crate::native::alloc_init(b"NSObject\0"))
             .unwrap();
+        let route = EventRouteToken::new(42);
+        child.set_event_route(Some(route)).unwrap();
         let events = Rc::new(RefCell::new(Vec::new()));
         let received = events.clone();
         let handler = tree
@@ -744,8 +784,9 @@ mod tests {
         assert_eq!(
             events.borrow().as_slice(),
             &[WindowEvent {
-                window: window.node_id(),
-                target: child.node_id(),
+                window: window.actor_id(),
+                target: child.actor_id(),
+                route: Some(route),
                 kind: WindowEventKind::ButtonClicked,
             }]
         );

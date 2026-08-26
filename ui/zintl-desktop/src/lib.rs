@@ -1,5 +1,9 @@
+use std::rc::Rc;
 use zintl_ui::composer::Composer;
 pub use zintl_ui::element::{Element, IntoElement};
+#[cfg(not(target_os = "macos"))]
+use zintl_ui::event::EventRouteId;
+use zintl_ui::event::{Event, EventKind};
 use zintl_ui::renderer::{RenderBackend, RenderNode as RenderNodeTrait};
 pub use zintl_ui::store::Store;
 pub use zintl_ui::view::{Context, View};
@@ -39,7 +43,6 @@ pub enum RenderNode {
     TextField {
         value: String,
         placeholder: Option<String>,
-        binding: Option<Store<String>>,
         layout: LayoutStyle,
         id: Option<String>,
     },
@@ -90,7 +93,6 @@ impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
             Self::TextField {
                 value,
                 placeholder,
-                binding: _,
                 layout,
                 id,
             } => NodeKind::View {
@@ -243,6 +245,7 @@ pub struct Button {
     title: String,
     layout: LayoutStyle,
     id: Option<String>,
+    action: Option<Rc<dyn for<'a> Fn(&mut Context<'a>)>>,
 }
 
 impl Button {
@@ -251,6 +254,7 @@ impl Button {
             title: title.into(),
             layout: LayoutStyle::leaf(Size::new(80.0, 32.0)),
             id: None,
+            action: None,
         }
     }
 
@@ -263,17 +267,32 @@ impl Button {
         self.layout.minimum_size = size;
         self
     }
+
+    /// Schedules `action` when this Button is activated by the platform.
+    pub fn on_click(mut self, action: impl for<'a> Fn(&mut Context<'a>) + 'static) -> Self {
+        self.action = Some(Rc::new(action));
+        self
+    }
 }
 
 impl View for Button {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        Element::node(RenderNode::Button {
+        let element = Element::node(RenderNode::Button {
             title: self.title.clone(),
             layout: self.layout,
             id: self.id.clone(),
-        })
+        });
+        if let Some(action) = self.action.clone() {
+            element.on_event(EventKind::Activated, move |cx, event| {
+                if event == Event::Activated {
+                    action(cx);
+                }
+            })
+        } else {
+            element
+        }
     }
 }
 
@@ -324,13 +343,21 @@ impl View for TextField {
             .binding
             .map(|store| cx.get(store).clone())
             .unwrap_or_default();
-        Element::node(RenderNode::TextField {
+        let element = Element::node(RenderNode::TextField {
             value,
             placeholder: self.placeholder.clone(),
-            binding: self.binding,
             layout: self.layout,
             id: self.id.clone(),
-        })
+        });
+        if let Some(store) = self.binding {
+            element.on_event(EventKind::TextChanged, move |cx, event| {
+                if let Event::TextChanged { value } = event {
+                    cx.update(store, |current| *current = value);
+                }
+            })
+        } else {
+            element
+        }
     }
 }
 
@@ -427,6 +454,7 @@ struct Node {
     value: Option<RenderNode>,
     parent: Option<usize>,
     children: Vec<usize>,
+    event_route: Option<EventRouteId>,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -442,6 +470,7 @@ impl TreeBackend {
                 value: None,
                 parent: None,
                 children: Vec::new(),
+                event_route: None,
             })],
         }
     }
@@ -477,18 +506,23 @@ impl RenderBackend<RenderNode> for TreeBackend {
         0
     }
 
-    fn create(&mut self, value: &RenderNode) -> Self::NodeId {
+    fn create(&mut self, value: &RenderNode, event_route: Option<EventRouteId>) -> Self::NodeId {
         let id = self.nodes.len();
         self.nodes.push(Some(Node {
             value: Some(value.clone()),
             parent: None,
             children: Vec::new(),
+            event_route,
         }));
         id
     }
 
     fn update(&mut self, node: Self::NodeId, value: &RenderNode) {
         self.node_mut(node).value = Some(value.clone());
+    }
+
+    fn set_event_route(&mut self, node: Self::NodeId, event_route: Option<EventRouteId>) {
+        self.node_mut(node).event_route = event_route;
     }
 
     fn insert_child(&mut self, parent: Self::NodeId, index: usize, child: Self::NodeId) {
@@ -559,22 +593,7 @@ impl App {
 
     #[cfg(target_os = "macos")]
     pub fn run(self) -> Result<(), AppError> {
-        zintl_ui_appkit::run_composer(self.composer, |composer, event| match event {
-            zintl_ui_appkit::Event::TextChanged { node, value, .. } => {
-                let store = match composer.backend().value(node) {
-                    Some(RenderNode::TextField {
-                        binding: Some(store),
-                        ..
-                    }) => *store,
-                    _ => return,
-                };
-                composer.context(|cx| {
-                    cx.update(store, |current| *current = value);
-                });
-                composer.flush();
-            }
-            _ => {}
-        })
+        zintl_ui_appkit::run_composer(self.composer)
     }
 
     #[cfg(test)]
@@ -584,6 +603,26 @@ impl App {
         });
         self.composer.flush();
     }
+
+    #[cfg(test)]
+    fn dispatch_root_event(&mut self, event: Event) -> bool {
+        let route = root_event_route(self.composer.backend())
+            .expect("the rendered root must have an event route");
+        self.composer.dispatch_event(route, event)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn root_event_route(backend: &DesktopBackend) -> Option<zintl_ui::event::EventRouteId> {
+    let root = backend.root();
+    let child = *backend.children(root).first()?;
+    backend.event_route(child)
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+fn root_event_route(backend: &TreeBackend) -> Option<zintl_ui::event::EventRouteId> {
+    let child = *backend.children(backend.root()).first()?;
+    backend.node(child).event_route
 }
 
 #[cfg(target_os = "macos")]
@@ -625,11 +664,13 @@ mod tests {
 
     struct StoreTextFieldView {
         value: Option<Store<String>>,
+        captured: Rc<Cell<Option<Store<String>>>>,
     }
 
     struct BoundLabelView {
         value: Option<Store<String>>,
         renders: Rc<Cell<usize>>,
+        captured: Rc<Cell<Option<Store<String>>>>,
     }
 
     impl View for BoundLabelView {
@@ -637,6 +678,7 @@ mod tests {
 
         fn init(&mut self, cx: &mut Context<'_>) {
             self.value = Some(cx.store("initial".to_owned()));
+            self.captured.set(self.value);
         }
 
         fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = RenderNode> {
@@ -656,6 +698,7 @@ mod tests {
 
         fn init(&mut self, cx: &mut Context<'_>) {
             self.value = Some(cx.store("initial".to_owned()));
+            self.captured.set(self.value);
         }
 
         fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = RenderNode> {
@@ -741,16 +784,17 @@ mod tests {
     #[test]
     fn text_field_writes_native_input_to_its_store() {
         // Verifies a bound TextField reads from its Store and rerenders after input updates it.
-        let mut app = App::new(StoreTextFieldView { value: None });
-        let store = match app.render() {
-            RenderNode::TextField { value, binding, .. } => {
-                assert_eq!(value, "initial");
-                binding.expect("a Store-backed TextField must expose its binding")
-            }
-            node => panic!("expected a TextField, got {node:?}"),
-        };
+        let captured = Rc::new(Cell::new(None));
+        let mut app = App::new(StoreTextFieldView {
+            value: None,
+            captured: captured.clone(),
+        });
+        assert!(matches!(app.render(), RenderNode::TextField { value, .. } if value == "initial"));
+        let store = captured.get().expect("init must publish the test Store");
 
-        app.update_text_store(store, "typed value".into());
+        assert!(app.dispatch_root_event(Event::TextChanged {
+            value: "typed value".into(),
+        }));
 
         let stored = app.composer.context(|cx| cx.get(store).clone());
         assert_eq!(stored, "typed value");
@@ -758,6 +802,19 @@ mod tests {
             app.render(),
             RenderNode::TextField { value, .. } if value == "typed value"
         ));
+    }
+
+    #[test]
+    fn button_dispatches_its_registered_action() {
+        // Verifies Button activation reaches its Element-owned action without a backend node lookup.
+        let activations = Rc::new(Cell::new(0));
+        let received = activations.clone();
+        let mut app = App::new(Button::new("Save").on_click(move |_| {
+            received.set(received.get() + 1);
+        }));
+
+        assert!(app.dispatch_root_event(Event::Activated));
+        assert_eq!(activations.get(), 1);
     }
 
     #[test]
@@ -784,18 +841,18 @@ mod tests {
     fn store_watcher_rebuilds_only_its_dependent_element() {
         // Verifies cx.watch updates its label without subscribing the enclosing view.
         let renders = Rc::new(Cell::new(0));
+        let captured = Rc::new(Cell::new(None));
         let mut app = App::new(BoundLabelView {
             value: None,
             renders: renders.clone(),
+            captured: captured.clone(),
         });
         let tree = app.render_tree();
-        let store = match &tree.children[0].value {
-            RenderNode::TextField {
-                binding: Some(store),
-                ..
-            } => *store,
-            node => panic!("expected a Store-backed TextField, got {node:?}"),
-        };
+        assert!(matches!(
+            &tree.children[0].value,
+            RenderNode::TextField { .. }
+        ));
+        let store = captured.get().expect("init must publish the test Store");
 
         app.update_text_store(store, "typed value".into());
 

@@ -54,32 +54,9 @@ pub trait AppKitRenderNode: RenderNode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    WindowCreated {
-        window: NodeId,
-    },
-    WindowWillClose {
-        window: NodeId,
-    },
-    WindowDidClose {
-        window: NodeId,
-    },
-    ButtonClicked {
-        window: NodeId,
-        node: NodeId,
-    },
-    TextChanged {
-        window: NodeId,
-        node: NodeId,
-        value: String,
-    },
-}
-
 #[cfg(target_os = "macos")]
 mod backend {
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::error::Error;
     use std::fmt;
     use std::rc::Rc;
@@ -88,9 +65,10 @@ mod backend {
         Context as MessageContext, MessageLoopAppkit, MessageLoopError, MessageLoopHandler,
     };
     use zintl_ui::composer::Composer;
+    use zintl_ui::event::{Event, EventRouteId};
     use zintl_ui::renderer::RenderBackend;
     use zintl_ui_layout::{LayoutError, LayoutStyle, LayoutTree, Size};
-    use zpd_appkit::actor::{NodeId as NativeNodeId, WindowEvent, WindowEventKind};
+    use zpd_appkit::actor::{ActorId, EventRouteToken, WindowEvent, WindowEventKind};
     use zpd_appkit::geometry::Rect as NativeRect;
     use zpd_appkit::runloop::{Application, ApplicationError};
     use zpd_appkit::ui::{
@@ -99,7 +77,7 @@ mod backend {
         WindowAppMenu, WindowError,
     };
 
-    use super::{AppKitRenderNode, Event, NodeId, NodeKind, Rect, ViewKind};
+    use super::{AppKitRenderNode, NodeId, NodeKind, Rect, ViewKind};
 
     #[derive(Debug)]
     pub enum AppError {
@@ -166,13 +144,13 @@ mod backend {
         parent: Option<NodeId>,
         children: Vec<NodeId>,
         native: Option<NativeNode>,
+        native_window: Option<ActorId>,
+        event_route: Option<EventRouteId>,
     }
 
     pub struct AppKitBackend<R: AppKitRenderNode> {
         nodes: Vec<Option<BackendNode<R>>>,
-        windows: HashMap<NodeId, NativeNodeId>,
-        native_nodes: HashMap<NativeNodeId, NodeId>,
-        retired_windows: Vec<NativeNodeId>,
+        retired_windows: Vec<ActorId>,
         structure_dirty: bool,
         layout_dirty: bool,
         pending_error: Option<AppError>,
@@ -192,9 +170,9 @@ mod backend {
                     parent: None,
                     children: Vec::new(),
                     native: None,
+                    native_window: None,
+                    event_route: None,
                 })],
-                windows: HashMap::new(),
-                native_nodes: HashMap::new(),
                 retired_windows: Vec::new(),
                 structure_dirty: true,
                 layout_dirty: true,
@@ -211,6 +189,11 @@ mod backend {
 
         pub fn children(&self, id: NodeId) -> &[NodeId] {
             &self.node(id).children
+        }
+
+        /// Returns the Composer route associated with a rendered backend node.
+        pub fn event_route(&self, id: NodeId) -> Option<EventRouteId> {
+            self.node(id).event_route
         }
 
         fn node(&self, id: NodeId) -> &BackendNode<R> {
@@ -256,14 +239,12 @@ mod backend {
                 self.remove_subtree(child);
             }
             self.detach(id);
-            if let Some(window) = self.windows.remove(&id) {
+            if let Some(window) = self.node(id).native_window {
                 self.retired_windows.push(window);
             }
             if let Some(mut node) = self.nodes.get_mut(id.0).and_then(Option::take)
                 && let Some(native) = node.native.take()
             {
-                self.native_nodes
-                    .remove(&native.as_view().actor_ref().node_id());
                 if let Err(error) = native.as_view().remove_from_superview() {
                     self.record_error(AppError::View(error));
                 }
@@ -312,15 +293,27 @@ mod backend {
                 };
 
                 let new_window = self
-                    .windows
-                    .get(&window_id)
-                    .is_none_or(|id| !cx.contains_window(*id));
+                    .node(window_id)
+                    .native_window
+                    .is_none_or(|id| !cx.contains_window(id));
                 if new_window {
-                    let native_id = cx.create_window().map_err(AppError::Window)?;
-                    self.windows.insert(window_id, native_id);
+                    let route = self.node(window_id).event_route.map(route_token);
+                    let native_id = cx
+                        .create_window_with_event_route(route)
+                        .map_err(AppError::Window)?;
+                    self.node_mut(window_id).native_window = Some(native_id);
                 }
-                let native_id = self.windows[&window_id];
+                let native_id = self
+                    .node(window_id)
+                    .native_window
+                    .expect("a synchronized window has a native Actor");
+                let event_route = self.node(window_id).event_route.map(route_token);
                 cx.with_window(native_id, |window| -> Result<(), AppError> {
+                    window
+                        .actor_ref()
+                        .set_event_route(event_route)
+                        .map_err(WindowError::from)
+                        .map_err(AppError::Window)?;
                     window
                         .set_bounds(native_rect(bounds))
                         .map_err(AppError::Window)?;
@@ -413,8 +406,12 @@ mod backend {
                 .as_view()
                 .set_identifier(accessibility_id.as_deref())
                 .map_err(AppError::View)?;
-            self.native_nodes
-                .insert(native.as_view().actor_ref().node_id(), id);
+            native
+                .as_view()
+                .actor_ref()
+                .set_event_route(self.node(id).event_route.map(route_token))
+                .map_err(ViewError::from)
+                .map_err(AppError::View)?;
             Ok(Some(native))
         }
 
@@ -571,30 +568,6 @@ mod backend {
             }
             Ok(())
         }
-
-        fn translate_event(&self, event: WindowEvent) -> Option<Event> {
-            let window = self
-                .windows
-                .iter()
-                .find_map(|(ui, native)| (*native == event.window).then_some(*ui))?;
-            match event.kind {
-                WindowEventKind::Created => Some(Event::WindowCreated { window }),
-                WindowEventKind::WillClose => Some(Event::WindowWillClose { window }),
-                WindowEventKind::DidClose => Some(Event::WindowDidClose { window }),
-                WindowEventKind::ButtonClicked => {
-                    let node = *self.native_nodes.get(&event.target)?;
-                    Some(Event::ButtonClicked { window, node })
-                }
-                WindowEventKind::TextChanged { value } => {
-                    let node = *self.native_nodes.get(&event.target)?;
-                    Some(Event::TextChanged {
-                        window,
-                        node,
-                        value,
-                    })
-                }
-            }
-        }
     }
 
     impl<R: AppKitRenderNode> RenderBackend<R> for AppKitBackend<R> {
@@ -604,13 +577,15 @@ mod backend {
             NodeId(0)
         }
 
-        fn create(&mut self, value: &R) -> Self::NodeId {
+        fn create(&mut self, value: &R, event_route: Option<EventRouteId>) -> Self::NodeId {
             let id = NodeId(self.nodes.len());
             self.nodes.push(Some(BackendNode {
                 value: Some(value.clone()),
                 parent: None,
                 children: Vec::new(),
                 native: None,
+                native_window: None,
+                event_route,
             }));
             self.structure_dirty = true;
             self.layout_dirty = true;
@@ -628,6 +603,19 @@ mod backend {
             }
             self.node_mut(id).value = Some(value.clone());
             self.layout_dirty = true;
+        }
+
+        fn set_event_route(&mut self, id: Self::NodeId, event_route: Option<EventRouteId>) {
+            self.node_mut(id).event_route = event_route;
+            let token = event_route.map(route_token);
+            let result = if let Some(native) = self.node(id).native.as_ref() {
+                native.as_view().actor_ref().set_event_route(token)
+            } else {
+                Ok(())
+            };
+            if let Err(error) = result {
+                self.record_error(AppError::View(ViewError::from(error)));
+            }
         }
 
         fn insert_child(&mut self, parent: Self::NodeId, index: usize, child: Self::NodeId) {
@@ -671,20 +659,18 @@ mod backend {
         }
     }
 
-    struct AppHandler<'application, R, F>
+    struct AppHandler<'application, R>
     where
         R: AppKitRenderNode,
     {
         application: &'application Application<()>,
         composer: Composer<R, AppKitBackend<R>>,
-        on_event: F,
         error: Rc<RefCell<Option<AppError>>>,
     }
 
-    impl<R, F> AppHandler<'_, R, F>
+    impl<R> AppHandler<'_, R>
     where
         R: AppKitRenderNode,
-        F: FnMut(&mut Composer<R, AppKitBackend<R>>, Event),
     {
         fn synchronize(&mut self, cx: &MessageContext<'_, '_, Message>) -> bool {
             match self
@@ -702,10 +688,9 @@ mod backend {
         }
     }
 
-    impl<R, F> MessageLoopHandler<Message> for AppHandler<'_, R, F>
+    impl<R> MessageLoopHandler<Message> for AppHandler<'_, R>
     where
         R: AppKitRenderNode,
-        F: FnMut(&mut Composer<R, AppKitBackend<R>>, Event),
     {
         fn init(&mut self, cx: &MessageContext<'_, '_, Message>) {
             self.synchronize(cx);
@@ -714,8 +699,9 @@ mod backend {
         fn on(&mut self, cx: &MessageContext<'_, '_, Message>, message: Message) {
             match message {
                 Message::Window(event) => {
-                    if let Some(event) = self.composer.backend().translate_event(event) {
-                        (self.on_event)(&mut self.composer, event);
+                    if let Some(route) = event.route {
+                        let route = EventRouteId::from_raw(route.get());
+                        self.composer.dispatch_event(route, ui_event(event.kind));
                     }
                     self.synchronize(cx);
                 }
@@ -723,13 +709,9 @@ mod backend {
         }
     }
 
-    pub fn run_composer<R, F>(
-        composer: Composer<R, AppKitBackend<R>>,
-        on_event: F,
-    ) -> Result<(), AppError>
+    pub fn run_composer<R>(composer: Composer<R, AppKitBackend<R>>) -> Result<(), AppError>
     where
         R: AppKitRenderNode,
-        F: FnMut(&mut Composer<R, AppKitBackend<R>>, Event),
     {
         let application = Application::new(()).map_err(AppError::Application)?;
         application
@@ -742,13 +724,26 @@ mod backend {
             AppHandler {
                 application: &application,
                 composer,
-                on_event,
                 error: error.clone(),
             },
         )
         .map_err(AppError::MessageLoop)?;
         message_loop.run().map_err(AppError::MessageLoop)?;
         error.borrow_mut().take().map_or(Ok(()), Err)
+    }
+
+    fn route_token(route: EventRouteId) -> EventRouteToken {
+        EventRouteToken::new(route.into_raw())
+    }
+
+    fn ui_event(kind: WindowEventKind) -> Event {
+        match kind {
+            WindowEventKind::Created => Event::WindowCreated,
+            WindowEventKind::WillClose => Event::WindowWillClose,
+            WindowEventKind::DidClose => Event::WindowDidClose,
+            WindowEventKind::ButtonClicked => Event::Activated,
+            WindowEventKind::TextChanged { value } => Event::TextChanged { value },
+        }
     }
 
     fn native_rect(rect: Rect) -> NativeRect {
@@ -824,8 +819,8 @@ mod backend {
         fn removing_backend_parent_removes_its_descendants() {
             // Verifies renderer removal cannot leave detached descendants in backend storage.
             let mut backend = AppKitBackend::<TestNode>::new();
-            let parent = backend.create(&TestNode);
-            let child = backend.create(&TestNode);
+            let parent = backend.create(&TestNode, None);
+            let child = backend.create(&TestNode, None);
             backend.insert_child(backend.root(), 0, parent);
             backend.insert_child(parent, 0, child);
 
@@ -834,6 +829,18 @@ mod backend {
             assert!(backend.nodes[parent.0].is_none());
             assert!(backend.nodes[child.0].is_none());
             assert!(backend.children(backend.root()).is_empty());
+        }
+
+        #[test]
+        fn backend_tracks_composer_event_routes_on_nodes() {
+            // Verifies the adapter stores direct routes instead of building an Actor-to-UI lookup.
+            let mut backend = AppKitBackend::<TestNode>::new();
+            let route = EventRouteId::from_raw(17);
+            let node = backend.create(&TestNode, Some(route));
+            assert_eq!(backend.event_route(node), Some(route));
+
+            backend.set_event_route(node, None);
+            assert_eq!(backend.event_route(node), None);
         }
     }
 }
