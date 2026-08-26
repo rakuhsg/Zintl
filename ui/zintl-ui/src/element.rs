@@ -1,3 +1,4 @@
+use crate::event::{Event, EventHandlers, EventKind};
 use crate::renderer::RenderNode;
 use crate::view::Context;
 use std::any::TypeId;
@@ -48,6 +49,8 @@ pub enum Element<R: RenderNode> {
         value: R,
         key: Option<ElementKey>,
         children: Vec<Element<R>>,
+        #[doc(hidden)]
+        events: EventHandlers,
     },
     Fragment(Vec<Element<R>>),
     Bound(Bound<R>),
@@ -59,6 +62,7 @@ impl<R: RenderNode> Element<R> {
             value,
             key: None,
             children: Vec::new(),
+            events: EventHandlers::new(),
         }
     }
 
@@ -84,6 +88,22 @@ impl<R: RenderNode> Element<R> {
             } => *current_key = key,
             Self::Bound(bound) => bound.key = key,
             Self::Fragment(_) => panic!("a fragment cannot have a key"),
+        }
+        self
+    }
+
+    /// Registers a semantic event handler on this element.
+    ///
+    /// The handler belongs to the mounted element and is replaced during
+    /// reconciliation. Registering the same kind twice keeps the last handler.
+    pub fn on_event(
+        mut self,
+        kind: EventKind,
+        handler: impl for<'a> FnMut(&mut Context<'a>, Event) + 'static,
+    ) -> Self {
+        match &mut self {
+            Self::Node { events, .. } => events.insert(kind, Box::new(handler)),
+            _ => panic!("only a node can handle events"),
         }
         self
     }

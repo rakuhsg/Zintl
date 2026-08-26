@@ -1,5 +1,6 @@
 use std::error::Error;
 
+use zpd_appkit::actor::WindowEventKind;
 use zpd_appkit::runloop::Application;
 use zpd_appkit::ui::{
     AsView, Button, CommandItem, CommandMenu, CommandModifier, CommandRole, CommandSet,
@@ -14,7 +15,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     })?;
 
-    let window = application.create_window(())?;
+    let window = application.create_window()?;
     window.set_size(640.0, 400.0)?;
 
     let content = window.content_view()?;
@@ -58,8 +59,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     LayoutConstraint::activate(&constraints)?;
     drop(constraints);
 
-    button.set_action(move || {
-        if let Ok(value) = input.string_value() {
+    let button_id = button.as_view().actor_ref().actor_id();
+    let _events = application.on(move |event| {
+        if event.target == button_id
+            && matches!(event.kind, WindowEventKind::ButtonClicked)
+            && let Ok(value) = input.string_value()
+        {
             println!("{value}");
         }
     })?;

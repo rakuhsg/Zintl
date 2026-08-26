@@ -17,4 +17,4 @@ pub use text_field::TextField;
 pub use view::{AsView, View, ViewError, ViewRef};
 #[cfg(feature = "wgpu")]
 pub use window::{MetalLayer, WgpuSurface};
-pub use window::{Window, WindowDelegate, WindowError};
+pub use window::{Window, WindowError};

@@ -1,3 +1,4 @@
+use crate::actor::WindowEventKind;
 use crate::native::{self, Strong};
 use crate::runloop::{Application, ApplicationDelegate};
 
@@ -57,6 +58,28 @@ impl TextField {
                 native::send_void_id(field, native::sel(b"setDelegate:\0"), native::NIL)
             })
             .map_err(ViewError::from)?;
+        if !label {
+            let actor = view.actor().clone();
+            let target = callback::target(move |notification| unsafe {
+                let field = native::send_id(notification, native::sel(b"object\0"));
+                let value =
+                    native::rust_string(native::send_id(field, native::sel(b"stringValue\0")));
+                if let Some(tree) = actor.tree_handle() {
+                    tree.emit(&actor, WindowEventKind::TextChanged { value });
+                }
+            });
+            let tree = view.actor().tree_handle().ok_or(ViewError::Closed)?;
+            let target = tree
+                .replace_owned(view.actor(), "delegate", target)
+                .map_err(ViewError::from)?;
+            tree.add_teardown(&target, |target| unsafe { callback::release(target) })
+                .map_err(ViewError::from)?;
+            view.as_view().with(|field| {
+                target.with(|target| unsafe {
+                    native::send_void_id(field, native::sel(b"setDelegate:\0"), target)
+                })
+            })??;
+        }
         Ok(Self { view })
     }
     pub fn set_string_value(&self, value: &str) -> Result<(), ViewError> {
@@ -89,38 +112,6 @@ impl TextField {
         self.view.as_view().with(|field| unsafe {
             native::send_void_bool(field, native::sel(b"setSelectable:\0"), selectable)
         })
-    }
-    pub fn set_change_handler<F>(&self, mut callback_fn: F) -> Result<(), ViewError>
-    where
-        F: FnMut(String) + 'static,
-    {
-        let target = callback::target(move |notification| unsafe {
-            let field = native::send_id(notification, native::sel(b"object\0"));
-            let value = native::send_id(field, native::sel(b"stringValue\0"));
-            callback_fn(native::rust_string(value));
-        });
-        self.clear_change_handler()?;
-        let tree = self.view.actor().tree_handle().ok_or(ViewError::Closed)?;
-        let target = tree
-            .replace_owned(self.view.actor(), "delegate", target)
-            .map_err(ViewError::from)?;
-        tree.add_teardown(&target, |target| unsafe { callback::release(target) })
-            .map_err(ViewError::from)?;
-        self.view.as_view().with(|field| {
-            target.with(|target| unsafe {
-                native::send_void_id(field, native::sel(b"setDelegate:\0"), target)
-            })
-        })??;
-        Ok(())
-    }
-    pub fn clear_change_handler(&self) -> Result<(), ViewError> {
-        self.view.as_view().with(|field| unsafe {
-            native::send_void_id(field, native::sel(b"setDelegate:\0"), native::NIL)
-        })?;
-        let tree = self.view.actor().tree_handle().ok_or(ViewError::Closed)?;
-        tree.clear_owned(self.view.actor(), "delegate")
-            .map_err(ViewError::from)?;
-        Ok(())
     }
 }
 impl AsView for TextField {

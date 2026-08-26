@@ -1,4 +1,5 @@
 use crate::element::{Bound, BoundBuilder, Element, ElementKey, IntoElement};
+use crate::event::{Event, EventHandlers, EventRouteId, EventRouter};
 use crate::hook::HookId;
 use crate::renderer::{RenderBackend, RenderNode};
 use crate::sequence::Arena;
@@ -99,6 +100,7 @@ struct MountedNode<R: RenderNode, NodeId> {
     key: Option<ElementKey>,
     handle: NodeId,
     children: Vec<MountedElement<R, NodeId>>,
+    event_route: Option<EventRouteId>,
 }
 
 enum MountedElement<R: RenderNode, NodeId> {
@@ -119,6 +121,7 @@ where
     bounds: BoundArena<R, B::NodeId>,
     root: Vec<MountedElement<R, B::NodeId>>,
     mounted: bool,
+    event_router: EventRouter,
 }
 
 impl<R, B> Composer<R, B>
@@ -136,6 +139,7 @@ where
             bounds: BoundArena::new(),
             root: Vec::new(),
             mounted: false,
+            event_router: EventRouter::new(),
         }
     }
 
@@ -196,6 +200,27 @@ where
 
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
+    }
+
+    /// Dispatches an event to the mounted element identified by `route`.
+    ///
+    /// Stale or unknown routes and events without a matching handler are
+    /// ignored. Updates scheduled by a handler are flushed before returning.
+    pub fn dispatch_event(&mut self, route: EventRouteId, event: Event) -> bool {
+        let handled = {
+            let mut context = Context {
+                stores: &mut self.stores,
+                next_hook_id: &mut self.next_hook_id,
+                dirty_hooks: &mut self.dirty_hooks,
+                dependencies: None,
+                init_stores: None,
+            };
+            self.event_router.dispatch(route, &mut context, event)
+        };
+        if handled {
+            self.flush();
+        }
+        handled
     }
 
     fn bound_depth(&self, mut id: BoundId) -> usize {
@@ -391,8 +416,10 @@ where
                 value,
                 key,
                 children,
+                events,
             } => {
-                let handle = self.backend.create(&value);
+                let event_route = self.mount_event_route(events);
+                let handle = self.backend.create(&value, event_route);
                 self.backend.insert_child(parent, index, handle);
                 let children =
                     self.reconcile_list(handle, Vec::new(), normalize(children), parent_bound, 0);
@@ -401,6 +428,7 @@ where
                     key,
                     handle,
                     children,
+                    event_route,
                 })
             }
             Element::Bound(bound) => {
@@ -425,6 +453,7 @@ where
                     value,
                     key,
                     children,
+                    events,
                 },
             ) => {
                 if old.value != value {
@@ -432,6 +461,11 @@ where
                     old.value = value;
                 }
                 old.key = key;
+                let previous_route = old.event_route;
+                old.event_route = self.reconcile_event_route(old.event_route, events);
+                if old.event_route != previous_route {
+                    self.backend.set_event_route(old.handle, old.event_route);
+                }
                 old.children = self.reconcile_list(
                     old.handle,
                     old.children,
@@ -465,6 +499,9 @@ where
             MountedElement::Node(node) => {
                 for child in node.children {
                     self.unmount_element(child);
+                }
+                if let Some(route) = node.event_route {
+                    self.event_router.remove(route);
                 }
                 self.backend.remove(node.handle);
             }
@@ -526,6 +563,30 @@ where
                     self.bounds.put(*id, state);
                 }
             }
+        }
+    }
+
+    fn mount_event_route(&mut self, events: EventHandlers) -> Option<EventRouteId> {
+        (!events.is_empty()).then(|| self.event_router.insert(events))
+    }
+
+    fn reconcile_event_route(
+        &mut self,
+        current: Option<EventRouteId>,
+        events: EventHandlers,
+    ) -> Option<EventRouteId> {
+        if events.is_empty() {
+            if let Some(route) = current {
+                self.event_router.remove(route);
+            }
+            return None;
+        }
+
+        if let Some(route) = current {
+            assert!(self.event_router.replace(route, events));
+            Some(route)
+        } else {
+            Some(self.event_router.insert(events))
         }
     }
 }
