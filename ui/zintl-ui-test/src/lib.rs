@@ -227,6 +227,29 @@ mod tests {
     use zintl_ui::store::Store;
     use zintl_ui::view::{Context, View};
 
+    #[test]
+    fn store_can_be_declared_before_view_initialization() {
+        // A View field can use Store::default and receive its Composer handle during init.
+        let mut store = Store::<i32>::default();
+        assert!(!store.is_initialized());
+
+        let mut composer = Composer::new(TestBackend::new());
+        store = composer.context(|cx| cx.store(7));
+
+        assert!(store.is_initialized());
+        assert_eq!(composer.context(|cx| *cx.get(store)), 7);
+    }
+
+    #[test]
+    #[should_panic(expected = "Store was used before View::init initialized it")]
+    fn uninitialized_store_access_has_a_clear_error() {
+        // Accessing a declared Store before View::init reports the violated lifecycle contract.
+        let mut composer = Composer::new(TestBackend::new());
+        composer.context(|cx| {
+            let _ = cx.get(Store::<i32>::uninitialized());
+        });
+    }
+
     struct InitializedView {
         count: Option<Store<i32>>,
         exposed_count: Rc<Cell<Option<Store<i32>>>>,
