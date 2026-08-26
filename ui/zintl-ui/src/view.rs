@@ -76,14 +76,15 @@ impl Context<'_> {
     }
 
     pub fn get<T: 'static>(&self, store: Store<T>) -> &T {
+        let handle = store.handle();
         if let Some(dependencies) = self.dependencies {
             let mut dependencies = dependencies.borrow_mut();
-            if !dependencies.contains(&store.hook_id) {
-                dependencies.push(store.hook_id);
+            if !dependencies.contains(&handle.hook_id) {
+                dependencies.push(handle.hook_id);
             }
         }
         self.stores
-            .get(store.id)
+            .get(handle.id)
             .expect("store handle must belong to this composer")
     }
 
@@ -93,6 +94,7 @@ impl Context<'_> {
         F: Fn(&T) -> E + 'static,
         E: IntoElement + 'static,
     {
+        store.handle();
         StoreWatcher {
             store,
             render,
@@ -105,12 +107,13 @@ impl Context<'_> {
         store: Store<T>,
         update: impl FnOnce(&mut T) -> U,
     ) -> U {
+        let handle = store.handle();
         let value = self
             .stores
-            .get_mut(store.id)
+            .get_mut(handle.id)
             .expect("store handle must belong to this composer");
         let result = update(value);
-        self.dirty_hooks.insert(store.hook_id);
+        self.dirty_hooks.insert(handle.hook_id);
         result
     }
 }

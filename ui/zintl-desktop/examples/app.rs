@@ -1,23 +1,22 @@
 use zintl_desktop::*;
 
+#[derive(Default)]
 pub struct MainView {
-    name: Option<Store<String>>,
-    count: Option<Store<i32>>,
+    name: Store<String>,
+    count: Store<i32>,
 }
 
 impl View for MainView {
     type Output = RenderNode;
 
     fn init(&mut self, cx: &mut Context<'_>) {
-        self.name = Some(cx.store(String::new()));
-        self.count = Some(cx.store(0));
+        self.name = cx.store(String::new());
+        self.count = cx.store(0);
     }
 
     fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = RenderNode> {
-        let name = self
-            .name
-            .expect("MainView must be initialized before rendering");
-        let count = self.count.unwrap();
+        let name = self.name;
+        let count = self.count;
 
         Window::new(Rect::new(100.0, 100.0, 640.0, 400.0), "Zintl").content(
             VStack::new((
@@ -41,10 +40,7 @@ impl View for MainView {
 
 #[cfg(target_os = "macos")]
 fn main() -> Result<(), AppError> {
-    let app = App::new(MainView {
-        name: None,
-        count: None,
-    });
+    let app = App::new(MainView::default());
     app.run()
 }
 
