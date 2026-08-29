@@ -10,6 +10,7 @@ class ZintlUITestCase: XCTestCase {
 
   func launch(
     scenario: String,
+    environment: [String: String] = [:],
     file: StaticString = #filePath,
     line: UInt = #line
   ) throws {
@@ -17,6 +18,7 @@ class ZintlUITestCase: XCTestCase {
 
     app = XCUIApplication(url: URL(fileURLWithPath: path))
     app.launchArguments = ["--scenario", scenario]
+    app.launchEnvironment.merge(environment) { _, value in value }
     app.launch()
     let launchedApp = app!
     addTeardownBlock { @MainActor in
