@@ -1,4 +1,4 @@
-use zintl_desktop::*;
+use zintl_ui_desktop::*;
 
 #[derive(Default)]
 pub struct MainView {

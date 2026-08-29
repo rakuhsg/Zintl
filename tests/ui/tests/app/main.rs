@@ -2,7 +2,7 @@ mod scenarios;
 
 use std::env;
 
-use zintl_desktop::{App, AppError};
+use zintl_ui_desktop::{App, AppError};
 
 fn main() -> Result<(), AppError> {
     let scenario = scenario_argument().unwrap_or_else(|| "text-field".to_owned());

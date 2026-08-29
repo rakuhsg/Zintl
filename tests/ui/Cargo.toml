@@ -9,4 +9,4 @@ name = "zintl-ui-test-app"
 path = "tests/app/main.rs"
 
 [dependencies]
-zintl-desktop = { path = "../../ui/zintl-desktop" }
+zintl-ui-desktop = { path = "../../ui/zintl-ui-desktop" }

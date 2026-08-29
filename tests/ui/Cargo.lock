@@ -119,15 +119,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "zintl-desktop"
-version = "0.0.0"
-dependencies = [
- "zintl-ui",
- "zintl-ui-appkit",
- "zintl-ui-layout",
-]
-
-[[package]]
 name = "zintl-ui"
 version = "0.0.0"
 
@@ -142,6 +133,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zintl-ui-desktop"
+version = "0.0.0"
+dependencies = [
+ "zintl-ui",
+ "zintl-ui-appkit",
+ "zintl-ui-layout",
+]
+
+[[package]]
 name = "zintl-ui-layout"
 version = "0.0.0"
 dependencies = [
@@ -152,7 +152,7 @@ dependencies = [
 name = "zintl-ui-test-app"
 version = "0.0.0"
 dependencies = [
- "zintl-desktop",
+ "zintl-ui-desktop",
 ]
 
 [[package]]
