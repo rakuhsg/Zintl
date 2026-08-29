@@ -70,7 +70,7 @@ mod backend {
     use zintl_ui::event::EventRouteId;
     use zintl_ui::renderer::RenderBackend;
     use zintl_ui_layout::{LayoutError, LayoutStyle, LayoutTree, Size};
-    use zpd_appkit::actor::{ActorId, EventRouteToken, WindowEvent};
+    use zpd_appkit::actor::{ActorId, EventRouteToken, WindowEvent, WindowEventKind};
     use zpd_appkit::geometry::Rect as NativeRect;
     use zpd_appkit::runloop::{Application, ApplicationError};
     use zpd_appkit::ui::{
@@ -655,6 +655,21 @@ mod backend {
         Window(WindowEvent),
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum WindowEventAction {
+        Synchronize,
+        WaitForClose,
+        Terminate,
+    }
+
+    fn window_event_action(kind: &WindowEventKind) -> WindowEventAction {
+        match kind {
+            WindowEventKind::WillClose => WindowEventAction::WaitForClose,
+            WindowEventKind::DidClose => WindowEventAction::Terminate,
+            _ => WindowEventAction::Synchronize,
+        }
+    }
+
     impl From<WindowEvent> for Message {
         fn from(event: WindowEvent) -> Self {
             Self::Window(event)
@@ -701,12 +716,19 @@ mod backend {
         fn on(&mut self, cx: &MessageContext<'_, '_, Message>, message: Message) {
             match message {
                 Message::Window(event) => {
+                    let action = window_event_action(&event.kind);
                     if let Some(route) = event.route {
                         let route = EventRouteId::from_raw(route.get());
                         self.composer
                             .dispatch_event(route, R::appkit_event(event.kind));
                     }
-                    self.synchronize(cx);
+                    match action {
+                        WindowEventAction::Synchronize => {
+                            self.synchronize(cx);
+                        }
+                        WindowEventAction::WaitForClose => {}
+                        WindowEventAction::Terminate => cx.request_termination(),
+                    }
                 }
             }
         }
@@ -849,6 +871,23 @@ mod backend {
 
             backend.set_event_route(node, None);
             assert_eq!(backend.event_route(node), None);
+        }
+
+        #[test]
+        fn closing_window_skips_synchronization_and_terminates_after_close() {
+            // Verifies closing never synchronizes a closed native window and exits after DidClose.
+            assert_eq!(
+                window_event_action(&WindowEventKind::WillClose),
+                WindowEventAction::WaitForClose
+            );
+            assert_eq!(
+                window_event_action(&WindowEventKind::DidClose),
+                WindowEventAction::Terminate
+            );
+            assert_eq!(
+                window_event_action(&WindowEventKind::Created),
+                WindowEventAction::Synchronize
+            );
         }
     }
 }
