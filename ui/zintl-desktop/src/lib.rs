@@ -1,9 +1,9 @@
 use std::rc::Rc;
 use zintl_ui::composer::Composer;
 pub use zintl_ui::element::{Element, IntoElement};
+use zintl_ui::event::Event as EventTrait;
 #[cfg(not(target_os = "macos"))]
 use zintl_ui::event::EventRouteId;
-use zintl_ui::event::{Event, EventKind};
 use zintl_ui::renderer::{RenderBackend, RenderNode as RenderNodeTrait};
 pub use zintl_ui::store::Store;
 pub use zintl_ui::view::{Context, View};
@@ -15,6 +15,40 @@ pub struct Rect {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+/// Selects the semantic desktop event handled by an element route.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EventKind {
+    Activated,
+    TextChanged,
+    WindowCreated,
+    WindowWillClose,
+    WindowDidClose,
+}
+
+/// A semantic event produced by a desktop backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    Activated,
+    TextChanged { value: String },
+    WindowCreated,
+    WindowWillClose,
+    WindowDidClose,
+}
+
+impl EventTrait for Event {
+    type Kind = EventKind;
+
+    fn kind(&self) -> Self::Kind {
+        match self {
+            Self::Activated => EventKind::Activated,
+            Self::TextChanged { .. } => EventKind::TextChanged,
+            Self::WindowCreated => EventKind::WindowCreated,
+            Self::WindowWillClose => EventKind::WindowWillClose,
+            Self::WindowDidClose => EventKind::WindowDidClose,
+        }
+    }
 }
 
 impl Rect {
@@ -58,6 +92,8 @@ pub enum RenderNode {
 }
 
 impl RenderNodeTrait for RenderNode {
+    type Event = Event;
+
     fn same_kind(&self, other: &Self) -> bool {
         matches!(
             (self, other),
@@ -113,6 +149,16 @@ impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
                 title: title.clone(),
                 id: id.clone(),
             },
+        }
+    }
+
+    fn appkit_event(event: zintl_ui_appkit::AppKitEvent) -> Self::Event {
+        match event {
+            zintl_ui_appkit::AppKitEvent::Created => Event::WindowCreated,
+            zintl_ui_appkit::AppKitEvent::WillClose => Event::WindowWillClose,
+            zintl_ui_appkit::AppKitEvent::DidClose => Event::WindowDidClose,
+            zintl_ui_appkit::AppKitEvent::ButtonClicked => Event::Activated,
+            zintl_ui_appkit::AppKitEvent::TextChanged { value } => Event::TextChanged { value },
         }
     }
 }
