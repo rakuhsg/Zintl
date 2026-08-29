@@ -1,5 +1,13 @@
 use crate::view::Context;
 
+/// An event family supplied by a UI implementation.
+pub trait Event: Clone + 'static {
+    type Kind: Copy + Eq + 'static;
+
+    /// Returns the kind used to select an element's handler.
+    fn kind(&self) -> Self::Kind;
+}
+
 /// Identifies the event handlers owned by one mounted [`crate::element::Element`].
 ///
 /// The identifier is opaque and generational. A route becomes invalid when its
@@ -28,47 +36,14 @@ impl EventRouteId {
     }
 }
 
-/// Selects the semantic event handled by an element route.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum EventKind {
-    Activated,
-    TextChanged,
-    WindowCreated,
-    WindowWillClose,
-    WindowDidClose,
-}
-
-/// A backend-independent semantic UI event.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
-    Activated,
-    TextChanged { value: String },
-    WindowCreated,
-    WindowWillClose,
-    WindowDidClose,
-}
-
-impl Event {
-    /// Returns the kind used to select an element's handler.
-    pub fn kind(&self) -> EventKind {
-        match self {
-            Self::Activated => EventKind::Activated,
-            Self::TextChanged { .. } => EventKind::TextChanged,
-            Self::WindowCreated => EventKind::WindowCreated,
-            Self::WindowWillClose => EventKind::WindowWillClose,
-            Self::WindowDidClose => EventKind::WindowDidClose,
-        }
-    }
-}
-
-type EventHandler = Box<dyn for<'a> FnMut(&mut Context<'a>, Event)>;
+type EventHandler<E> = Box<dyn for<'a> FnMut(&mut Context<'a>, E)>;
 
 #[doc(hidden)]
-pub struct EventHandlers {
-    handlers: Vec<(EventKind, EventHandler)>,
+pub struct EventHandlers<E: Event> {
+    handlers: Vec<(E::Kind, EventHandler<E>)>,
 }
 
-impl EventHandlers {
+impl<E: Event> EventHandlers<E> {
     pub(crate) fn new() -> Self {
         Self {
             handlers: Vec::new(),
@@ -79,7 +54,7 @@ impl EventHandlers {
         self.handlers.is_empty()
     }
 
-    pub(crate) fn insert(&mut self, kind: EventKind, handler: EventHandler) {
+    pub(crate) fn insert(&mut self, kind: E::Kind, handler: EventHandler<E>) {
         if let Some((_, current)) = self
             .handlers
             .iter_mut()
@@ -91,7 +66,7 @@ impl EventHandlers {
         }
     }
 
-    fn dispatch(&mut self, cx: &mut Context<'_>, event: Event) -> bool {
+    fn dispatch(&mut self, cx: &mut Context<'_>, event: E) -> bool {
         let kind = event.kind();
         let Some((_, handler)) = self
             .handlers
@@ -105,17 +80,17 @@ impl EventHandlers {
     }
 }
 
-struct EventRouteSlot {
+struct EventRouteSlot<E: Event> {
     generation: u32,
-    handlers: Option<EventHandlers>,
+    handlers: Option<EventHandlers<E>>,
 }
 
-pub(crate) struct EventRouter {
-    slots: Vec<EventRouteSlot>,
+pub(crate) struct EventRouter<E: Event> {
+    slots: Vec<EventRouteSlot<E>>,
     free: Vec<u32>,
 }
 
-impl EventRouter {
+impl<E: Event> EventRouter<E> {
     pub(crate) fn new() -> Self {
         Self {
             slots: Vec::new(),
@@ -123,7 +98,7 @@ impl EventRouter {
         }
     }
 
-    pub(crate) fn insert(&mut self, handlers: EventHandlers) -> EventRouteId {
+    pub(crate) fn insert(&mut self, handlers: EventHandlers<E>) -> EventRouteId {
         debug_assert!(!handlers.is_empty());
         if let Some(slot) = self.free.pop() {
             let entry = &mut self.slots[slot as usize];
@@ -146,7 +121,7 @@ impl EventRouter {
         }
     }
 
-    pub(crate) fn replace(&mut self, id: EventRouteId, handlers: EventHandlers) -> bool {
+    pub(crate) fn replace(&mut self, id: EventRouteId, handlers: EventHandlers<E>) -> bool {
         let Some(slot) = self.slots.get_mut(id.slot as usize) else {
             return false;
         };
@@ -169,12 +144,7 @@ impl EventRouter {
         true
     }
 
-    pub(crate) fn dispatch(
-        &mut self,
-        id: EventRouteId,
-        cx: &mut Context<'_>,
-        event: Event,
-    ) -> bool {
+    pub(crate) fn dispatch(&mut self, id: EventRouteId, cx: &mut Context<'_>, event: E) -> bool {
         let Some(slot) = self.slots.get_mut(id.slot as usize) else {
             return false;
         };

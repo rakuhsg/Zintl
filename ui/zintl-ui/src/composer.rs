@@ -1,5 +1,5 @@
 use crate::element::{Bound, BoundBuilder, Element, ElementKey, IntoElement};
-use crate::event::{Event, EventHandlers, EventRouteId, EventRouter};
+use crate::event::{EventHandlers, EventRouteId, EventRouter};
 use crate::hook::HookId;
 use crate::renderer::{RenderBackend, RenderNode};
 use crate::sequence::Arena;
@@ -121,7 +121,7 @@ where
     bounds: BoundArena<R, B::NodeId>,
     root: Vec<MountedElement<R, B::NodeId>>,
     mounted: bool,
-    event_router: EventRouter,
+    event_router: EventRouter<R::Event>,
 }
 
 impl<R, B> Composer<R, B>
@@ -206,7 +206,7 @@ where
     ///
     /// Stale or unknown routes and events without a matching handler are
     /// ignored. Updates scheduled by a handler are flushed before returning.
-    pub fn dispatch_event(&mut self, route: EventRouteId, event: Event) -> bool {
+    pub fn dispatch_event(&mut self, route: EventRouteId, event: R::Event) -> bool {
         let handled = {
             let mut context = Context {
                 stores: &mut self.stores,
@@ -566,14 +566,14 @@ where
         }
     }
 
-    fn mount_event_route(&mut self, events: EventHandlers) -> Option<EventRouteId> {
+    fn mount_event_route(&mut self, events: EventHandlers<R::Event>) -> Option<EventRouteId> {
         (!events.is_empty()).then(|| self.event_router.insert(events))
     }
 
     fn reconcile_event_route(
         &mut self,
         current: Option<EventRouteId>,
-        events: EventHandlers,
+        events: EventHandlers<R::Event>,
     ) -> Option<EventRouteId> {
         if events.is_empty() {
             if let Some(route) = current {

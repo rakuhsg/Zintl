@@ -1,6 +1,26 @@
 use zintl_ui::event::EventRouteId;
 use zintl_ui::renderer::{RenderBackend, RenderNode};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    Activated,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    Activated,
+}
+
+impl zintl_ui::event::Event for Event {
+    type Kind = EventKind;
+
+    fn kind(&self) -> Self::Kind {
+        match self {
+            Self::Activated => EventKind::Activated,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TestRenderNode {
     Container(&'static str),
@@ -9,6 +29,8 @@ pub enum TestRenderNode {
 }
 
 impl RenderNode for TestRenderNode {
+    type Event = Event;
+
     fn same_kind(&self, other: &Self) -> bool {
         matches!(
             (self, other),
@@ -223,7 +245,6 @@ mod tests {
     use std::rc::Rc;
     use zintl_ui::composer::Composer;
     use zintl_ui::element::{Element, IntoElement, KeyedElement};
-    use zintl_ui::event::{Event, EventKind};
     use zintl_ui::store::Store;
     use zintl_ui::view::{Context, View};
 

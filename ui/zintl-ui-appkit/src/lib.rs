@@ -2,6 +2,7 @@
 
 use zintl_ui::renderer::RenderNode;
 use zintl_ui_layout::LayoutStyle;
+pub use zpd_appkit::actor::WindowEventKind as AppKitEvent;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -49,6 +50,7 @@ pub enum NodeKind {
 
 pub trait AppKitRenderNode: RenderNode {
     fn appkit_node(&self) -> NodeKind;
+    fn appkit_event(event: AppKitEvent) -> Self::Event;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -65,10 +67,10 @@ mod backend {
         Context as MessageContext, MessageLoopAppkit, MessageLoopError, MessageLoopHandler,
     };
     use zintl_ui::composer::Composer;
-    use zintl_ui::event::{Event, EventRouteId};
+    use zintl_ui::event::EventRouteId;
     use zintl_ui::renderer::RenderBackend;
     use zintl_ui_layout::{LayoutError, LayoutStyle, LayoutTree, Size};
-    use zpd_appkit::actor::{ActorId, EventRouteToken, WindowEvent, WindowEventKind};
+    use zpd_appkit::actor::{ActorId, EventRouteToken, WindowEvent};
     use zpd_appkit::geometry::Rect as NativeRect;
     use zpd_appkit::runloop::{Application, ApplicationError};
     use zpd_appkit::ui::{
@@ -701,7 +703,8 @@ mod backend {
                 Message::Window(event) => {
                     if let Some(route) = event.route {
                         let route = EventRouteId::from_raw(route.get());
-                        self.composer.dispatch_event(route, ui_event(event.kind));
+                        self.composer
+                            .dispatch_event(route, R::appkit_event(event.kind));
                     }
                     self.synchronize(cx);
                 }
@@ -734,16 +737,6 @@ mod backend {
 
     fn route_token(route: EventRouteId) -> EventRouteToken {
         EventRouteToken::new(route.into_raw())
-    }
-
-    fn ui_event(kind: WindowEventKind) -> Event {
-        match kind {
-            WindowEventKind::Created => Event::WindowCreated,
-            WindowEventKind::WillClose => Event::WindowWillClose,
-            WindowEventKind::DidClose => Event::WindowDidClose,
-            WindowEventKind::ButtonClicked => Event::Activated,
-            WindowEventKind::TextChanged { value } => Event::TextChanged { value },
-        }
     }
 
     fn native_rect(rect: Rect) -> NativeRect {
@@ -783,7 +776,18 @@ mod backend {
         #[derive(Clone, PartialEq)]
         struct TestNode;
 
+        #[derive(Clone)]
+        struct TestEvent;
+
+        impl zintl_ui::event::Event for TestEvent {
+            type Kind = ();
+
+            fn kind(&self) -> Self::Kind {}
+        }
+
         impl RenderNode for TestNode {
+            type Event = TestEvent;
+
             fn same_kind(&self, _other: &Self) -> bool {
                 true
             }
@@ -796,6 +800,10 @@ mod backend {
                     layout: LayoutStyle::leaf(Size::new(0.0, 0.0)),
                     id: None,
                 }
+            }
+
+            fn appkit_event(_event: crate::AppKitEvent) -> Self::Event {
+                TestEvent
             }
         }
 

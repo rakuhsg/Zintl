@@ -1,6 +1,0 @@
-[package]
-name = "zintl-desktop-build"
-edition = "2024"
-
-[lib]
-path = "src/lib.rs"

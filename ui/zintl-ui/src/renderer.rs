@@ -1,7 +1,9 @@
-use crate::event::EventRouteId;
+use crate::event::{Event, EventRouteId};
 use std::fmt::Debug;
 
 pub trait RenderNode: Clone + PartialEq + 'static {
+    type Event: Event;
+
     fn same_kind(&self, other: &Self) -> bool;
 }
 

@@ -1,5 +1,5 @@
 [package]
-name = "zintl-desktop"
+name = "zintl-ui-desktop"
 edition = "2024"
 
 [dependencies]

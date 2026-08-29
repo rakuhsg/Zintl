@@ -1,4 +1,4 @@
-use crate::event::{Event, EventHandlers, EventKind};
+use crate::event::EventHandlers;
 use crate::renderer::RenderNode;
 use crate::view::Context;
 use std::any::TypeId;
@@ -50,7 +50,7 @@ pub enum Element<R: RenderNode> {
         key: Option<ElementKey>,
         children: Vec<Element<R>>,
         #[doc(hidden)]
-        events: EventHandlers,
+        events: EventHandlers<R::Event>,
     },
     Fragment(Vec<Element<R>>),
     Bound(Bound<R>),
@@ -98,8 +98,8 @@ impl<R: RenderNode> Element<R> {
     /// reconciliation. Registering the same kind twice keeps the last handler.
     pub fn on_event(
         mut self,
-        kind: EventKind,
-        handler: impl for<'a> FnMut(&mut Context<'a>, Event) + 'static,
+        kind: <R::Event as crate::event::Event>::Kind,
+        handler: impl for<'a> FnMut(&mut Context<'a>, R::Event) + 'static,
     ) -> Self {
         match &mut self {
             Self::Node { events, .. } => events.insert(kind, Box::new(handler)),
