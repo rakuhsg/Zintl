@@ -1,7 +1,7 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use zpd_appkit::actor::{ActorError, ApplicationMessage};
+use zpd_appkit::actor::{ActorError, ApplicationMessage, WindowEventKind};
 use zpd_appkit::geometry::Rect;
 use zpd_appkit::runloop::{Application, ApplicationDelegate};
 use zpd_appkit::ui::{
@@ -78,6 +78,11 @@ fn main() {
             |_| {},
         )
         .unwrap();
+    let window_events = Rc::new(RefCell::new(Vec::new()));
+    let received_events = window_events.clone();
+    let event_registration = application
+        .on(move |event| received_events.borrow_mut().push(event.kind))
+        .unwrap();
     let window = application.create_window().unwrap();
     let content = window.content_view().unwrap();
     let label = TextField::label_with_string(&application, "Actor Tree").unwrap();
@@ -103,6 +108,15 @@ fn main() {
     ];
     LayoutConstraint::activate(&constraints).unwrap();
     window
+        .set_bounds(Rect::new(100.0, 100.0, 320.0, 200.0))
+        .unwrap();
+    // Verifies NSWindow size changes emit the semantic event used by UI relayout.
+    assert!(window_events.borrow().contains(&WindowEventKind::DidResize));
+    // Verifies callers can read the live content size instead of the outer window frame.
+    let content_bounds = content.bounds().unwrap();
+    assert_eq!(content_bounds.width, 320.0);
+    assert!(content_bounds.height < 200.0);
+    window
         .set_sidebar(
             &Sidebar {
                 sections: vec![SidebarSection {
@@ -118,9 +132,6 @@ fn main() {
             |_| {},
         )
         .unwrap();
-    window
-        .set_bounds(Rect::new(100.0, 100.0, 320.0, 200.0))
-        .unwrap();
     #[cfg(feature = "wgpu")]
     {
         // Verifies CAMetalLayer ownership follows its surface actor.
@@ -135,6 +146,7 @@ fn main() {
     assert_eq!(label.set_string_value("expired"), Err(ViewError::Closed));
     drop(button);
     drop(label);
+    drop(event_registration);
     let stale_application = application.actor_ref();
     drop(application);
     // Verifies the process-wide NSApp root can host a fresh Application session.

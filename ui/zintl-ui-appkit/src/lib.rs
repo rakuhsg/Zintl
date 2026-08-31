@@ -147,6 +147,7 @@ mod backend {
         children: Vec<NodeId>,
         native: Option<NativeNode>,
         native_window: Option<ActorId>,
+        applied_window_bounds: Option<Rect>,
         event_route: Option<EventRouteId>,
     }
 
@@ -173,6 +174,7 @@ mod backend {
                     children: Vec::new(),
                     native: None,
                     native_window: None,
+                    applied_window_bounds: None,
                     event_route: None,
                 })],
                 retired_windows: Vec::new(),
@@ -270,6 +272,7 @@ mod backend {
             &mut self,
             application: &'application Application<()>,
             cx: &MessageContext<'_, 'windows, Message>,
+            resized_window: Option<ActorId>,
         ) -> Result<(), AppError> {
             if let Some(error) = self.pending_error.take() {
                 return Err(error);
@@ -283,8 +286,6 @@ mod backend {
             }
 
             let rebuild_structure = self.structure_dirty;
-            let update_layout = self.layout_dirty || rebuild_structure;
-
             for window_id in window_ids {
                 let description = self
                     .value(window_id)
@@ -303,28 +304,37 @@ mod backend {
                     let native_id = cx
                         .create_window_with_event_route(route)
                         .map_err(AppError::Window)?;
-                    self.node_mut(window_id).native_window = Some(native_id);
+                    let node = self.node_mut(window_id);
+                    node.native_window = Some(native_id);
+                    node.applied_window_bounds = None;
                 }
                 let native_id = self
                     .node(window_id)
                     .native_window
                     .expect("a synchronized window has a native Actor");
                 let event_route = self.node(window_id).event_route.map(route_token);
+                let apply_bounds =
+                    window_bounds_need_update(self.node(window_id).applied_window_bounds, bounds);
                 cx.with_window(native_id, |window| -> Result<(), AppError> {
                     window
                         .actor_ref()
                         .set_event_route(event_route)
                         .map_err(WindowError::from)
                         .map_err(AppError::Window)?;
-                    window
-                        .set_bounds(native_rect(bounds))
-                        .map_err(AppError::Window)?;
+                    if apply_bounds {
+                        window
+                            .set_bounds(native_rect(bounds))
+                            .map_err(AppError::Window)?;
+                    }
                     window.set_title(&title).map_err(AppError::Window)?;
                     window
                         .set_identifier(id.as_deref())
                         .map_err(AppError::Window)
                 })
                 .ok_or(AppError::Window(WindowError::Closed))??;
+                if apply_bounds {
+                    self.node_mut(window_id).applied_window_bounds = Some(bounds);
+                }
 
                 self.materialize_children(application, window_id)?;
                 if rebuild_structure {
@@ -334,8 +344,20 @@ mod backend {
                     })
                     .ok_or(AppError::Window(WindowError::Closed))??;
                 }
+                let update_layout =
+                    self.layout_dirty || rebuild_structure || resized_window == Some(native_id);
                 if update_layout {
-                    self.layout_window(window_id, bounds)?;
+                    let available = cx
+                        .with_window(native_id, |window| -> Result<Size, AppError> {
+                            let bounds = window
+                                .content_view()
+                                .map_err(AppError::Window)?
+                                .bounds()
+                                .map_err(AppError::View)?;
+                            Ok(Size::new(bounds.width as f32, bounds.height as f32))
+                        })
+                        .ok_or(AppError::Window(WindowError::Closed))??;
+                    self.layout_window(window_id, available)?;
                 }
 
                 if new_window {
@@ -434,7 +456,7 @@ mod backend {
             Ok(())
         }
 
-        fn layout_window(&self, window_id: NodeId, bounds: Rect) -> Result<(), AppError> {
+        fn layout_window(&self, window_id: NodeId, available: Size) -> Result<(), AppError> {
             let mut layout = LayoutTree::new();
             let built = self
                 .children(window_id)
@@ -448,7 +470,6 @@ mod backend {
                     &root_children,
                 )
                 .map_err(AppError::Layout)?;
-            let available = Size::new(bounds.width as f32, bounds.height as f32);
             layout.compute(root, available).map_err(AppError::Layout)?;
             for node in &built {
                 self.apply_layout(node, &layout, available.height)?;
@@ -587,6 +608,7 @@ mod backend {
                 children: Vec::new(),
                 native: None,
                 native_window: None,
+                applied_window_bounds: None,
                 event_route,
             }));
             self.structure_dirty = true;
@@ -658,12 +680,14 @@ mod backend {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum WindowEventAction {
         Synchronize,
+        Relayout,
         WaitForClose,
         Terminate,
     }
 
     fn window_event_action(kind: &WindowEventKind) -> WindowEventAction {
         match kind {
+            WindowEventKind::DidResize => WindowEventAction::Relayout,
             WindowEventKind::WillClose => WindowEventAction::WaitForClose,
             WindowEventKind::DidClose => WindowEventAction::Terminate,
             _ => WindowEventAction::Synchronize,
@@ -689,11 +713,15 @@ mod backend {
     where
         R: AppKitRenderNode,
     {
-        fn synchronize(&mut self, cx: &MessageContext<'_, '_, Message>) -> bool {
+        fn synchronize(
+            &mut self,
+            cx: &MessageContext<'_, '_, Message>,
+            resized_window: Option<ActorId>,
+        ) -> bool {
             match self
                 .composer
                 .backend_mut()
-                .synchronize(self.application, cx)
+                .synchronize(self.application, cx, resized_window)
             {
                 Ok(()) => true,
                 Err(error) => {
@@ -710,7 +738,7 @@ mod backend {
         R: AppKitRenderNode,
     {
         fn init(&mut self, cx: &MessageContext<'_, '_, Message>) {
-            self.synchronize(cx);
+            self.synchronize(cx, None);
         }
 
         fn on(&mut self, cx: &MessageContext<'_, '_, Message>, message: Message) {
@@ -724,7 +752,15 @@ mod backend {
                     }
                     match action {
                         WindowEventAction::Synchronize => {
-                            self.synchronize(cx);
+                            self.synchronize(cx, None);
+                        }
+                        WindowEventAction::Relayout => {
+                            let is_open = cx
+                                .with_window(event.window, |window| !window.is_closed())
+                                .unwrap_or(false);
+                            if is_open {
+                                self.synchronize(cx, Some(event.window));
+                            }
                         }
                         WindowEventAction::WaitForClose => {}
                         WindowEventAction::Terminate => cx.request_termination(),
@@ -763,6 +799,10 @@ mod backend {
 
     fn native_rect(rect: Rect) -> NativeRect {
         NativeRect::new(rect.x, rect.y, rect.width, rect.height)
+    }
+
+    fn window_bounds_need_update(applied: Option<Rect>, declared: Rect) -> bool {
+        applied != Some(declared)
     }
 
     fn native_frame(frame: zintl_ui_layout::Rect, parent_height: f32) -> NativeRect {
@@ -871,6 +911,28 @@ mod backend {
 
             backend.set_event_route(node, None);
             assert_eq!(backend.event_route(node), None);
+        }
+
+        #[test]
+        fn resize_event_requests_relayout() {
+            // Verifies native resize notifications force layout without a declarative tree change.
+            assert_eq!(
+                window_event_action(&WindowEventKind::DidResize),
+                WindowEventAction::Relayout
+            );
+        }
+
+        #[test]
+        fn unchanged_declarative_bounds_are_not_reapplied() {
+            // Verifies later synchronization preserves a user-resized native window.
+            let declared = Rect::new(10.0, 20.0, 640.0, 480.0);
+
+            assert!(window_bounds_need_update(None, declared));
+            assert!(!window_bounds_need_update(Some(declared), declared));
+            assert!(window_bounds_need_update(
+                Some(Rect::new(10.0, 20.0, 800.0, 600.0)),
+                declared
+            ));
         }
 
         #[test]

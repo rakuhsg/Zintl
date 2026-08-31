@@ -160,6 +160,19 @@ impl<'view> ViewRef<'view> {
             native::send_void_rect(view, native::sel(b"setFrame:\0"), native_rect(frame))
         })
     }
+    /// Returns this view's current bounds in logical points.
+    pub fn bounds(self) -> Result<Rect, ViewError> {
+        let bounds = self.with(|view| {
+            // SAFETY: NSView's bounds getter returns an NSRect for a live view.
+            unsafe { native::send_rect(view, native::sel(b"bounds\0")) }
+        })?;
+        Ok(Rect::new(
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.size.width,
+            bounds.size.height,
+        ))
+    }
     pub fn set_identifier(self, identifier: Option<&str>) -> Result<(), ViewError> {
         let identifier = identifier.map(native::nsstring);
         self.with(|view| unsafe {
@@ -230,6 +243,9 @@ pub trait AsView {
     }
     fn set_frame(&self, frame: Rect) -> Result<(), ViewError> {
         self.as_view().set_frame(frame)
+    }
+    fn bounds(&self) -> Result<Rect, ViewError> {
+        self.as_view().bounds()
     }
     fn set_identifier(&self, identifier: Option<&str>) -> Result<(), ViewError> {
         self.as_view().set_identifier(identifier)

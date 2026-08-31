@@ -15,4 +15,33 @@ final class HStackLayoutTests: ZintlUITestCase {
     XCTAssertEqual(trailing.frame.midY, leading.frame.midY, accuracy: 1)
     XCTAssertEqual(trailing.frame.minX - leading.frame.minX, 160 + 24, accuracy: 1)
   }
+
+  /// Verifies resizing relayouts children and later input does not restore the initial size.
+  func testChildrenRelayoutWhenWindowResizes() throws {
+    try launch(scenario: "hstack")
+
+    let window = app.windows["main-window"]
+    let leading = app.textFields["leading-field"]
+    XCTAssertTrue(leading.waitForExistence(timeout: 2))
+
+    let initialWindowFrame = window.frame
+    let initialTopInset = leading.frame.minY - initialWindowFrame.minY
+    let zoomButton = window.buttons[XCUIIdentifierZoomWindow]
+    XCTAssertTrue(zoomButton.waitForExistence(timeout: 2))
+
+    zoomButton.click()
+
+    let resizedWindowFrame = window.frame
+    XCTAssertNotEqual(resizedWindowFrame.size, initialWindowFrame.size)
+    XCTAssertEqual(
+      leading.frame.minY - resizedWindowFrame.minY,
+      initialTopInset,
+      accuracy: 1
+    )
+
+    leading.click()
+    leading.typeText("Resized")
+    XCTAssertEqual(window.frame.size.width, resizedWindowFrame.size.width, accuracy: 1)
+    XCTAssertEqual(window.frame.size.height, resizedWindowFrame.size.height, accuracy: 1)
+  }
 }

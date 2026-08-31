@@ -56,6 +56,15 @@ struct WindowState {
     actor: RefCell<Option<ActorRef>>,
 }
 impl WindowState {
+    fn resized(&self) {
+        let actor = self.actor.borrow().clone();
+        if let Some(actor) = actor
+            && let Some(tree) = actor.tree_handle()
+        {
+            tree.emit(&actor, WindowEventKind::DidResize);
+        }
+    }
+
     fn close(&self) {
         if self.closed.replace(true) {
             return;
@@ -81,6 +90,14 @@ unsafe fn close_state(raw: *const ()) {
     let state = unsafe { Rc::from_raw(raw.cast::<WindowState>()) };
     state.close();
 }
+unsafe fn resize_state(raw: *const ()) {
+    // SAFETY: The delegate owns a live Rc pointer. A temporary strong count keeps the state alive
+    // if resize handling synchronously tears down the delegate.
+    unsafe { Rc::increment_strong_count(raw.cast::<WindowState>()) };
+    // SAFETY: The increment above created the reference consumed here.
+    let state = unsafe { Rc::from_raw(raw.cast::<WindowState>()) };
+    state.resized();
+}
 unsafe fn release_state(raw: *const ()) {
     // SAFETY: This consumes the delegate's transferred Rc reference.
     unsafe { drop(Rc::from_raw(raw.cast::<WindowState>())) };
@@ -94,6 +111,16 @@ unsafe extern "C" fn window_will_close(object: Id, _: native::Sel, _: Id) {
     let _receiver = unsafe { Strong::retain(object) };
     if let Some(state) = unsafe { delegate_box(object).as_ref() } {
         unsafe { close_state(state.state) }
+    }
+}
+unsafe extern "C" fn window_did_resize(object: Id, _: native::Sel, _: Id) {
+    // SAFETY: The callback receiver is live on entry; retaining it keeps the delegate and its
+    // ivar state alive if resize handling synchronously removes the Window subtree.
+    let _receiver = unsafe { Strong::retain(object) };
+    // SAFETY: This callback is installed only on delegates with a `_zpdWindowState` ivar.
+    if let Some(state) = unsafe { delegate_box(object).as_ref() } {
+        // SAFETY: The delegate owns the Rc pointer stored in its live state box.
+        unsafe { resize_state(state.state) }
     }
 }
 unsafe extern "C" fn delegate_dealloc(object: Id, _: native::Sel) {
@@ -143,6 +170,12 @@ fn window_delegate_class() -> native::Class {
             class,
             b"windowWillClose:\0",
             window_will_close as unsafe extern "C" fn(_, _, _),
+            b"v@:@\0",
+        );
+        native::add_method(
+            class,
+            b"windowDidResize:\0",
+            window_did_resize as unsafe extern "C" fn(_, _, _),
             b"v@:@\0",
         );
         native::add_method(
