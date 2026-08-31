@@ -26,10 +26,13 @@ final class HStackLayoutTests: ZintlUITestCase {
 
     let initialWindowFrame = window.frame
     let initialTopInset = leading.frame.minY - initialWindowFrame.minY
-    let zoomButton = window.buttons[XCUIIdentifierZoomWindow]
-    XCTAssertTrue(zoomButton.waitForExistence(timeout: 2))
-
-    zoomButton.click()
+    let resizeHandle = window.coordinate(
+      withNormalizedOffset: CGVector(dx: 0.98, dy: 0.98)
+    )
+    resizeHandle.press(
+      forDuration: 0.2,
+      thenDragTo: resizeHandle.withOffset(CGVector(dx: 160, dy: 100))
+    )
 
     let resizedWindowFrame = window.frame
     XCTAssertNotEqual(resizedWindowFrame.size, initialWindowFrame.size)

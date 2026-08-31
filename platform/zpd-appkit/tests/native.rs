@@ -6,15 +6,23 @@ use zpd_appkit::geometry::Rect;
 use zpd_appkit::runloop::{Application, ApplicationDelegate};
 use zpd_appkit::ui::{
     AsView, Button, CommandItem, CommandMenu, CommandModifier, CommandSet, LayoutConstraint,
-    Sidebar, SidebarItem, SidebarSection, TextField, ViewError,
+    Sidebar, SidebarItem, SidebarSection, TextField, View, ViewError,
 };
 use zpd_appkit::with_autorelease_pool;
 
 struct DropDelegate(Rc<Cell<usize>>);
 
+struct DropProbe(Rc<Cell<usize>>);
+
 impl ApplicationDelegate for DropDelegate {}
 
 impl Drop for DropDelegate {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+impl Drop for DropProbe {
     fn drop(&mut self) {
         self.0.set(self.0.get() + 1);
     }
@@ -85,6 +93,31 @@ fn main() {
         .unwrap();
     let window = application.create_window().unwrap();
     let content = window.content_view().unwrap();
+    let first_layout_drops = Rc::new(Cell::new(0));
+    let first_probe = DropProbe(first_layout_drops.clone());
+    window
+        .set_content_layout_handler(move |_| {
+            let _ = &first_probe;
+        })
+        .unwrap();
+    let layout_calls = Rc::new(RefCell::new(Vec::new()));
+    let received_layouts = layout_calls.clone();
+    let second_layout_drops = Rc::new(Cell::new(0));
+    let second_probe = DropProbe(second_layout_drops.clone());
+    let layout_child = Rc::new(View::new(&application, Rect::new(0.0, 0.0, 0.0, 10.0)).unwrap());
+    content.add_subview(layout_child.as_ref()).unwrap();
+    let resized_child = layout_child.clone();
+    window
+        .set_content_layout_handler(move |bounds| {
+            let _ = &second_probe;
+            received_layouts.borrow_mut().push(bounds);
+            resized_child
+                .set_frame(Rect::new(0.0, 0.0, bounds.width, 10.0))
+                .unwrap();
+        })
+        .unwrap();
+    // Verifies replacing a native layout callback releases the previous Rust state once.
+    assert_eq!(first_layout_drops.get(), 1);
     let label = TextField::label_with_string(&application, "Actor Tree").unwrap();
     let button = Button::with_title(&application, "Close").unwrap();
     content.add_subview(&label).unwrap();
@@ -110,12 +143,20 @@ fn main() {
     window
         .set_bounds(Rect::new(100.0, 100.0, 320.0, 200.0))
         .unwrap();
-    // Verifies NSWindow size changes emit the semantic event used by UI relayout.
+    // Verifies NSWindow size changes still emit the public semantic resize event.
     assert!(window_events.borrow().contains(&WindowEventKind::DidResize));
     // Verifies callers can read the live content size instead of the outer window frame.
     let content_bounds = content.bounds().unwrap();
     assert_eq!(content_bounds.width, 320.0);
     assert!(content_bounds.height < 200.0);
+    // Verifies resizing runs the content layout pass before queued resize events are handled.
+    assert_eq!(layout_calls.borrow().last().copied(), Some(content_bounds));
+    assert_eq!(layout_child.bounds().unwrap().width, content_bounds.width);
+    content.set_needs_layout(true).unwrap();
+    content.layout_subtree_if_needed().unwrap();
+    // Verifies an explicit layout pass also receives current bounds and applies child geometry.
+    assert_eq!(layout_calls.borrow().last().copied(), Some(content_bounds));
+    assert_eq!(layout_child.bounds().unwrap().width, content_bounds.width);
     window
         .set_sidebar(
             &Sidebar {
@@ -143,6 +184,8 @@ fn main() {
     }
     drop(constraints);
     drop(window);
+    // Verifies destroying the content view releases its installed Rust layout callback once.
+    assert_eq!(second_layout_drops.get(), 1);
     assert_eq!(label.set_string_value("expired"), Err(ViewError::Closed));
     drop(button);
     drop(label);

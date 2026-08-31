@@ -1,5 +1,8 @@
+use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use crate::actor::{ActorError, ActorRef};
 use crate::geometry::Rect;
@@ -7,6 +10,128 @@ use crate::native::{self, Strong};
 use crate::runloop::{Application, ApplicationDelegate};
 
 use super::layout::{Dimension, LayoutAttribute, XAxisAnchor, YAxisAnchor};
+
+struct LayoutCallback {
+    invoke: RefCell<Box<dyn FnMut(Rect)>>,
+}
+
+unsafe fn layout_callback(object: native::Id) -> *mut LayoutCallback {
+    unsafe { native::get_pointer_ivar(object, c"_zpdLayoutCallback".as_ptr()) }
+}
+
+unsafe extern "C" fn layout(object: native::Id, _: native::Sel) {
+    unsafe {
+        native::send_super_void(object, native::class(b"NSView\0"), native::sel(b"layout\0"))
+    };
+    let callback = unsafe { layout_callback(object).as_ref() };
+    let Some(callback) = callback else { return };
+    let bounds = unsafe { native::send_rect(object, native::sel(b"bounds\0")) };
+    let bounds = Rect::new(
+        bounds.origin.x,
+        bounds.origin.y,
+        bounds.size.width,
+        bounds.size.height,
+    );
+    if catch_unwind(AssertUnwindSafe(|| {
+        let Ok(mut invoke) = callback.invoke.try_borrow_mut() else {
+            std::process::abort()
+        };
+        invoke(bounds);
+    }))
+    .is_err()
+    {
+        std::process::abort()
+    }
+}
+
+unsafe extern "C" fn layout_view_dealloc(object: native::Id, _: native::Sel) {
+    unsafe { release_layout_callback(object) };
+    unsafe {
+        native::send_super_void(
+            object,
+            native::class(b"NSView\0"),
+            native::sel(b"dealloc\0"),
+        )
+    };
+}
+
+pub(crate) unsafe fn release_layout_callback(object: native::Id) {
+    let callback = unsafe { layout_callback(object) };
+    if callback.is_null() {
+        return;
+    }
+    // SAFETY: Clearing the ivar transfers the sole callback allocation back to Rust.
+    unsafe {
+        native::set_pointer_ivar(
+            object,
+            c"_zpdLayoutCallback".as_ptr(),
+            std::ptr::null_mut::<LayoutCallback>(),
+        )
+    };
+    // SAFETY: The layout view owns exactly one callback allocation.
+    unsafe { drop(Box::from_raw(callback)) };
+}
+
+fn layout_view_class() -> native::Class {
+    static CLASS: OnceLock<usize> = OnceLock::new();
+    *CLASS.get_or_init(|| unsafe {
+        let class = native::objc_allocateClassPair(
+            native::class(b"NSView\0"),
+            c"ZpdRustLayoutView".as_ptr(),
+            0,
+        );
+        assert!(!class.is_null());
+        assert!(native::class_addIvar(
+            class,
+            c"_zpdLayoutCallback".as_ptr(),
+            std::mem::size_of::<native::Id>(),
+            3,
+            c"^v".as_ptr()
+        ));
+        native::add_method(
+            class,
+            b"layout\0",
+            layout as unsafe extern "C" fn(_, _),
+            b"v@:\0",
+        );
+        native::add_method(
+            class,
+            b"dealloc\0",
+            layout_view_dealloc as unsafe extern "C" fn(_, _),
+            b"v@:\0",
+        );
+        native::objc_registerClassPair(class);
+        class as usize
+    }) as native::Class
+}
+
+pub(crate) fn new_layout_view(frame: Rect) -> Result<Strong, ViewError> {
+    // SAFETY: The registered NSView subclass uses NSView's designated frame initializer.
+    unsafe {
+        Strong::from_retained(native::send_id_rect(
+            native::send_id(layout_view_class(), native::sel(b"alloc\0")),
+            native::sel(b"initWithFrame:\0"),
+            native_rect(frame),
+        ))
+    }
+    .ok_or(ViewError::NativeCreationFailed)
+}
+
+pub(crate) fn set_layout_callback(
+    view: ViewRef<'_>,
+    callback: impl FnMut(Rect) + 'static,
+) -> Result<(), ViewError> {
+    view.with(|object| unsafe {
+        release_layout_callback(object);
+        native::set_pointer_ivar(
+            object,
+            c"_zpdLayoutCallback".as_ptr(),
+            Box::into_raw(Box::new(LayoutCallback {
+                invoke: RefCell::new(Box::new(callback)),
+            })),
+        );
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewError {
@@ -160,6 +285,16 @@ impl<'view> ViewRef<'view> {
             native::send_void_rect(view, native::sel(b"setFrame:\0"), native_rect(frame))
         })
     }
+    pub fn set_needs_layout(self, needs_layout: bool) -> Result<(), ViewError> {
+        self.with(|view| unsafe {
+            native::send_void_bool(view, native::sel(b"setNeedsLayout:\0"), needs_layout)
+        })
+    }
+    pub fn layout_subtree_if_needed(self) -> Result<(), ViewError> {
+        self.with(|view| unsafe {
+            native::send_void(view, native::sel(b"layoutSubtreeIfNeeded\0"))
+        })
+    }
     /// Returns this view's current bounds in logical points.
     pub fn bounds(self) -> Result<Rect, ViewError> {
         let bounds = self.with(|view| {
@@ -243,6 +378,12 @@ pub trait AsView {
     }
     fn set_frame(&self, frame: Rect) -> Result<(), ViewError> {
         self.as_view().set_frame(frame)
+    }
+    fn set_needs_layout(&self, needs_layout: bool) -> Result<(), ViewError> {
+        self.as_view().set_needs_layout(needs_layout)
+    }
+    fn layout_subtree_if_needed(&self) -> Result<(), ViewError> {
+        self.as_view().layout_subtree_if_needed()
     }
     fn bounds(&self) -> Result<Rect, ViewError> {
         self.as_view().bounds()
