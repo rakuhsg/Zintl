@@ -145,8 +145,10 @@ mod backend {
         value: Option<R>,
         parent: Option<NodeId>,
         children: Vec<NodeId>,
-        native: Option<NativeNode>,
+        native: Option<Rc<NativeNode>>,
         native_window: Option<ActorId>,
+        window_layout: Option<Rc<RefCell<WindowLayout>>>,
+        applied_window_bounds: Option<Rect>,
         event_route: Option<EventRouteId>,
     }
 
@@ -155,7 +157,7 @@ mod backend {
         retired_windows: Vec<ActorId>,
         structure_dirty: bool,
         layout_dirty: bool,
-        pending_error: Option<AppError>,
+        pending_error: Rc<RefCell<Option<AppError>>>,
     }
 
     impl<R: AppKitRenderNode> Default for AppKitBackend<R> {
@@ -173,12 +175,14 @@ mod backend {
                     children: Vec::new(),
                     native: None,
                     native_window: None,
+                    window_layout: None,
+                    applied_window_bounds: None,
                     event_route: None,
                 })],
                 retired_windows: Vec::new(),
                 structure_dirty: true,
                 layout_dirty: true,
-                pending_error: None,
+                pending_error: Rc::new(RefCell::new(None)),
             }
         }
 
@@ -223,9 +227,7 @@ mod backend {
         }
 
         fn record_error(&mut self, error: AppError) {
-            if self.pending_error.is_none() {
-                self.pending_error = Some(error);
-            }
+            record_error(&self.pending_error, error);
         }
 
         fn remove_subtree(&mut self, id: NodeId) {
@@ -271,7 +273,7 @@ mod backend {
             application: &'application Application<()>,
             cx: &MessageContext<'_, 'windows, Message>,
         ) -> Result<(), AppError> {
-            if let Some(error) = self.pending_error.take() {
+            if let Some(error) = self.pending_error.borrow_mut().take() {
                 return Err(error);
             }
             for window in self.retired_windows.drain(..) {
@@ -283,8 +285,6 @@ mod backend {
             }
 
             let rebuild_structure = self.structure_dirty;
-            let update_layout = self.layout_dirty || rebuild_structure;
-
             for window_id in window_ids {
                 let description = self
                     .value(window_id)
@@ -303,28 +303,50 @@ mod backend {
                     let native_id = cx
                         .create_window_with_event_route(route)
                         .map_err(AppError::Window)?;
-                    self.node_mut(window_id).native_window = Some(native_id);
+                    let layout = Rc::new(RefCell::new(WindowLayout::default()));
+                    let callback_layout = layout.clone();
+                    let callback_error = self.pending_error.clone();
+                    cx.with_window(native_id, |window| {
+                        window.set_content_layout_handler(move |bounds| {
+                            if let Err(error) = callback_layout.borrow().layout(bounds) {
+                                record_error(&callback_error, error);
+                            }
+                        })
+                    })
+                    .ok_or(AppError::Window(WindowError::Closed))?
+                    .map_err(AppError::Window)?;
+                    let node = self.node_mut(window_id);
+                    node.native_window = Some(native_id);
+                    node.window_layout = Some(layout);
+                    node.applied_window_bounds = None;
                 }
                 let native_id = self
                     .node(window_id)
                     .native_window
                     .expect("a synchronized window has a native Actor");
                 let event_route = self.node(window_id).event_route.map(route_token);
+                let apply_bounds =
+                    window_bounds_need_update(self.node(window_id).applied_window_bounds, bounds);
                 cx.with_window(native_id, |window| -> Result<(), AppError> {
                     window
                         .actor_ref()
                         .set_event_route(event_route)
                         .map_err(WindowError::from)
                         .map_err(AppError::Window)?;
-                    window
-                        .set_bounds(native_rect(bounds))
-                        .map_err(AppError::Window)?;
+                    if apply_bounds {
+                        window
+                            .set_bounds(native_rect(bounds))
+                            .map_err(AppError::Window)?;
+                    }
                     window.set_title(&title).map_err(AppError::Window)?;
                     window
                         .set_identifier(id.as_deref())
                         .map_err(AppError::Window)
                 })
                 .ok_or(AppError::Window(WindowError::Closed))??;
+                if apply_bounds {
+                    self.node_mut(window_id).applied_window_bounds = Some(bounds);
+                }
 
                 self.materialize_children(application, window_id)?;
                 if rebuild_structure {
@@ -334,8 +356,30 @@ mod backend {
                     })
                     .ok_or(AppError::Window(WindowError::Closed))??;
                 }
+                let update_layout = self.layout_dirty || rebuild_structure || new_window;
                 if update_layout {
-                    self.layout_window(window_id, bounds)?;
+                    let snapshot = WindowLayout {
+                        children: self
+                            .children(window_id)
+                            .iter()
+                            .map(|child| self.build_layout_snapshot(*child))
+                            .collect::<Result<Vec<_>, _>>()?,
+                    };
+                    let state = self
+                        .node(window_id)
+                        .window_layout
+                        .as_ref()
+                        .expect("a synchronized window has layout state");
+                    *state.borrow_mut() = snapshot;
+                    cx.with_window(native_id, |window| -> Result<(), AppError> {
+                        let content = window.content_view().map_err(AppError::Window)?;
+                        content.set_needs_layout(true).map_err(AppError::View)?;
+                        content.layout_subtree_if_needed().map_err(AppError::View)
+                    })
+                    .ok_or(AppError::Window(WindowError::Closed))??;
+                    if let Some(error) = self.pending_error.borrow_mut().take() {
+                        return Err(error);
+                    }
                 }
 
                 if new_window {
@@ -374,7 +418,7 @@ mod backend {
             application: &Application<()>,
             id: NodeId,
             description: &NodeKind,
-        ) -> Result<Option<NativeNode>, AppError> {
+        ) -> Result<Option<Rc<NativeNode>>, AppError> {
             let NodeKind::View {
                 kind,
                 id: accessibility_id,
@@ -414,7 +458,7 @@ mod backend {
                 .set_event_route(self.node(id).event_route.map(route_token))
                 .map_err(ViewError::from)
                 .map_err(AppError::View)?;
-            Ok(Some(native))
+            Ok(Some(Rc::new(native)))
         }
 
         fn attach_children(&self, parent: ViewRef<'_>, parent_id: NodeId) -> Result<(), AppError> {
@@ -434,42 +478,12 @@ mod backend {
             Ok(())
         }
 
-        fn layout_window(&self, window_id: NodeId, bounds: Rect) -> Result<(), AppError> {
-            let mut layout = LayoutTree::new();
-            let built = self
-                .children(window_id)
-                .iter()
-                .map(|child| self.build_layout(&mut layout, *child))
-                .collect::<Result<Vec<_>, _>>()?;
-            let root_children = built.iter().map(|node| node.layout).collect::<Vec<_>>();
-            let root = layout
-                .create_node(
-                    LayoutStyle::stack(zintl_ui_layout::Axis::Vertical, 0.0),
-                    &root_children,
-                )
-                .map_err(AppError::Layout)?;
-            let available = Size::new(bounds.width as f32, bounds.height as f32);
-            layout.compute(root, available).map_err(AppError::Layout)?;
-            for node in &built {
-                self.apply_layout(node, &layout, available.height)?;
-            }
-            Ok(())
-        }
-
-        fn build_layout(
-            &self,
-            layout: &mut LayoutTree,
-            id: NodeId,
-        ) -> Result<BuiltLayout, AppError> {
+        fn build_layout_snapshot(&self, id: NodeId) -> Result<LayoutSnapshot, AppError> {
             let children = self
                 .children(id)
                 .iter()
-                .map(|child| self.build_layout(layout, *child))
+                .map(|child| self.build_layout_snapshot(*child))
                 .collect::<Result<Vec<_>, _>>()?;
-            let child_nodes = children
-                .iter()
-                .map(|child| child.layout)
-                .collect::<Vec<_>>();
             let style = match self
                 .value(id)
                 .expect("render nodes have values")
@@ -478,33 +492,17 @@ mod backend {
                 NodeKind::View { layout, .. } => layout,
                 NodeKind::Window { .. } => return Err(AppError::InvalidTree),
             };
-            let layout_id = layout
-                .create_node(style, &child_nodes)
-                .map_err(AppError::Layout)?;
-            Ok(BuiltLayout {
-                node: id,
-                layout: layout_id,
+            let native = self
+                .node(id)
+                .native
+                .as_ref()
+                .expect("materialized view nodes have native views")
+                .clone();
+            Ok(LayoutSnapshot {
+                style,
+                native,
                 children,
             })
-        }
-
-        fn apply_layout(
-            &self,
-            node: &BuiltLayout,
-            layout: &LayoutTree,
-            parent_height: f32,
-        ) -> Result<(), AppError> {
-            let frame = layout.layout(node.layout).map_err(AppError::Layout)?;
-            if let Some(native) = self.node(node.node).native.as_ref() {
-                native
-                    .as_view()
-                    .set_frame(native_frame(frame, parent_height))
-                    .map_err(AppError::View)?;
-            }
-            for child in &node.children {
-                self.apply_layout(child, layout, frame.height)?;
-            }
-            Ok(())
         }
 
         fn update_native(
@@ -525,7 +523,7 @@ mod backend {
                     .set_identifier(new_id.as_deref())
                     .map_err(AppError::View)?;
             }
-            match (native, old, new) {
+            match (native.as_ref(), old, new) {
                 (
                     NativeNode::Label(field),
                     NodeKind::View {
@@ -587,6 +585,8 @@ mod backend {
                 children: Vec::new(),
                 native: None,
                 native_window: None,
+                window_layout: None,
+                applied_window_bounds: None,
                 event_route,
             }));
             self.structure_dirty = true;
@@ -645,10 +645,81 @@ mod backend {
         }
     }
 
+    #[derive(Default)]
+    struct WindowLayout {
+        children: Vec<LayoutSnapshot>,
+    }
+
+    impl WindowLayout {
+        fn layout(&self, bounds: NativeRect) -> Result<(), AppError> {
+            let available = Size::new(bounds.width as f32, bounds.height as f32);
+            let mut layout = LayoutTree::new();
+            let built = self
+                .children
+                .iter()
+                .map(|child| child.build(&mut layout))
+                .collect::<Result<Vec<_>, _>>()?;
+            let root_children = built.iter().map(|node| node.layout).collect::<Vec<_>>();
+            let root = layout
+                .create_node(
+                    LayoutStyle::stack(zintl_ui_layout::Axis::Vertical, 0.0),
+                    &root_children,
+                )
+                .map_err(AppError::Layout)?;
+            layout.compute(root, available).map_err(AppError::Layout)?;
+            for node in &built {
+                node.apply(&layout, available.height)?;
+            }
+            Ok(())
+        }
+    }
+
+    struct LayoutSnapshot {
+        style: LayoutStyle,
+        native: Rc<NativeNode>,
+        children: Vec<LayoutSnapshot>,
+    }
+
+    impl LayoutSnapshot {
+        fn build(&self, layout: &mut LayoutTree) -> Result<BuiltLayout, AppError> {
+            let children = self
+                .children
+                .iter()
+                .map(|child| child.build(layout))
+                .collect::<Result<Vec<_>, _>>()?;
+            let child_nodes = children
+                .iter()
+                .map(|child| child.layout)
+                .collect::<Vec<_>>();
+            let layout_id = layout
+                .create_node(self.style, &child_nodes)
+                .map_err(AppError::Layout)?;
+            Ok(BuiltLayout {
+                native: self.native.clone(),
+                layout: layout_id,
+                children,
+            })
+        }
+    }
+
     struct BuiltLayout {
-        node: NodeId,
+        native: Rc<NativeNode>,
         layout: zintl_ui_layout::NodeId,
         children: Vec<BuiltLayout>,
+    }
+
+    impl BuiltLayout {
+        fn apply(&self, layout: &LayoutTree, parent_height: f32) -> Result<(), AppError> {
+            let frame = layout.layout(self.layout).map_err(AppError::Layout)?;
+            self.native
+                .as_view()
+                .set_frame(native_frame(frame, parent_height))
+                .map_err(AppError::View)?;
+            for child in &self.children {
+                child.apply(layout, frame.height)?;
+            }
+            Ok(())
+        }
     }
 
     enum Message {
@@ -765,6 +836,10 @@ mod backend {
         NativeRect::new(rect.x, rect.y, rect.width, rect.height)
     }
 
+    fn window_bounds_need_update(applied: Option<Rect>, declared: Rect) -> bool {
+        applied != Some(declared)
+    }
+
     fn native_frame(frame: zintl_ui_layout::Rect, parent_height: f32) -> NativeRect {
         NativeRect::new(
             frame.x as f64,
@@ -772,6 +847,13 @@ mod backend {
             frame.width as f64,
             frame.height as f64,
         )
+    }
+
+    fn record_error(slot: &RefCell<Option<AppError>>, error: AppError) {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(error);
+        }
     }
 
     fn quit_commands() -> CommandSet {
@@ -871,6 +953,28 @@ mod backend {
 
             backend.set_event_route(node, None);
             assert_eq!(backend.event_route(node), None);
+        }
+
+        #[test]
+        fn resize_event_uses_normal_synchronization() {
+            // Verifies resize events remain dispatchable without a separate Taffy layout path.
+            assert_eq!(
+                window_event_action(&WindowEventKind::DidResize),
+                WindowEventAction::Synchronize
+            );
+        }
+
+        #[test]
+        fn unchanged_declarative_bounds_are_not_reapplied() {
+            // Verifies later synchronization preserves a user-resized native window.
+            let declared = Rect::new(10.0, 20.0, 640.0, 480.0);
+
+            assert!(window_bounds_need_update(None, declared));
+            assert!(!window_bounds_need_update(Some(declared), declared));
+            assert!(window_bounds_need_update(
+                Some(Rect::new(10.0, 20.0, 800.0, 600.0)),
+                declared
+            ));
         }
 
         #[test]

@@ -15,7 +15,7 @@ use super::sidebar::{self, Sidebar, SidebarError, SidebarNative};
 use super::view::AsView;
 #[cfg(feature = "wgpu")]
 use super::view::native_rect;
-use super::view::{ViewError, ViewRef};
+use super::view::{self, ViewError, ViewRef};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowError {
@@ -56,6 +56,15 @@ struct WindowState {
     actor: RefCell<Option<ActorRef>>,
 }
 impl WindowState {
+    fn resized(&self) {
+        let actor = self.actor.borrow().clone();
+        if let Some(actor) = actor
+            && let Some(tree) = actor.tree_handle()
+        {
+            tree.emit(&actor, WindowEventKind::DidResize);
+        }
+    }
+
     fn close(&self) {
         if self.closed.replace(true) {
             return;
@@ -81,6 +90,14 @@ unsafe fn close_state(raw: *const ()) {
     let state = unsafe { Rc::from_raw(raw.cast::<WindowState>()) };
     state.close();
 }
+unsafe fn resize_state(raw: *const ()) {
+    // SAFETY: The delegate owns a live Rc pointer. A temporary strong count keeps the state alive
+    // if resize handling synchronously tears down the delegate.
+    unsafe { Rc::increment_strong_count(raw.cast::<WindowState>()) };
+    // SAFETY: The increment above created the reference consumed here.
+    let state = unsafe { Rc::from_raw(raw.cast::<WindowState>()) };
+    state.resized();
+}
 unsafe fn release_state(raw: *const ()) {
     // SAFETY: This consumes the delegate's transferred Rc reference.
     unsafe { drop(Rc::from_raw(raw.cast::<WindowState>())) };
@@ -94,6 +111,16 @@ unsafe extern "C" fn window_will_close(object: Id, _: native::Sel, _: Id) {
     let _receiver = unsafe { Strong::retain(object) };
     if let Some(state) = unsafe { delegate_box(object).as_ref() } {
         unsafe { close_state(state.state) }
+    }
+}
+unsafe extern "C" fn window_did_resize(object: Id, _: native::Sel, _: Id) {
+    // SAFETY: The callback receiver is live on entry; retaining it keeps the delegate and its
+    // ivar state alive if resize handling synchronously removes the Window subtree.
+    let _receiver = unsafe { Strong::retain(object) };
+    // SAFETY: This callback is installed only on delegates with a `_zpdWindowState` ivar.
+    if let Some(state) = unsafe { delegate_box(object).as_ref() } {
+        // SAFETY: The delegate owns the Rc pointer stored in its live state box.
+        unsafe { resize_state(state.state) }
     }
 }
 unsafe extern "C" fn delegate_dealloc(object: Id, _: native::Sel) {
@@ -143,6 +170,12 @@ fn window_delegate_class() -> native::Class {
             class,
             b"windowWillClose:\0",
             window_will_close as unsafe extern "C" fn(_, _, _),
+            b"v@:@\0",
+        );
+        native::add_method(
+            class,
+            b"windowDidResize:\0",
+            window_did_resize as unsafe extern "C" fn(_, _, _),
             b"v@:@\0",
         );
         native::add_method(
@@ -234,14 +267,12 @@ impl<'application> Window<'application> {
             .map_err(WindowError::from)?;
 
         let controller = native::alloc_init(b"NSViewController\0");
-        let view = unsafe {
-            Strong::from_retained(native::send_id_rect(
-                native::send_id(native::class(b"NSView\0"), native::sel(b"alloc\0")),
-                native::sel(b"initWithFrame:\0"),
-                frame,
-            ))
-        }
-        .ok_or(WindowError::NativeCreationFailed)?;
+        let view = view::new_layout_view(Rect::new(
+            frame.origin.x,
+            frame.origin.y,
+            frame.size.width,
+            frame.size.height,
+        ))?;
         unsafe {
             native::send_void_id(
                 controller.as_ptr(),
@@ -261,6 +292,12 @@ impl<'application> Window<'application> {
         let content = application
             .tree()
             .insert_child(&actor, view)
+            .map_err(WindowError::from)?;
+        application
+            .tree()
+            .add_teardown(&content, |view| unsafe {
+                view::release_layout_callback(view)
+            })
             .map_err(WindowError::from)?;
         let content_controller = application
             .tree()
@@ -428,6 +465,14 @@ impl<'application> Window<'application> {
     pub fn content_view(&self) -> Result<ViewRef<'_>, WindowError> {
         self.ensure_open()?;
         Ok(ViewRef::from_actor(&self.content))
+    }
+    pub fn set_content_layout_handler(
+        &self,
+        callback: impl FnMut(Rect) + 'static,
+    ) -> Result<(), WindowError> {
+        self.ensure_open()?;
+        view::set_layout_callback(ViewRef::from_actor(&self.content), callback)
+            .map_err(WindowError::from)
     }
     pub fn set_sidebar<F>(&self, sidebar: &Sidebar, callback: F) -> Result<(), SidebarError>
     where

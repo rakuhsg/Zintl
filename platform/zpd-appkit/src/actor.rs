@@ -53,6 +53,7 @@ pub struct WindowEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WindowEventKind {
     Created,
+    DidResize,
     WillClose,
     DidClose,
     ButtonClicked,

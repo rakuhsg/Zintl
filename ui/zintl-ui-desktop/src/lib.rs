@@ -23,6 +23,7 @@ pub enum EventKind {
     Activated,
     TextChanged,
     WindowCreated,
+    WindowDidResize,
     WindowWillClose,
     WindowDidClose,
 }
@@ -33,6 +34,7 @@ pub enum Event {
     Activated,
     TextChanged { value: String },
     WindowCreated,
+    WindowDidResize,
     WindowWillClose,
     WindowDidClose,
 }
@@ -45,6 +47,7 @@ impl EventTrait for Event {
             Self::Activated => EventKind::Activated,
             Self::TextChanged { .. } => EventKind::TextChanged,
             Self::WindowCreated => EventKind::WindowCreated,
+            Self::WindowDidResize => EventKind::WindowDidResize,
             Self::WindowWillClose => EventKind::WindowWillClose,
             Self::WindowDidClose => EventKind::WindowDidClose,
         }
@@ -155,6 +158,7 @@ impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
     fn appkit_event(event: zintl_ui_appkit::AppKitEvent) -> Self::Event {
         match event {
             zintl_ui_appkit::AppKitEvent::Created => Event::WindowCreated,
+            zintl_ui_appkit::AppKitEvent::DidResize => Event::WindowDidResize,
             zintl_ui_appkit::AppKitEvent::WillClose => Event::WindowWillClose,
             zintl_ui_appkit::AppKitEvent::DidClose => Event::WindowDidClose,
             zintl_ui_appkit::AppKitEvent::ButtonClicked => Event::Activated,
