@@ -473,6 +473,3 @@ impl<M, H> Drop for MessageLoopAppkit<'_, M, H> {
         self.callback.windows.windows.borrow_mut().clear();
     }
 }
-
-/// Compatibility name matching the existing native implementation.
-pub type AppkitMessageLoop<'application, M, H> = MessageLoopAppkit<'application, M, H>;
