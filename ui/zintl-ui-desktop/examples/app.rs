@@ -23,7 +23,10 @@ impl View for MainView {
                 Text::new("Welcome to Zintl"),
                 TextField::new().placeholder("Your Name").bind(name),
                 cx.watch(name, |name| Text::new(format!("Stored value: {name:?}"))),
-                HStack::new((Button::new("Continue"), Button::new("Cancel"))).spacing(12.0),
+                HStack::new((Button::new("Continue"), Button::new("Cancel")))
+                    .spacing(12.0)
+                    .fill_width()
+                    .equal_width_children(),
                 cx.watch(count, move |c| {
                     Button::new(format!("Counter: {c}")).on_click(move |cx| {
                         cx.update(count, |value| *value += 1);
@@ -33,6 +36,7 @@ impl View for MainView {
                     cx.update(count, |value| *value -= 1);
                 }),
             ))
+            .fill_width()
             .spacing(26.0),
         )
     }
