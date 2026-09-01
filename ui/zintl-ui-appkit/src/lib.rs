@@ -69,7 +69,9 @@ mod backend {
     use zintl_ui::composer::Composer;
     use zintl_ui::event::EventRouteId;
     use zintl_ui::renderer::RenderBackend;
-    use zintl_ui_layout::{LayoutError, LayoutStyle, LayoutTree, Size};
+    use zintl_ui_layout::{
+        CrossAxisAlignment, LayoutDimension, LayoutError, LayoutStyle, LayoutTree, Size,
+    };
     use zpd_appkit::actor::{ActorId, EventRouteToken, WindowEvent, WindowEventKind};
     use zpd_appkit::geometry::Rect as NativeRect;
     use zpd_appkit::runloop::{Application, ApplicationError};
@@ -660,11 +662,11 @@ mod backend {
                 .map(|child| child.build(&mut layout))
                 .collect::<Result<Vec<_>, _>>()?;
             let root_children = built.iter().map(|node| node.layout).collect::<Vec<_>>();
+            let mut root_style = LayoutStyle::stack(zintl_ui_layout::Axis::Vertical, 0.0);
+            root_style.width = LayoutDimension::Points(available.width);
+            root_style.cross_axis_alignment = CrossAxisAlignment::Start;
             let root = layout
-                .create_node(
-                    LayoutStyle::stack(zintl_ui_layout::Axis::Vertical, 0.0),
-                    &root_children,
-                )
+                .create_node(root_style, &root_children)
                 .map_err(AppError::Layout)?;
             layout.compute(root, available).map_err(AppError::Layout)?;
             for node in &built {

@@ -47,4 +47,43 @@ final class HStackLayoutTests: ZintlUITestCase {
     XCTAssertEqual(window.frame.size.width, resizedWindowFrame.size.width, accuracy: 1)
     XCTAssertEqual(window.frame.size.height, resizedWindowFrame.size.height, accuracy: 1)
   }
+
+  /// Verifies full-width stacks track resizing and equal-width children share their row.
+  func testFullWidthStackPoliciesReachNativeFrames() throws {
+    try launch(scenario: "full-width-stack")
+
+    let window = app.windows["main-window"]
+    let spaceLeading = app.textFields["space-leading"]
+    let spaceTrailing = app.textFields["space-trailing"]
+    let equalLeading = app.textFields["equal-leading"]
+    let equalTrailing = app.textFields["equal-trailing"]
+    XCTAssertTrue(spaceLeading.waitForExistence(timeout: 2))
+    XCTAssertTrue(spaceTrailing.waitForExistence(timeout: 2))
+    XCTAssertTrue(equalLeading.waitForExistence(timeout: 2))
+    XCTAssertTrue(equalTrailing.waitForExistence(timeout: 2))
+
+    let initialLeadingInset = spaceLeading.frame.minX - window.frame.minX
+    let initialTrailingInset = window.frame.maxX - spaceTrailing.frame.maxX
+    XCTAssertEqual(equalLeading.frame.width, equalTrailing.frame.width, accuracy: 1)
+
+    let resizeHandle = window.coordinate(
+      withNormalizedOffset: CGVector(dx: 0.98, dy: 0.98)
+    )
+    resizeHandle.press(
+      forDuration: 0.2,
+      thenDragTo: resizeHandle.withOffset(CGVector(dx: 160, dy: 100))
+    )
+
+    XCTAssertEqual(
+      spaceLeading.frame.minX - window.frame.minX,
+      initialLeadingInset,
+      accuracy: 1
+    )
+    XCTAssertEqual(
+      window.frame.maxX - spaceTrailing.frame.maxX,
+      initialTrailingInset,
+      accuracy: 1
+    )
+    XCTAssertEqual(equalLeading.frame.width, equalTrailing.frame.width, accuracy: 1)
+  }
 }

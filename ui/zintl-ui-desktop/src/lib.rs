@@ -7,7 +7,9 @@ use zintl_ui::event::EventRouteId;
 use zintl_ui::renderer::{RenderBackend, RenderNode as RenderNodeTrait};
 pub use zintl_ui::store::Store;
 pub use zintl_ui::view::{Context, View};
-pub use zintl_ui_layout::{Axis, LayoutStyle, Size};
+pub use zintl_ui_layout::{
+    Axis, ChildSizing, CrossAxisAlignment, LayoutDimension, LayoutStyle, MainAxisDistribution, Size,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -437,6 +439,21 @@ impl<C> HStack<C> {
         self
     }
 
+    pub fn fill_width(mut self) -> Self {
+        self.layout.width = LayoutDimension::Percent(1.0);
+        self
+    }
+
+    pub fn space_between(mut self) -> Self {
+        self.layout.main_axis_distribution = MainAxisDistribution::SpaceBetween;
+        self
+    }
+
+    pub fn equal_width_children(mut self) -> Self {
+        self.layout.child_sizing = ChildSizing::Equal;
+        self
+    }
+
     pub fn minimum_size(mut self, size: Size) -> Self {
         self.layout.minimum_size = size;
         self
@@ -478,6 +495,11 @@ impl<C> VStack<C> {
 
     pub fn spacing(mut self, spacing: f32) -> Self {
         self.layout.gap = spacing;
+        self
+    }
+
+    pub fn fill_width(mut self) -> Self {
+        self.layout.width = LayoutDimension::Percent(1.0);
         self
     }
 
@@ -824,6 +846,46 @@ mod tests {
                         width: 160.0,
                         height: 28.0
                     },
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stack_builders_preserve_width_and_child_distribution() {
+        // Verifies stack builder APIs retain their Taffy-facing layout policies.
+        let app = App::new(
+            Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Zintl").content(
+                VStack::new((HStack::new((Button::new("Save"), Button::new("Cancel")))
+                    .fill_width()
+                    .space_between()
+                    .equal_width_children(),))
+                .fill_width(),
+            ),
+        );
+        let tree = app.render_tree();
+        let column = &tree.children[0];
+        let row = &column.children[0];
+
+        assert!(matches!(
+            column.value,
+            RenderNode::Container {
+                layout: LayoutStyle {
+                    width: LayoutDimension::Percent(1.0),
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            row.value,
+            RenderNode::Container {
+                layout: LayoutStyle {
+                    width: LayoutDimension::Percent(1.0),
+                    main_axis_distribution: MainAxisDistribution::SpaceBetween,
+                    child_sizing: ChildSizing::Equal,
                     ..
                 },
                 ..

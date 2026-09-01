@@ -10,6 +10,7 @@ fn main() -> Result<(), AppError> {
     match scenario.as_str() {
         "text-field" => App::new(scenarios::text_field::MainView::new()).run()?,
         "hstack" => App::new(scenarios::hstack::MainView).run()?,
+        "full-width-stack" => App::new(scenarios::full_width_stack::MainView).run()?,
         "window-close" => App::new(scenarios::window_close::MainView).run()?,
         unknown => {
             eprintln!("unknown UI test scenario: {unknown}");
