@@ -173,6 +173,13 @@ fn main() {
             |_| {},
         )
         .unwrap();
+    // Verifies sidebar replacement and removal keep the original content alive.
+    window.set_sidebar(&Sidebar::default(), |_| {}).unwrap();
+    assert!(content.actor_ref().is_alive());
+    window.clear_sidebar().unwrap();
+    assert!(content.actor_ref().is_alive());
+    content.set_needs_layout(true).unwrap();
+    content.layout_subtree_if_needed().unwrap();
     #[cfg(feature = "wgpu")]
     {
         // Verifies CAMetalLayer ownership follows its surface actor.

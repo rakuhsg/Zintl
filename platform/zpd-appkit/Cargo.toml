@@ -10,3 +10,8 @@ wgpu = []
 name = "native"
 path = "tests/native.rs"
 harness = false
+
+[[test]]
+name = "sidebar"
+path = "tests/sidebar.rs"
+harness = false

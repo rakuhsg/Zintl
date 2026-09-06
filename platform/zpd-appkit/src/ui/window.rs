@@ -210,6 +210,7 @@ pub struct Window<'application> {
     content: ActorRef,
     content_controller: ActorRef,
     sidebar: RefCell<Option<SidebarNative>>,
+    sidebar_toolbar: RefCell<Option<super::sidebar_toolbar::SidebarToolbar>>,
     _application: PhantomData<&'application Application<()>>,
     _main_thread: PhantomData<Rc<()>>,
 }
@@ -235,7 +236,7 @@ impl<'application> Window<'application> {
                 native::send_id(native::class(b"NSWindow\0"), native::sel(b"alloc\0")),
                 native::sel(b"initWithContentRect:styleMask:backing:defer:\0"),
                 frame,
-                (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3),
+                (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 15),
                 2,
                 false,
             ))
@@ -344,6 +345,7 @@ impl<'application> Window<'application> {
             content,
             content_controller,
             sidebar: RefCell::new(None),
+            sidebar_toolbar: RefCell::new(None),
             _application: PhantomData,
             _main_thread: PhantomData,
         })
@@ -474,19 +476,47 @@ impl<'application> Window<'application> {
         view::set_layout_callback(ViewRef::from_actor(&self.content), callback)
             .map_err(WindowError::from)
     }
-    pub fn set_sidebar<F>(&self, sidebar: &Sidebar, callback: F) -> Result<(), SidebarError>
+    pub fn set_sidebar<F>(&self, sidebar: &Sidebar, mut callback: F) -> Result<(), SidebarError>
     where
         F: FnMut(&str) + 'static,
     {
         self.ensure_open().map_err(|_| SidebarError::Closed)?;
-        let native = sidebar::install(&self.actor, &self.content_controller, sidebar, callback)?;
+        let actor = self.actor.clone();
+        let collapsed = self
+            .sidebar
+            .borrow()
+            .as_ref()
+            .is_some_and(SidebarNative::is_collapsed);
+        let native = sidebar::install(
+            &self.actor,
+            &self.content_controller,
+            sidebar,
+            collapsed,
+            move |id| {
+                if let Some(tree) = actor.tree_handle() {
+                    tree.emit(
+                        &actor,
+                        WindowEventKind::SidebarSelectionChanged { id: id.into() },
+                    );
+                }
+                callback(id);
+            },
+        )?;
         *self.sidebar.borrow_mut() = Some(native);
+        if self.sidebar_toolbar.borrow().is_none() {
+            *self.sidebar_toolbar.borrow_mut() = Some(
+                super::sidebar_toolbar::SidebarToolbar::install(&self.actor)?,
+            );
+        }
         Ok(())
     }
     pub fn clear_sidebar(&self) -> Result<(), WindowError> {
         self.ensure_open()?;
         if let Some(sidebar) = self.sidebar.borrow_mut().take() {
             sidebar.clear(&self.actor)?;
+        }
+        if let Some(toolbar) = self.sidebar_toolbar.borrow_mut().take() {
+            toolbar.clear(&self.actor)?;
         }
         Ok(())
     }
