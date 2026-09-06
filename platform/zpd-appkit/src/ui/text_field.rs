@@ -1,6 +1,7 @@
 use crate::actor::WindowEventKind;
-use crate::native::{self, Strong};
+use crate::native;
 use crate::runloop::{Application, ApplicationDelegate};
+use zpd_objc::Strong;
 
 use super::callback;
 use super::view::{AsView, ViewActor, ViewError, ViewRef};
@@ -29,25 +30,14 @@ impl TextField {
         let value = native::nsstring(value);
         // SAFETY: NSTextField alloc/init produces a retained object.
         let native = unsafe {
-            let object = native::send_id(
-                native::send_id(native::class(b"NSTextField\0"), native::sel(b"alloc\0")),
-                native::sel(b"init\0"),
-            );
+            let object = zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSTextField"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("init"), () => zpd_objc::Id);
             let object = Strong::from_retained(object).ok_or(ViewError::NativeCreationFailed)?;
-            native::send_void_id(
-                object.as_ptr(),
-                native::sel(b"setStringValue:\0"),
-                value.as_ptr(),
-            );
+            zpd_objc::msg_send!(object.as_ptr(), zpd_objc::sel!("setStringValue:"), ((value.as_ptr()): zpd_objc::Id) => ());
             if label {
-                native::send_void_bool(object.as_ptr(), native::sel(b"setEditable:\0"), false);
-                native::send_void_bool(object.as_ptr(), native::sel(b"setSelectable:\0"), false);
-                native::send_void_bool(object.as_ptr(), native::sel(b"setBordered:\0"), false);
-                native::send_void_bool(
-                    object.as_ptr(),
-                    native::sel(b"setDrawsBackground:\0"),
-                    false,
-                );
+                zpd_objc::msg_send!(object.as_ptr(), zpd_objc::sel!("setEditable:"), ((false): bool) => ());
+                zpd_objc::msg_send!(object.as_ptr(), zpd_objc::sel!("setSelectable:"), ((false): bool) => ());
+                zpd_objc::msg_send!(object.as_ptr(), zpd_objc::sel!("setBordered:"), ((false): bool) => ());
+                zpd_objc::msg_send!(object.as_ptr(), zpd_objc::sel!("setDrawsBackground:"), ((false): bool) => ());
             }
             object
         };
@@ -55,15 +45,17 @@ impl TextField {
         application
             .tree()
             .add_teardown(view.actor(), |field| unsafe {
-                native::send_void_id(field, native::sel(b"setDelegate:\0"), native::NIL)
+                zpd_objc::msg_send!(field, zpd_objc::sel!("setDelegate:"), ((zpd_objc::NIL): zpd_objc::Id) => ())
             })
             .map_err(ViewError::from)?;
         if !label {
             let actor = view.actor().clone();
             let target = callback::target(move |notification| unsafe {
-                let field = native::send_id(notification, native::sel(b"object\0"));
-                let value =
-                    native::rust_string(native::send_id(field, native::sel(b"stringValue\0")));
+                let field =
+                    zpd_objc::msg_send!(notification, zpd_objc::sel!("object"), () => zpd_objc::Id);
+                let value = native::rust_string(
+                    zpd_objc::msg_send!(field, zpd_objc::sel!("stringValue"), () => zpd_objc::Id),
+                );
                 if let Some(tree) = actor.tree_handle() {
                     tree.emit(&actor, WindowEventKind::TextChanged { value });
                 }
@@ -76,7 +68,7 @@ impl TextField {
                 .map_err(ViewError::from)?;
             view.as_view().with(|field| {
                 target.with(|target| unsafe {
-                    native::send_void_id(field, native::sel(b"setDelegate:\0"), target)
+                    zpd_objc::msg_send!(field, zpd_objc::sel!("setDelegate:"), ((target): zpd_objc::Id) => ())
                 })
             })??;
         }
@@ -85,32 +77,30 @@ impl TextField {
     pub fn set_string_value(&self, value: &str) -> Result<(), ViewError> {
         let value = native::nsstring(value);
         self.view.as_view().with(|field| unsafe {
-            native::send_void_id(field, native::sel(b"setStringValue:\0"), value.as_ptr())
+            zpd_objc::msg_send!(field, zpd_objc::sel!("setStringValue:"), ((value.as_ptr()): zpd_objc::Id) => ())
         })
     }
     pub fn string_value(&self) -> Result<String, ViewError> {
         self.view.as_view().with(|field| unsafe {
-            native::rust_string(native::send_id(field, native::sel(b"stringValue\0")))
+            native::rust_string(
+                zpd_objc::msg_send!(field, zpd_objc::sel!("stringValue"), () => zpd_objc::Id),
+            )
         })
     }
     pub fn set_placeholder_string(&self, value: Option<&str>) -> Result<(), ViewError> {
         let value = value.map(native::nsstring);
         self.view.as_view().with(|field| unsafe {
-            native::send_void_id(
-                field,
-                native::sel(b"setPlaceholderString:\0"),
-                value.as_ref().map_or(native::NIL, Strong::as_ptr),
-            );
+            zpd_objc::msg_send!(field, zpd_objc::sel!("setPlaceholderString:"), ((value.as_ref().map_or(zpd_objc::NIL, Strong::as_ptr)): zpd_objc::Id) => ());
         })
     }
     pub fn set_editable(&self, editable: bool) -> Result<(), ViewError> {
         self.view.as_view().with(|field| unsafe {
-            native::send_void_bool(field, native::sel(b"setEditable:\0"), editable)
+            zpd_objc::msg_send!(field, zpd_objc::sel!("setEditable:"), ((editable): bool) => ())
         })
     }
     pub fn set_selectable(&self, selectable: bool) -> Result<(), ViewError> {
         self.view.as_view().with(|field| unsafe {
-            native::send_void_bool(field, native::sel(b"setSelectable:\0"), selectable)
+            zpd_objc::msg_send!(field, zpd_objc::sel!("setSelectable:"), ((selectable): bool) => ())
         })
     }
 }

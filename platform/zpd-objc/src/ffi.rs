@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_int, c_long, c_uint, c_void};
+use std::ffi::{c_char, c_long, c_void};
 
 pub type Id = *mut c_void;
 pub type Class = *mut c_void;
@@ -8,6 +8,12 @@ pub type CFloat = f64;
 pub type Integer = c_long;
 pub type UInteger = u64;
 pub type Boolean = i8;
+
+#[repr(C)]
+pub struct ObjcSuper {
+    pub receiver: Id,
+    pub superclass: Class,
+}
 
 #[link(name = "objc")]
 unsafe extern "C" {

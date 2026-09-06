@@ -137,6 +137,13 @@ macro_rules! decl {
             b":\0".as_ptr().cast(),
         )
     }};
+    (@field_type ptr) => {{
+        (
+            ::std::mem::size_of::<*mut ::std::ffi::c_void>(),
+            ::std::mem::align_of::<*mut ::std::ffi::c_void>().trailing_zeros() as u8,
+            b"^v\0".as_ptr().cast(),
+        )
+    }};
     (@field_type $type:ident) => {
         compile_error!(concat!("unsupported Objective-C field type: ", stringify!($type)))
     };
@@ -168,6 +175,7 @@ macro_rules! invoke {
 #[cfg(test)]
 mod tests {
     use crate::ffi;
+    use crate::{class, msg_send, sel};
     use std::ffi::{c_char, c_long};
 
     unsafe extern "C" fn inherited_value(_: ffi::Id, _: ffi::Sel) -> c_long {
@@ -191,6 +199,51 @@ mod tests {
             ffi::class_getInstanceVariable(custom_class, c"field".as_ptr().cast::<c_char>())
         };
         assert!(!field.is_null());
+    }
+
+    #[test]
+    fn declares_class_with_pointer_field() {
+        // Verifies that decl! registers pointer-sized opaque storage.
+        let custom_class = decl!(ZpdObjcDeclPointerTest: [] {
+            field: ptr
+        });
+
+        // SAFETY: The class is registered above and the field name is NUL-terminated.
+        let field = unsafe {
+            ffi::class_getInstanceVariable(custom_class, c"field".as_ptr().cast::<c_char>())
+        };
+        assert!(!field.is_null());
+    }
+
+    #[test]
+    fn resolves_literal_runtime_names() {
+        // Verifies literal class and selector macros produce registered runtime handles.
+        let custom_class = decl!(ZpdObjcLiteralLookupTest: [] {
+            methods {}
+        });
+
+        assert_eq!(class!("ZpdObjcLiteralLookupTest"), custom_class);
+        assert!(!sel!("zpdLiteralSelector").is_null());
+    }
+
+    #[test]
+    fn sends_message_with_expression_arguments() {
+        // Verifies expression-style message sends preserve the declared ABI and nil behavior.
+        let selector = sel!("zpdExpressionMessage:");
+        // SAFETY: Messaging nil with an object argument and object return has the declared ABI.
+        let result = unsafe {
+            msg_send!(crate::NIL, selector, ((std::ptr::null_mut()): ffi::Id) => ffi::Id)
+        };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn preserves_identifier_message_sends() {
+        // Verifies the original identifier-style message syntax remains source compatible.
+        let selector = sel!("zpdIdentifierMessage:");
+        let argument = crate::NIL;
+        let result = msg_send!(crate::NIL, selector, (argument: ffi::Id) => ffi::Id);
+        assert!(result.is_null());
     }
 
     #[test]

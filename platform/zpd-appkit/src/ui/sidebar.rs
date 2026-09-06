@@ -1,5 +1,6 @@
 use crate::actor::ActorRef;
-use crate::native::{self, Strong};
+use crate::native;
+use zpd_objc::Strong;
 
 use super::WindowError;
 
@@ -45,7 +46,7 @@ impl SidebarNative {
         self.item
             .with(|item| {
                 // SAFETY: item is a live NSSplitViewItem on the main thread.
-                unsafe { native::send_bool(item, native::sel(b"isCollapsed\0")) }
+                unsafe { zpd_objc::msg_send!(item, zpd_objc::sel!("isCollapsed"), () => bool) }
             })
             .unwrap_or(false)
     }
@@ -55,11 +56,7 @@ impl SidebarNative {
             .with(|window| {
                 // SAFETY: AppKit objects and selectors have matching types and run on the main thread.
                 self.content_controller.with(|controller| unsafe {
-                    native::send_void_id(
-                        window,
-                        native::sel(b"setContentViewController:\0"),
-                        controller,
-                    );
+                    zpd_objc::msg_send!(window, zpd_objc::sel!("setContentViewController:"), ((controller): zpd_objc::Id) => ());
                 })
             })
             .map_err(WindowError::from)?
@@ -102,87 +99,47 @@ where
     F: FnMut(&str) + 'static,
 {
     let tree = window.tree_handle().ok_or(SidebarError::Closed)?;
-    let split = native::alloc_init(b"NSSplitViewController\0");
+    let split = native::alloc_init(zpd_objc::class!("NSSplitViewController"));
     let root = tree
         .insert_child(window, split)
         .map_err(|_| SidebarError::Closed)?;
     let mut rollback = ActorRollback(Some(root.clone()));
-    let sidebar_controller = native::alloc_init(b"NSViewController\0");
+    let sidebar_controller = native::alloc_init(zpd_objc::class!("NSViewController"));
     let sidebar_controller_actor = tree
         .insert_child(&root, sidebar_controller.clone())
         .map_err(|_| SidebarError::Closed)?;
     super::sidebar_table::install(&sidebar_controller_actor, sidebar, callback_fn)?;
     // SAFETY: AppKit objects and selectors have matching types and run on the main thread.
     let sidebar_item = unsafe {
-        Strong::retain(native::send_id_id(
-            native::class(b"NSSplitViewItem\0"),
-            native::sel(b"sidebarWithViewController:\0"),
-            sidebar_controller.as_ptr(),
-        ))
+        Strong::retain(zpd_objc::msg_send!(zpd_objc::class!("NSSplitViewItem"), zpd_objc::sel!("sidebarWithViewController:"), ((sidebar_controller.as_ptr()): zpd_objc::Id) => zpd_objc::Id))
     }
     .ok_or(SidebarError::NativeCreationFailed)?;
     // SAFETY: AppKit objects and selectors have matching types and run on the main thread.
     let content_item = unsafe {
-        Strong::retain(native::send_id_id(
-            native::class(b"NSSplitViewItem\0"),
-            native::sel(b"splitViewItemWithViewController:\0"),
-            content_controller
+        Strong::retain(zpd_objc::msg_send!(zpd_objc::class!("NSSplitViewItem"), zpd_objc::sel!("splitViewItemWithViewController:"), ((content_controller
                 .with(|id| id)
-                .map_err(|_| SidebarError::Closed)?,
-        ))
+                .map_err(|_| SidebarError::Closed)?): zpd_objc::Id) => zpd_objc::Id))
     }
     .ok_or(SidebarError::NativeCreationFailed)?;
     // SAFETY: AppKit objects and selectors have matching types and run on the main thread.
     unsafe {
-        native::send_void_f64(
-            sidebar_item.as_ptr(),
-            native::sel(b"setMinimumThickness:\0"),
-            180.0,
-        );
-        native::send_void_f64(
-            sidebar_item.as_ptr(),
-            native::sel(b"setMaximumThickness:\0"),
-            320.0,
-        );
-        native::send_void_id(
-            root.with(|id| id).map_err(|_| SidebarError::Closed)?,
-            native::sel(b"addSplitViewItem:\0"),
-            sidebar_item.as_ptr(),
-        );
-        native::send_void_id(
-            root.with(|id| id).map_err(|_| SidebarError::Closed)?,
-            native::sel(b"addSplitViewItem:\0"),
-            content_item.as_ptr(),
-        );
+        zpd_objc::msg_send!(sidebar_item.as_ptr(), zpd_objc::sel!("setMinimumThickness:"), ((180.0): f64) => ());
+        zpd_objc::msg_send!(sidebar_item.as_ptr(), zpd_objc::sel!("setMaximumThickness:"), ((320.0): f64) => ());
+        zpd_objc::msg_send!(root.with(|id| id).map_err(|_| SidebarError::Closed)?, zpd_objc::sel!("addSplitViewItem:"), ((sidebar_item.as_ptr()): zpd_objc::Id) => ());
+        zpd_objc::msg_send!(root.with(|id| id).map_err(|_| SidebarError::Closed)?, zpd_objc::sel!("addSplitViewItem:"), ((content_item.as_ptr()): zpd_objc::Id) => ());
     }
     // SAFETY: sidebar_item is a retained NSSplitViewItem with a live controller.
     unsafe {
-        native::send_void_bool(
-            sidebar_item.as_ptr(),
-            native::sel(b"setAllowsFullHeightLayout:\0"),
-            true,
-        );
-        native::send_void_f64(
-            content_item.as_ptr(),
-            native::sel(b"setMinimumThickness:\0"),
-            360.0,
-        );
-        native::send_void_bool(
-            sidebar_item.as_ptr(),
-            native::sel(b"setCanCollapse:\0"),
-            true,
-        );
-        native::send_void_bool(
-            sidebar_item.as_ptr(),
-            native::sel(b"setCollapsed:\0"),
-            collapsed,
-        );
+        zpd_objc::msg_send!(sidebar_item.as_ptr(), zpd_objc::sel!("setAllowsFullHeightLayout:"), ((true): bool) => ());
+        zpd_objc::msg_send!(content_item.as_ptr(), zpd_objc::sel!("setMinimumThickness:"), ((360.0): f64) => ());
+        zpd_objc::msg_send!(sidebar_item.as_ptr(), zpd_objc::sel!("setCanCollapse:"), ((true): bool) => ());
+        zpd_objc::msg_send!(sidebar_item.as_ptr(), zpd_objc::sel!("setCollapsed:"), ((collapsed): bool) => ());
     }
     window
         .with(|window| {
             // SAFETY: AppKit objects and selectors have matching types and run on the main thread.
             root.with(|split| unsafe {
-                native::send_void_id(window, native::sel(b"setContentViewController:\0"), split)
+                zpd_objc::msg_send!(window, zpd_objc::sel!("setContentViewController:"), ((split): zpd_objc::Id) => ())
             })
         })
         .map_err(|_| SidebarError::Closed)?

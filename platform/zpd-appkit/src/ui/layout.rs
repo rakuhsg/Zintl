@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::actor::ActorRef;
-use crate::native::{self, Strong};
+use zpd_objc::Strong;
 
 use super::{ViewError, ViewRef};
 
@@ -235,7 +235,7 @@ impl<'view> LayoutConstraint<'view> {
     ) -> Result<Self, ViewError> {
         let native = first.with(|first_native| {
             second.with(|second_native| unsafe {
-                native::send_constraint(native::class(b"NSLayoutConstraint\0"), native::sel(b"constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:\0"), first_native, first_attribute as i64, relation as i64, second_native, second_attribute as i64, multiplier, constant)
+                zpd_objc::msg_send!(zpd_objc::class!("NSLayoutConstraint"), zpd_objc::sel!("constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:"), ((first_native): zpd_objc::Id, (first_attribute as i64): i64, (relation as i64): i64, (second_native): zpd_objc::Id, (second_attribute as i64): i64, (multiplier): f64, (constant): f64) => zpd_objc::Id)
             })
         })??;
         Self::from_native(first, Some(second), native)
@@ -247,14 +247,14 @@ impl<'view> LayoutConstraint<'view> {
         constant: f64,
     ) -> Result<Self, ViewError> {
         let native = first.with(|first_native| unsafe {
-            native::send_constraint(native::class(b"NSLayoutConstraint\0"), native::sel(b"constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:\0"), first_native, first_attribute as i64, relation as i64, native::NIL, LayoutAttribute::NotAnAttribute as i64, 1.0, constant)
+            zpd_objc::msg_send!(zpd_objc::class!("NSLayoutConstraint"), zpd_objc::sel!("constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:"), ((first_native): zpd_objc::Id, (first_attribute as i64): i64, (relation as i64): i64, (zpd_objc::NIL): zpd_objc::Id, (LayoutAttribute::NotAnAttribute as i64): i64, (1.0): f64, (constant): f64) => zpd_objc::Id)
         })?;
         Self::from_native(first, None, native)
     }
     fn from_native(
         first: ViewRef<'view>,
         second: Option<ViewRef<'view>>,
-        native_id: native::Id,
+        native_id: zpd_objc::Id,
     ) -> Result<Self, ViewError> {
         // SAFETY: NSLayoutConstraint factory methods return an autoreleased live object.
         let native = unsafe { Strong::retain(native_id) }.ok_or(ViewError::NativeCreationFailed)?;
@@ -271,7 +271,7 @@ impl<'view> LayoutConstraint<'view> {
             endpoints.push(second.actor().clone());
         }
         tree.add_teardown(&actor, |constraint| unsafe {
-            native::send_void_bool(constraint, native::sel(b"setActive:\0"), false)
+            zpd_objc::msg_send!(constraint, zpd_objc::sel!("setActive:"), ((false): bool) => ())
         })
         .map_err(ViewError::from)?;
         Ok(Self {
@@ -296,7 +296,7 @@ impl<'view> LayoutConstraint<'view> {
         self.ensure_endpoints()?;
         self.actor
             .with(|constraint| unsafe {
-                native::send_void_bool(constraint, native::sel(b"setActive:\0"), active)
+                zpd_objc::msg_send!(constraint, zpd_objc::sel!("setActive:"), ((active): bool) => ())
             })
             .map_err(ViewError::from)
     }
@@ -304,7 +304,7 @@ impl<'view> LayoutConstraint<'view> {
         self.ensure_endpoints()?;
         self.actor
             .with(|constraint| unsafe {
-                native::send_void_f32(constraint, native::sel(b"setPriority:\0"), priority)
+                zpd_objc::msg_send!(constraint, zpd_objc::sel!("setPriority:"), ((priority): f32) => ())
             })
             .map_err(ViewError::from)
     }

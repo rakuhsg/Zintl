@@ -7,8 +7,9 @@ use crate::actor::{ActorError, ActorRef, EventRouteToken, WindowEventKind};
 #[cfg(feature = "wgpu")]
 use crate::geometry::PhysicalSize;
 use crate::geometry::Rect;
-use crate::native::{self, Id, Strong};
+use crate::native;
 use crate::runloop::{Application, ApplicationDelegate};
+use zpd_objc::{Id, Strong};
 
 use super::sidebar::{self, Sidebar, SidebarError, SidebarNative};
 #[cfg(feature = "wgpu")]
@@ -103,9 +104,9 @@ unsafe fn release_state(raw: *const ()) {
     unsafe { drop(Rc::from_raw(raw.cast::<WindowState>())) };
 }
 unsafe fn delegate_box(object: Id) -> *mut DelegateBox {
-    unsafe { native::get_pointer_ivar(object, c"_zpdWindowState".as_ptr()) }
+    unsafe { zpd_objc::get_pointer_ivar(object, c"_zpdWindowState".as_ptr()) }
 }
-unsafe extern "C" fn window_will_close(object: Id, _: native::Sel, _: Id) {
+unsafe extern "C" fn window_will_close(object: Id, _: zpd_objc::Sel, _: Id) {
     // SAFETY: The callback receiver is live on entry; retaining it keeps the delegate and its
     // ivar state alive if closing removes the owning Actor subtree synchronously.
     let _receiver = unsafe { Strong::retain(object) };
@@ -113,7 +114,7 @@ unsafe extern "C" fn window_will_close(object: Id, _: native::Sel, _: Id) {
         unsafe { close_state(state.state) }
     }
 }
-unsafe extern "C" fn window_did_resize(object: Id, _: native::Sel, _: Id) {
+unsafe extern "C" fn window_did_resize(object: Id, _: zpd_objc::Sel, _: Id) {
     // SAFETY: The callback receiver is live on entry; retaining it keeps the delegate and its
     // ivar state alive if resize handling synchronously removes the Window subtree.
     let _receiver = unsafe { Strong::retain(object) };
@@ -123,14 +124,10 @@ unsafe extern "C" fn window_did_resize(object: Id, _: native::Sel, _: Id) {
         unsafe { resize_state(state.state) }
     }
 }
-unsafe extern "C" fn delegate_dealloc(object: Id, _: native::Sel) {
+unsafe extern "C" fn delegate_dealloc(object: Id, _: zpd_objc::Sel) {
     unsafe { release_delegate_box(object) };
     unsafe {
-        native::send_super_void(
-            object,
-            native::class(b"NSObject\0"),
-            native::sel(b"dealloc\0"),
-        )
+        zpd_objc::msg_send_super!(object, zpd_objc::class!("NSObject"), zpd_objc::sel!("dealloc"), () => ())
     };
 }
 
@@ -139,7 +136,7 @@ unsafe fn release_delegate_box(object: Id) {
     if !state.is_null() {
         // SAFETY: Clearing the ivar transfers the sole DelegateBox allocation to Rust.
         unsafe {
-            native::set_pointer_ivar(
+            zpd_objc::set_pointer_ivar(
                 object,
                 c"_zpdWindowState".as_ptr(),
                 std::ptr::null_mut::<DelegateBox>(),
@@ -150,43 +147,18 @@ unsafe fn release_delegate_box(object: Id) {
         unsafe { release_state(state.state) };
     }
 }
-fn window_delegate_class() -> native::Class {
+fn window_delegate_class() -> zpd_objc::Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
-    *CLASS.get_or_init(|| unsafe {
-        let class = native::objc_allocateClassPair(
-            native::class(b"NSObject\0"),
-            c"ZpdRustWindowDelegate".as_ptr(),
-            0,
-        );
-        assert!(!class.is_null());
-        assert!(native::class_addIvar(
-            class,
-            c"_zpdWindowState".as_ptr(),
-            std::mem::size_of::<Id>(),
-            3,
-            c"^v".as_ptr()
-        ));
-        native::add_method(
-            class,
-            b"windowWillClose:\0",
-            window_will_close as unsafe extern "C" fn(_, _, _),
-            b"v@:@\0",
-        );
-        native::add_method(
-            class,
-            b"windowDidResize:\0",
-            window_did_resize as unsafe extern "C" fn(_, _, _),
-            b"v@:@\0",
-        );
-        native::add_method(
-            class,
-            b"dealloc\0",
-            delegate_dealloc as unsafe extern "C" fn(_, _),
-            b"v@:\0",
-        );
-        native::objc_registerClassPair(class);
-        class as usize
-    }) as native::Class
+    *CLASS.get_or_init(|| {
+        zpd_objc::decl!(ZpdRustWindowDelegate: [zpd_objc::class!("NSObject")] {
+            fields { _zpdWindowState: ptr }
+            methods {
+                "windowWillClose:": "v@:@" => window_will_close,
+                "windowDidResize:": "v@:@" => window_did_resize,
+                "dealloc": "v@:" => delegate_dealloc,
+            }
+        }) as usize
+    }) as zpd_objc::Class
 }
 
 struct ActorRollback(Option<ActorRef>);
@@ -232,22 +204,11 @@ impl<'application> Window<'application> {
         };
         // SAFETY: This is NSWindow's arm64 designated initializer signature.
         let native_window = unsafe {
-            Strong::from_retained(native::send_id_rect_u64_u64_bool(
-                native::send_id(native::class(b"NSWindow\0"), native::sel(b"alloc\0")),
-                native::sel(b"initWithContentRect:styleMask:backing:defer:\0"),
-                frame,
-                (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 15),
-                2,
-                false,
-            ))
+            Strong::from_retained(zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSWindow"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("initWithContentRect:styleMask:backing:defer:"), ((frame): native::Rect, ((1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 15)): u64, (2): u64, (false): bool) => zpd_objc::Id))
         }
         .ok_or(WindowError::NativeCreationFailed)?;
         unsafe {
-            native::send_void_bool(
-                native_window.as_ptr(),
-                native::sel(b"setReleasedWhenClosed:\0"),
-                false,
-            )
+            zpd_objc::msg_send!(native_window.as_ptr(), zpd_objc::sel!("setReleasedWhenClosed:"), ((false): bool) => ())
         };
         let actor = application.tree().insert_window(native_window);
         actor
@@ -258,16 +219,12 @@ impl<'application> Window<'application> {
         application
             .tree()
             .add_teardown(&actor, |window| unsafe {
-                native::send_void_id(window, native::sel(b"setDelegate:\0"), native::NIL);
-                native::send_void_id(
-                    window,
-                    native::sel(b"setContentViewController:\0"),
-                    native::NIL,
-                );
+                zpd_objc::msg_send!(window, zpd_objc::sel!("setDelegate:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
+                zpd_objc::msg_send!(window, zpd_objc::sel!("setContentViewController:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
             })
             .map_err(WindowError::from)?;
 
-        let controller = native::alloc_init(b"NSViewController\0");
+        let controller = native::alloc_init(zpd_objc::class!("NSViewController"));
         let view = view::new_layout_view(Rect::new(
             frame.origin.x,
             frame.origin.y,
@@ -275,18 +232,10 @@ impl<'application> Window<'application> {
             frame.size.height,
         ))?;
         unsafe {
-            native::send_void_id(
-                controller.as_ptr(),
-                native::sel(b"setView:\0"),
-                view.as_ptr(),
-            );
+            zpd_objc::msg_send!(controller.as_ptr(), zpd_objc::sel!("setView:"), ((view.as_ptr()): zpd_objc::Id) => ());
             actor
                 .with(|window| {
-                    native::send_void_id(
-                        window,
-                        native::sel(b"setContentViewController:\0"),
-                        controller.as_ptr(),
-                    )
+                    zpd_objc::msg_send!(window, zpd_objc::sel!("setContentViewController:"), ((controller.as_ptr()): zpd_objc::Id) => ())
                 })
                 .map_err(WindowError::from)?;
         }
@@ -306,11 +255,8 @@ impl<'application> Window<'application> {
             .map_err(WindowError::from)?;
         let class = window_delegate_class();
         let native_delegate = unsafe {
-            let object = native::send_id(
-                native::send_id(class, native::sel(b"alloc\0")),
-                native::sel(b"init\0"),
-            );
-            native::set_pointer_ivar(
+            let object = zpd_objc::msg_send!(zpd_objc::msg_send!(class, zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("init"), () => zpd_objc::Id);
+            zpd_objc::set_pointer_ivar(
                 object,
                 c"_zpdWindowState".as_ptr(),
                 Box::into_raw(Box::new(DelegateBox {
@@ -321,11 +267,7 @@ impl<'application> Window<'application> {
         };
         actor
             .with(|window| unsafe {
-                native::send_void_id(
-                    window,
-                    native::sel(b"setDelegate:\0"),
-                    native_delegate.as_ptr(),
-                )
+                zpd_objc::msg_send!(window, zpd_objc::sel!("setDelegate:"), ((native_delegate.as_ptr()): zpd_objc::Id) => ())
             })
             .map_err(WindowError::from)?;
         let delegate_actor = application
@@ -368,7 +310,7 @@ impl<'application> Window<'application> {
         self.ensure_open()?;
         self.actor
             .with(|window| unsafe {
-                native::send_void_id(window, native::sel(b"makeKeyAndOrderFront:\0"), native::NIL)
+                zpd_objc::msg_send!(window, zpd_objc::sel!("makeKeyAndOrderFront:"), ((zpd_objc::NIL): zpd_objc::Id) => ())
             })
             .map_err(Into::into)
     }
@@ -377,7 +319,7 @@ impl<'application> Window<'application> {
         let title = native::nsstring(title);
         self.actor
             .with(|window| unsafe {
-                native::send_void_id(window, native::sel(b"setTitle:\0"), title.as_ptr())
+                zpd_objc::msg_send!(window, zpd_objc::sel!("setTitle:"), ((title.as_ptr()): zpd_objc::Id) => ())
             })
             .map_err(Into::into)
     }
@@ -386,22 +328,19 @@ impl<'application> Window<'application> {
         let identifier = identifier.map(native::nsstring);
         self.actor
             .with(|window| unsafe {
-                native::send_void_id(
-                    window,
-                    native::sel(b"setAccessibilityIdentifier:\0"),
-                    identifier.as_ref().map_or(native::NIL, Strong::as_ptr),
-                )
+                zpd_objc::msg_send!(window, zpd_objc::sel!("setAccessibilityIdentifier:"), ((identifier.as_ref().map_or(zpd_objc::NIL, Strong::as_ptr)): zpd_objc::Id) => ())
             })
             .map_err(Into::into)
     }
     pub fn set_bounds(&self, bounds: Rect) -> Result<(), WindowError> {
         self.ensure_open()?;
-        let screen =
-            unsafe { native::send_id(native::class(b"NSScreen\0"), native::sel(b"mainScreen\0")) };
+        let screen = unsafe {
+            zpd_objc::msg_send!(zpd_objc::class!("NSScreen"), zpd_objc::sel!("mainScreen"), () => zpd_objc::Id)
+        };
         let screen_frame = if screen.is_null() {
             native::Rect::default()
         } else {
-            unsafe { native::send_rect(screen, native::sel(b"frame\0")) }
+            unsafe { zpd_objc::msg_send!(screen, zpd_objc::sel!("frame"), () => native::Rect) }
         };
         let frame = native::Rect {
             origin: native::Point {
@@ -415,12 +354,7 @@ impl<'application> Window<'application> {
         };
         self.actor
             .with(|window| unsafe {
-                native::send_void_rect_bool(
-                    window,
-                    native::sel(b"setFrame:display:\0"),
-                    frame,
-                    true,
-                )
+                zpd_objc::msg_send!(window, zpd_objc::sel!("setFrame:display:"), ((frame): native::Rect, (true): bool) => ())
             })
             .map_err(Into::into)
     }
@@ -428,39 +362,33 @@ impl<'application> Window<'application> {
         self.ensure_open()?;
         let mut frame = self
             .actor
-            .with(|window| unsafe { native::send_rect(window, native::sel(b"frame\0")) })
+            .with(|window| unsafe {
+                zpd_objc::msg_send!(window, zpd_objc::sel!("frame"), () => native::Rect)
+            })
             .map_err(WindowError::from)?;
         frame.size = native::Size { width, height };
         self.actor
             .with(|window| unsafe {
-                native::send_void_rect_bool(
-                    window,
-                    native::sel(b"setFrame:display:\0"),
-                    frame,
-                    true,
-                )
+                zpd_objc::msg_send!(window, zpd_objc::sel!("setFrame:display:"), ((frame): native::Rect, (true): bool) => ())
             })
             .map_err(Into::into)
     }
     pub fn set_position(&self, x: f64, y: f64) -> Result<(), WindowError> {
         self.ensure_open()?;
-        let screen =
-            unsafe { native::send_id(native::class(b"NSScreen\0"), native::sel(b"mainScreen\0")) };
+        let screen = unsafe {
+            zpd_objc::msg_send!(zpd_objc::class!("NSScreen"), zpd_objc::sel!("mainScreen"), () => zpd_objc::Id)
+        };
         let screen_frame = if screen.is_null() {
             native::Rect::default()
         } else {
-            unsafe { native::send_rect(screen, native::sel(b"frame\0")) }
+            unsafe { zpd_objc::msg_send!(screen, zpd_objc::sel!("frame"), () => native::Rect) }
         };
         self.actor
             .with(|window| unsafe {
-                native::send_void_point(
-                    window,
-                    native::sel(b"setFrameTopLeftPoint:\0"),
-                    native::Point {
+                zpd_objc::msg_send!(window, zpd_objc::sel!("setFrameTopLeftPoint:"), ((native::Point {
                         x,
                         y: screen_frame.origin.y + screen_frame.size.height - y,
-                    },
-                )
+                    }): native::Point) => ())
             })
             .map_err(Into::into)
     }
@@ -533,9 +461,9 @@ impl Drop for Window<'_> {
     fn drop(&mut self) {
         self.sidebar.borrow_mut().take();
         if self.actor.is_alive() {
-            let _ = self
-                .actor
-                .with(|window| unsafe { native::send_void(window, native::sel(b"close\0")) });
+            let _ = self.actor.with(|window| unsafe {
+                zpd_objc::msg_send!(window, zpd_objc::sel!("close"), () => ())
+            });
         }
         self.actor.remove();
     }
@@ -563,11 +491,7 @@ pub struct WgpuSurface<'application> {
 impl<'application> WgpuSurface<'application> {
     fn new(window: &ActorRef, content: &ActorRef, rect: Rect) -> Result<Self, WindowError> {
         let native_view = unsafe {
-            Strong::from_retained(native::send_id_rect(
-                native::send_id(native::class(b"NSView\0"), native::sel(b"alloc\0")),
-                native::sel(b"initWithFrame:\0"),
-                native_rect(rect),
-            ))
+            Strong::from_retained(zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSView"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("initWithFrame:"), ((native_rect(rect)): native::Rect) => zpd_objc::Id))
         }
         .ok_or(WindowError::NativeCreationFailed)?;
         let view_actor = {
@@ -582,10 +506,7 @@ impl<'application> WgpuSurface<'application> {
             actor
         };
         let layer_native = unsafe {
-            Strong::retain(native::send_id(
-                native::class(b"CAMetalLayer\0"),
-                native::sel(b"layer\0"),
-            ))
+            Strong::retain(zpd_objc::msg_send!(zpd_objc::class!("CAMetalLayer"), zpd_objc::sel!("layer"), () => zpd_objc::Id))
         }
         .ok_or(WindowError::NativeCreationFailed)?;
         let actor_tree = window_tree(window)?;
@@ -595,8 +516,8 @@ impl<'application> WgpuSurface<'application> {
         view_actor
             .with(|view| {
                 layer.with(|layer| unsafe {
-                    native::send_void_bool(view, native::sel(b"setWantsLayer:\0"), true);
-                    native::send_void_id(view, native::sel(b"setLayer:\0"), layer);
+                    zpd_objc::msg_send!(view, zpd_objc::sel!("setWantsLayer:"), ((true): bool) => ());
+                    zpd_objc::msg_send!(view, zpd_objc::sel!("setLayer:"), ((layer): zpd_objc::Id) => ());
                 })
             })
             .map_err(WindowError::from)?
@@ -604,7 +525,7 @@ impl<'application> WgpuSurface<'application> {
         content
             .with(|parent| {
                 view_actor.with(|view| unsafe {
-                    native::send_void_id(parent, native::sel(b"addSubview:\0"), view)
+                    zpd_objc::msg_send!(parent, zpd_objc::sel!("addSubview:"), ((view): zpd_objc::Id) => ())
                 })
             })
             .map_err(WindowError::from)?
@@ -625,7 +546,9 @@ impl<'application> WgpuSurface<'application> {
         self.update_drawable_size()?;
         let size = self
             .layer
-            .with(|layer| unsafe { native::send_size(layer, native::sel(b"drawableSize\0")) })
+            .with(|layer| unsafe {
+                zpd_objc::msg_send!(layer, zpd_objc::sel!("drawableSize"), () => native::Size)
+            })
             .map_err(WindowError::from)?;
         Ok(PhysicalSize::new(
             size.width.max(0.0).round() as u32,
@@ -636,26 +559,25 @@ impl<'application> WgpuSurface<'application> {
         let bounds = self
             .view
             .actor()
-            .with(|view| unsafe { native::send_rect(view, native::sel(b"bounds\0")) })
+            .with(|view| unsafe {
+                zpd_objc::msg_send!(view, zpd_objc::sel!("bounds"), () => native::Rect)
+            })
             .map_err(WindowError::from)?;
-        let screen =
-            unsafe { native::send_id(native::class(b"NSScreen\0"), native::sel(b"mainScreen\0")) };
+        let screen = unsafe {
+            zpd_objc::msg_send!(zpd_objc::class!("NSScreen"), zpd_objc::sel!("mainScreen"), () => zpd_objc::Id)
+        };
         let scale = if screen.is_null() {
             1.0
         } else {
-            unsafe { native::send_f64(screen, native::sel(b"backingScaleFactor\0")) }
+            unsafe { zpd_objc::msg_send!(screen, zpd_objc::sel!("backingScaleFactor"), () => f64) }
         };
         self.layer
             .with(|layer| unsafe {
-                native::send_void_f64(layer, native::sel(b"setContentsScale:\0"), scale);
-                native::send_void_size(
-                    layer,
-                    native::sel(b"setDrawableSize:\0"),
-                    native::Size {
+                zpd_objc::msg_send!(layer, zpd_objc::sel!("setContentsScale:"), ((scale): f64) => ());
+                zpd_objc::msg_send!(layer, zpd_objc::sel!("setDrawableSize:"), ((native::Size {
                         width: bounds.size.width * scale,
                         height: bounds.size.height * scale,
-                    },
-                );
+                    }): native::Size) => ());
             })
             .map_err(Into::into)
     }
