@@ -1,0 +1,7 @@
+[package]
+name = "zpd-corefoundation"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+
+[dependencies]

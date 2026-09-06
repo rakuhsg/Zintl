@@ -14,6 +14,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zpd-corefoundation"
+version = "0.1.0"
+
+[[package]]
+name = "zpd-objc"
+version = "0.1.0"
+
+[[package]]
 name = "zpd-winui3"
 version = "0.1.0"
 
