@@ -6,8 +6,9 @@ use std::sync::OnceLock;
 
 use crate::actor::{ActorError, ActorRef};
 use crate::geometry::Rect;
-use crate::native::{self, Strong};
+use crate::native;
 use crate::runloop::{Application, ApplicationDelegate};
+use zpd_objc::Strong;
 
 use super::layout::{Dimension, LayoutAttribute, XAxisAnchor, YAxisAnchor};
 
@@ -15,17 +16,18 @@ struct LayoutCallback {
     invoke: RefCell<Box<dyn FnMut(Rect)>>,
 }
 
-unsafe fn layout_callback(object: native::Id) -> *mut LayoutCallback {
-    unsafe { native::get_pointer_ivar(object, c"_zpdLayoutCallback".as_ptr()) }
+unsafe fn layout_callback(object: zpd_objc::Id) -> *mut LayoutCallback {
+    unsafe { zpd_objc::get_pointer_ivar(object, c"_zpdLayoutCallback".as_ptr()) }
 }
 
-unsafe extern "C" fn layout(object: native::Id, _: native::Sel) {
+unsafe extern "C" fn layout(object: zpd_objc::Id, _: zpd_objc::Sel) {
     unsafe {
-        native::send_super_void(object, native::class(b"NSView\0"), native::sel(b"layout\0"))
+        zpd_objc::msg_send_super!(object, zpd_objc::class!("NSView"), zpd_objc::sel!("layout"), () => ())
     };
     let callback = unsafe { layout_callback(object).as_ref() };
     let Some(callback) = callback else { return };
-    let bounds = unsafe { native::send_rect(object, native::sel(b"bounds\0")) };
+    let bounds =
+        unsafe { zpd_objc::msg_send!(object, zpd_objc::sel!("bounds"), () => native::Rect) };
     let bounds = Rect::new(
         bounds.origin.x,
         bounds.origin.y,
@@ -44,25 +46,21 @@ unsafe extern "C" fn layout(object: native::Id, _: native::Sel) {
     }
 }
 
-unsafe extern "C" fn layout_view_dealloc(object: native::Id, _: native::Sel) {
+unsafe extern "C" fn layout_view_dealloc(object: zpd_objc::Id, _: zpd_objc::Sel) {
     unsafe { release_layout_callback(object) };
     unsafe {
-        native::send_super_void(
-            object,
-            native::class(b"NSView\0"),
-            native::sel(b"dealloc\0"),
-        )
+        zpd_objc::msg_send_super!(object, zpd_objc::class!("NSView"), zpd_objc::sel!("dealloc"), () => ())
     };
 }
 
-pub(crate) unsafe fn release_layout_callback(object: native::Id) {
+pub(crate) unsafe fn release_layout_callback(object: zpd_objc::Id) {
     let callback = unsafe { layout_callback(object) };
     if callback.is_null() {
         return;
     }
     // SAFETY: Clearing the ivar transfers the sole callback allocation back to Rust.
     unsafe {
-        native::set_pointer_ivar(
+        zpd_objc::set_pointer_ivar(
             object,
             c"_zpdLayoutCallback".as_ptr(),
             std::ptr::null_mut::<LayoutCallback>(),
@@ -72,47 +70,23 @@ pub(crate) unsafe fn release_layout_callback(object: native::Id) {
     unsafe { drop(Box::from_raw(callback)) };
 }
 
-fn layout_view_class() -> native::Class {
+fn layout_view_class() -> zpd_objc::Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
-    *CLASS.get_or_init(|| unsafe {
-        let class = native::objc_allocateClassPair(
-            native::class(b"NSView\0"),
-            c"ZpdRustLayoutView".as_ptr(),
-            0,
-        );
-        assert!(!class.is_null());
-        assert!(native::class_addIvar(
-            class,
-            c"_zpdLayoutCallback".as_ptr(),
-            std::mem::size_of::<native::Id>(),
-            3,
-            c"^v".as_ptr()
-        ));
-        native::add_method(
-            class,
-            b"layout\0",
-            layout as unsafe extern "C" fn(_, _),
-            b"v@:\0",
-        );
-        native::add_method(
-            class,
-            b"dealloc\0",
-            layout_view_dealloc as unsafe extern "C" fn(_, _),
-            b"v@:\0",
-        );
-        native::objc_registerClassPair(class);
-        class as usize
-    }) as native::Class
+    *CLASS.get_or_init(|| {
+        zpd_objc::decl!(ZpdRustLayoutView: [zpd_objc::class!("NSView")] {
+            fields { _zpdLayoutCallback: ptr }
+            methods {
+                "layout": "v@:" => layout,
+                "dealloc": "v@:" => layout_view_dealloc,
+            }
+        }) as usize
+    }) as zpd_objc::Class
 }
 
 pub(crate) fn new_layout_view(frame: Rect) -> Result<Strong, ViewError> {
     // SAFETY: The registered NSView subclass uses NSView's designated frame initializer.
     unsafe {
-        Strong::from_retained(native::send_id_rect(
-            native::send_id(layout_view_class(), native::sel(b"alloc\0")),
-            native::sel(b"initWithFrame:\0"),
-            native_rect(frame),
-        ))
+        Strong::from_retained(zpd_objc::msg_send!(zpd_objc::msg_send!(layout_view_class(), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("initWithFrame:"), ((native_rect(frame)): native::Rect) => zpd_objc::Id))
     }
     .ok_or(ViewError::NativeCreationFailed)
 }
@@ -123,7 +97,7 @@ pub(crate) fn set_layout_callback(
 ) -> Result<(), ViewError> {
     view.with(|object| unsafe {
         release_layout_callback(object);
-        native::set_pointer_ivar(
+        zpd_objc::set_pointer_ivar(
             object,
             c"_zpdLayoutCallback".as_ptr(),
             Box::into_raw(Box::new(LayoutCallback {
@@ -173,7 +147,7 @@ impl ViewActor {
         application
             .tree()
             .add_teardown(&actor, |view| unsafe {
-                native::send_void(view, native::sel(b"removeFromSuperview\0"))
+                zpd_objc::msg_send!(view, zpd_objc::sel!("removeFromSuperview"), () => ())
             })
             .expect("a newly inserted view actor must be live");
         Self {
@@ -187,7 +161,7 @@ impl ViewActor {
             .tree_handle()
             .expect("a newly inserted view actor must have a tree")
             .add_teardown(&actor, |view| unsafe {
-                native::send_void(view, native::sel(b"removeFromSuperview\0"))
+                zpd_objc::msg_send!(view, zpd_objc::sel!("removeFromSuperview"), () => ())
             })
             .expect("a newly inserted view actor must be live");
         Self {
@@ -218,12 +192,8 @@ impl View {
     ) -> Result<Self, ViewError> {
         // SAFETY: NSView's designated frame initializer returns a retained object.
         let native = unsafe {
-            let object = native::send_id(native::class(b"NSView\0"), native::sel(b"alloc\0"));
-            Strong::from_retained(native::send_id_rect(
-                object,
-                native::sel(b"initWithFrame:\0"),
-                native_rect(frame),
-            ))
+            let object = zpd_objc::msg_send!(zpd_objc::class!("NSView"), zpd_objc::sel!("alloc"), () => zpd_objc::Id);
+            Strong::from_retained(zpd_objc::msg_send!(object, zpd_objc::sel!("initWithFrame:"), ((native_rect(frame)): native::Rect) => zpd_objc::Id))
         }
         .ok_or(ViewError::NativeCreationFailed)?;
         Ok(Self {
@@ -245,7 +215,7 @@ impl<'view> ViewRef<'view> {
     pub(crate) fn from_actor(actor: &'view ActorRef) -> Self {
         Self { actor }
     }
-    pub(crate) fn with<R>(self, operation: impl FnOnce(native::Id) -> R) -> Result<R, ViewError> {
+    pub(crate) fn with<R>(self, operation: impl FnOnce(zpd_objc::Id) -> R) -> Result<R, ViewError> {
         self.actor.with(operation).map_err(Into::into)
     }
     pub(crate) fn actor(self) -> &'view ActorRef {
@@ -267,7 +237,7 @@ impl<'view> ViewRef<'view> {
             child.with(|native_child| {
                 // SAFETY: Both actors are retained for this synchronous hierarchy update.
                 unsafe {
-                    native::send_void_id(parent, native::sel(b"addSubview:\0"), native_child)
+                    zpd_objc::msg_send!(parent, zpd_objc::sel!("addSubview:"), ((native_child): zpd_objc::Id) => ())
                 };
             })
         })??;
@@ -276,30 +246,30 @@ impl<'view> ViewRef<'view> {
     }
     pub fn remove_from_superview(self) -> Result<(), ViewError> {
         self.with(|view| unsafe {
-            native::send_void(view, native::sel(b"removeFromSuperview\0"))
+            zpd_objc::msg_send!(view, zpd_objc::sel!("removeFromSuperview"), () => ())
         })?;
         self.actor.move_to_root().map_err(Into::into)
     }
     pub fn set_frame(self, frame: Rect) -> Result<(), ViewError> {
         self.with(|view| unsafe {
-            native::send_void_rect(view, native::sel(b"setFrame:\0"), native_rect(frame))
+            zpd_objc::msg_send!(view, zpd_objc::sel!("setFrame:"), ((native_rect(frame)): native::Rect) => ())
         })
     }
     pub fn set_needs_layout(self, needs_layout: bool) -> Result<(), ViewError> {
         self.with(|view| unsafe {
-            native::send_void_bool(view, native::sel(b"setNeedsLayout:\0"), needs_layout)
+            zpd_objc::msg_send!(view, zpd_objc::sel!("setNeedsLayout:"), ((needs_layout): bool) => ())
         })
     }
     pub fn layout_subtree_if_needed(self) -> Result<(), ViewError> {
         self.with(|view| unsafe {
-            native::send_void(view, native::sel(b"layoutSubtreeIfNeeded\0"))
+            zpd_objc::msg_send!(view, zpd_objc::sel!("layoutSubtreeIfNeeded"), () => ())
         })
     }
     /// Returns this view's current bounds in logical points.
     pub fn bounds(self) -> Result<Rect, ViewError> {
         let bounds = self.with(|view| {
             // SAFETY: NSView's bounds getter returns an NSRect for a live view.
-            unsafe { native::send_rect(view, native::sel(b"bounds\0")) }
+            unsafe { zpd_objc::msg_send!(view, zpd_objc::sel!("bounds"), () => native::Rect) }
         })?;
         Ok(Rect::new(
             bounds.origin.x,
@@ -311,11 +281,7 @@ impl<'view> ViewRef<'view> {
     pub fn set_identifier(self, identifier: Option<&str>) -> Result<(), ViewError> {
         let identifier = identifier.map(native::nsstring);
         self.with(|view| unsafe {
-            native::send_void_id(
-                view,
-                native::sel(b"setAccessibilityIdentifier:\0"),
-                identifier.as_ref().map_or(native::NIL, Strong::as_ptr),
-            );
+            zpd_objc::msg_send!(view, zpd_objc::sel!("setAccessibilityIdentifier:"), ((identifier.as_ref().map_or(zpd_objc::NIL, Strong::as_ptr)): zpd_objc::Id) => ());
         })
     }
     pub fn set_translates_autoresizing_mask_into_constraints(
@@ -323,11 +289,7 @@ impl<'view> ViewRef<'view> {
         enabled: bool,
     ) -> Result<(), ViewError> {
         self.with(|view| unsafe {
-            native::send_void_bool(
-                view,
-                native::sel(b"setTranslatesAutoresizingMaskIntoConstraints:\0"),
-                enabled,
-            )
+            zpd_objc::msg_send!(view, zpd_objc::sel!("setTranslatesAutoresizingMaskIntoConstraints:"), ((enabled): bool) => ())
         })
     }
     pub fn leading_anchor(self) -> XAxisAnchor<'view> {

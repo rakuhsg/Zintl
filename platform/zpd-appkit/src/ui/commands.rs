@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::actor::{ActorRef, ActorTree};
-use crate::native::{self, Strong};
+use crate::native;
 use crate::runloop::{Application, ApplicationDelegate};
+use zpd_objc::Strong;
 
 use super::callback;
 
@@ -71,10 +72,10 @@ where
     let tree = application.tree();
     let app = application.actor_ref();
     app.with(|app| unsafe {
-        native::send_void_id(app, native::sel(b"setMainMenu:\0"), native::NIL)
+        zpd_objc::msg_send!(app, zpd_objc::sel!("setMainMenu:"), ((zpd_objc::NIL): zpd_objc::Id) => ())
     })
     .map_err(|_| CommandError::Closed)?;
-    let main_menu = native::alloc_init(b"NSMenu\0");
+    let main_menu = native::alloc_init(zpd_objc::class!("NSMenu"));
     let main = tree
         .replace_owned(&app, "commands", main_menu)
         .map_err(|_| CommandError::Closed)?;
@@ -93,7 +94,9 @@ where
     }
     // SAFETY: NSApplication retains the installed main menu.
     let install_result = app.with(|app| {
-        main.with(|main| unsafe { native::send_void_id(app, native::sel(b"setMainMenu:\0"), main) })
+        main.with(|main| unsafe {
+            zpd_objc::msg_send!(app, zpd_objc::sel!("setMainMenu:"), ((main): zpd_objc::Id) => ())
+        })
     });
     match install_result {
         Ok(Ok(())) => {}
@@ -117,20 +120,14 @@ where
     F: FnMut(&str) + 'static,
 {
     let title = native::nsstring(title);
-    let menu = native::alloc_init(b"NSMenu\0");
-    unsafe { native::send_void_id(menu.as_ptr(), native::sel(b"setTitle:\0"), title.as_ptr()) };
-    let container = native::alloc_init(b"NSMenuItem\0");
+    let menu = native::alloc_init(zpd_objc::class!("NSMenu"));
     unsafe {
-        native::send_void_id(
-            container.as_ptr(),
-            native::sel(b"setSubmenu:\0"),
-            menu.as_ptr(),
-        );
-        native::send_void_id(
-            main.with(|id| id).map_err(|_| CommandError::Closed)?,
-            native::sel(b"addItem:\0"),
-            container.as_ptr(),
-        );
+        zpd_objc::msg_send!(menu.as_ptr(), zpd_objc::sel!("setTitle:"), ((title.as_ptr()): zpd_objc::Id) => ())
+    };
+    let container = native::alloc_init(zpd_objc::class!("NSMenuItem"));
+    unsafe {
+        zpd_objc::msg_send!(container.as_ptr(), zpd_objc::sel!("setSubmenu:"), ((menu.as_ptr()): zpd_objc::Id) => ());
+        zpd_objc::msg_send!(main.with(|id| id).map_err(|_| CommandError::Closed)?, zpd_objc::sel!("addItem:"), ((container.as_ptr()): zpd_objc::Id) => ());
     }
     let container = tree
         .insert_child(main, container)
@@ -149,15 +146,8 @@ where
                 .unwrap_or(""),
         );
         let native_item = unsafe {
-            let allocated =
-                native::send_id(native::class(b"NSMenuItem\0"), native::sel(b"alloc\0"));
-            let value = native::send_id_id_id_id(
-                allocated,
-                native::sel(b"initWithTitle:action:keyEquivalent:\0"),
-                item_title.as_ptr(),
-                native::sel(b"invoke:\0"),
-                key.as_ptr(),
-            );
+            let allocated = zpd_objc::msg_send!(zpd_objc::class!("NSMenuItem"), zpd_objc::sel!("alloc"), () => zpd_objc::Id);
+            let value = zpd_objc::msg_send!(allocated, zpd_objc::sel!("initWithTitle:action:keyEquivalent:"), ((item_title.as_ptr()): zpd_objc::Id, (zpd_objc::sel!("invoke:")): zpd_objc::Id, (key.as_ptr()): zpd_objc::Id) => zpd_objc::Id);
             Strong::from_retained(value).ok_or(CommandError::NativeCreationFailed)?
         };
         let app = application.clone();
@@ -167,16 +157,12 @@ where
         let target = callback::target(move |_| match role {
             Some(CommandRole::About) => {
                 let _ = app.with(|app| unsafe {
-                    native::send_void_id(
-                        app,
-                        native::sel(b"orderFrontStandardAboutPanel:\0"),
-                        native::NIL,
-                    )
+                    zpd_objc::msg_send!(app, zpd_objc::sel!("orderFrontStandardAboutPanel:"), ((zpd_objc::NIL): zpd_objc::Id) => ())
                 });
             }
             Some(CommandRole::Quit) => {
                 let _ = app.with(|app| unsafe {
-                    native::send_void_id(app, native::sel(b"terminate:\0"), native::NIL)
+                    zpd_objc::msg_send!(app, zpd_objc::sel!("terminate:"), ((zpd_objc::NIL): zpd_objc::Id) => ())
                 });
             }
             None => {
@@ -197,33 +183,17 @@ where
             }
         });
         unsafe {
-            native::send_void_id(
-                native_item.as_ptr(),
-                native::sel(b"setTarget:\0"),
-                target.as_ptr(),
-            );
-            native::send_void_u64(
-                native_item.as_ptr(),
-                native::sel(b"setKeyEquivalentModifierMask:\0"),
-                modifiers,
-            );
-            native::send_void_bool(
-                native_item.as_ptr(),
-                native::sel(b"setEnabled:\0"),
-                item.enabled,
-            );
-            native::send_void_id(
-                menu.with(|id| id).map_err(|_| CommandError::Closed)?,
-                native::sel(b"addItem:\0"),
-                native_item.as_ptr(),
-            );
+            zpd_objc::msg_send!(native_item.as_ptr(), zpd_objc::sel!("setTarget:"), ((target.as_ptr()): zpd_objc::Id) => ());
+            zpd_objc::msg_send!(native_item.as_ptr(), zpd_objc::sel!("setKeyEquivalentModifierMask:"), ((modifiers): u64) => ());
+            zpd_objc::msg_send!(native_item.as_ptr(), zpd_objc::sel!("setEnabled:"), ((item.enabled): bool) => ());
+            zpd_objc::msg_send!(menu.with(|id| id).map_err(|_| CommandError::Closed)?, zpd_objc::sel!("addItem:"), ((native_item.as_ptr()): zpd_objc::Id) => ());
         }
         let item = tree
             .insert_child(&menu, native_item)
             .map_err(|_| CommandError::Closed)?;
         tree.add_teardown(&item, |item| unsafe {
-            native::send_void_id(item, native::sel(b"setTarget:\0"), native::NIL);
-            native::send_void_id(item, native::sel(b"setAction:\0"), native::NIL);
+            zpd_objc::msg_send!(item, zpd_objc::sel!("setTarget:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
+            zpd_objc::msg_send!(item, zpd_objc::sel!("setAction:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
         })
         .map_err(|_| CommandError::Closed)?;
         let target = tree

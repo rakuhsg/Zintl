@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["zpd-appkit", "zpd-appkit/example", "zpd-winui3", "zpd-winui3/example"]
+members = ["zpd-appkit", "zpd-appkit/example", "zpd-corefoundation", "zpd-objc", "zpd-winui3", "zpd-winui3/example"]
 
 [workspace.package]
 version = "0.1.0"

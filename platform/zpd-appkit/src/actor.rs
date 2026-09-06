@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::{Rc, Weak};
 
-use crate::native::{self, Id, Strong};
+use zpd_objc::{Id, Strong};
 
 /// Opaque identity of an Actor node within one Application session.
 ///
@@ -85,20 +85,20 @@ impl WeakSlot {
             value: UnsafeCell::new(std::ptr::null_mut()),
         });
         // SAFETY: The pinned allocation gives Objective-C weak storage a stable address.
-        unsafe { native::objc_initWeak(slot.value.get(), value) };
+        unsafe { zpd_objc::ffi::objc_initWeak(slot.value.get(), value) };
         slot
     }
 
     fn load(&self) -> Option<Strong> {
         // SAFETY: objc_loadWeakRetained atomically returns a +1 object or nil.
-        unsafe { Strong::from_retained(native::objc_loadWeakRetained(self.value.get())) }
+        unsafe { Strong::from_retained(zpd_objc::ffi::objc_loadWeakRetained(self.value.get())) }
     }
 }
 
 impl Drop for WeakSlot {
     fn drop(&mut self) {
         // SAFETY: This slot was initialized once and remains at a stable address.
-        unsafe { native::objc_destroyWeak(self.value.get()) };
+        unsafe { zpd_objc::ffi::objc_destroyWeak(self.value.get()) };
     }
 }
 
@@ -730,13 +730,14 @@ impl TreeInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native;
 
     #[test]
     fn generation_rejects_removed_actor_references() {
         // Verifies a removed node invalidates all weak ActorRef handles.
-        let object = crate::native::alloc_init(b"NSObject\0");
+        let object = native::alloc_init(zpd_objc::class!("NSObject"));
         let tree = ActorTree::new(object);
-        let child = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let child = tree.insert_root(native::alloc_init(zpd_objc::class!("NSObject")));
         assert!(child.is_alive());
         tree.remove(&child);
         assert_eq!(child.with(|_| ()), Err(ActorError::Dropped));
@@ -745,25 +746,25 @@ mod tests {
     #[test]
     fn public_ids_distinguish_reused_slots_and_sessions() {
         // Verifies public IDs cannot alias after Actor slot reuse or Application restart.
-        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
-        let first = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let tree = ActorTree::new(native::alloc_init(zpd_objc::class!("NSObject")));
+        let first = tree.insert_root(native::alloc_init(zpd_objc::class!("NSObject")));
         let first_id = first.actor_id();
         tree.remove(&first);
-        let second = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let second = tree.insert_root(native::alloc_init(zpd_objc::class!("NSObject")));
         assert_ne!(first_id, second.actor_id());
 
         let next_session = tree.begin_session();
-        let third = next_session.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let third = next_session.insert_root(native::alloc_init(zpd_objc::class!("NSObject")));
         assert_ne!(second.actor_id(), third.actor_id());
     }
 
     #[test]
     fn events_resolve_the_containing_window() {
         // Verifies a control event carries both its target and nearest Window IDs.
-        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
-        let window = tree.insert_window(crate::native::alloc_init(b"NSObject\0"));
+        let tree = ActorTree::new(native::alloc_init(zpd_objc::class!("NSObject")));
+        let window = tree.insert_window(native::alloc_init(zpd_objc::class!("NSObject")));
         let child = tree
-            .insert_child(&window, crate::native::alloc_init(b"NSObject\0"))
+            .insert_child(&window, native::alloc_init(zpd_objc::class!("NSObject")))
             .unwrap();
         let route = EventRouteToken::new(42);
         child.set_event_route(Some(route)).unwrap();
@@ -797,10 +798,10 @@ mod tests {
     #[test]
     fn tree_rejects_cycles() {
         // Verifies strict hierarchy mutation cannot make a parent its own descendant.
-        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
-        let parent = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let tree = ActorTree::new(native::alloc_init(zpd_objc::class!("NSObject")));
+        let parent = tree.insert_root(native::alloc_init(zpd_objc::class!("NSObject")));
         let child = tree
-            .insert_child(&parent, crate::native::alloc_init(b"NSObject\0"))
+            .insert_child(&parent, native::alloc_init(zpd_objc::class!("NSObject")))
             .unwrap();
         assert_eq!(
             tree.reparent(&parent, &child),
@@ -813,16 +814,13 @@ mod tests {
         // Verifies removing a native-owned subtree drops its actors and Objective-C objects.
         // SAFETY: NSAutoreleasePool implements alloc/init and drain with these signatures.
         let autorelease_pool = unsafe {
-            let allocated = native::send_id(
-                native::class(b"NSAutoreleasePool\0"),
-                native::sel(b"alloc\0"),
-            );
-            native::send_id(allocated, native::sel(b"init\0"))
+            let allocated = zpd_objc::msg_send!(zpd_objc::class!("NSAutoreleasePool"), zpd_objc::sel!("alloc"), () => zpd_objc::Id);
+            zpd_objc::msg_send!(allocated, zpd_objc::sel!("init"), () => zpd_objc::Id)
         };
-        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
-        let parent = tree.insert_root(crate::native::alloc_init(b"NSMutableArray\0"));
+        let tree = ActorTree::new(native::alloc_init(zpd_objc::class!("NSObject")));
+        let parent = tree.insert_root(native::alloc_init(zpd_objc::class!("NSMutableArray")));
         let child = tree
-            .insert_child(&parent, crate::native::alloc_init(b"NSObject\0"))
+            .insert_child(&parent, native::alloc_init(zpd_objc::class!("NSObject")))
             .unwrap();
 
         parent
@@ -831,11 +829,7 @@ mod tests {
                     // SAFETY: The receiver is a live NSMutableArray and addObject: retains
                     // the live NSObject for the native parent-child ownership relationship.
                     unsafe {
-                        native::send_void_id(
-                            parent_native,
-                            native::sel(b"addObject:\0"),
-                            child_native,
-                        )
+                        zpd_objc::msg_send!(parent_native, zpd_objc::sel!("addObject:"), ((child_native): zpd_objc::Id) => ())
                     };
                 })
             })
@@ -848,11 +842,7 @@ mod tests {
                     // SAFETY: The receiver is a live NSMutableArray and containsObject: accepts
                     // the live NSObject and returns an Objective-C BOOL.
                     unsafe {
-                        native::send_bool_id(
-                            parent_native,
-                            native::sel(b"containsObject:\0"),
-                            child_native,
-                        )
+                        zpd_objc::msg_send!(parent_native, zpd_objc::sel!("containsObject:"), ((child_native): zpd_objc::Id) => bool)
                     }
                 })
             })
@@ -868,7 +858,7 @@ mod tests {
         assert_eq!(child.with(|_| ()), Err(ActorError::Dropped));
 
         // SAFETY: drain consumes the live autorelease pool created at the start of this test.
-        unsafe { native::send_void(autorelease_pool, native::sel(b"drain\0")) };
+        unsafe { zpd_objc::msg_send!(autorelease_pool, zpd_objc::sel!("drain"), () => ()) };
         assert!(parent_native.load().is_none());
         assert!(child_native.load().is_none());
     }
@@ -876,7 +866,7 @@ mod tests {
     #[test]
     fn weak_slot_observes_native_release() {
         // Verifies an Objective-C object released outside an actor resolves to nil safely.
-        let native = crate::native::alloc_init(b"NSObject\0");
+        let native = native::alloc_init(zpd_objc::class!("NSObject"));
         let weak = WeakSlot::new(native.as_ptr());
         drop(native);
         assert!(weak.load().is_none());
@@ -885,7 +875,7 @@ mod tests {
     #[test]
     fn application_session_actor_does_not_revive() {
         // Verifies an NSApp-style root ActorRef stays invalid after a later session begins.
-        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
+        let tree = ActorTree::new(native::alloc_init(zpd_objc::class!("NSObject")));
         let first = tree.begin_session();
         let stale = first.root();
         first.end_session();
@@ -899,12 +889,12 @@ mod tests {
     #[test]
     fn replacing_owned_child_releases_the_previous_object() {
         // Verifies named Actor ownership replaces and releases native attachments exactly once.
-        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
-        let owner = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
-        let first = crate::native::alloc_init(b"NSObject\0");
+        let tree = ActorTree::new(native::alloc_init(zpd_objc::class!("NSObject")));
+        let owner = tree.insert_root(native::alloc_init(zpd_objc::class!("NSObject")));
+        let first = native::alloc_init(zpd_objc::class!("NSObject"));
         let first_weak = WeakSlot::new(first.as_ptr());
         tree.replace_owned(&owner, "delegate", first).unwrap();
-        let second = crate::native::alloc_init(b"NSObject\0");
+        let second = native::alloc_init(zpd_objc::class!("NSObject"));
         let second_weak = WeakSlot::new(second.as_ptr());
         tree.replace_owned(&owner, "delegate", second).unwrap();
         assert!(first_weak.load().is_none());
@@ -915,9 +905,9 @@ mod tests {
     #[test]
     fn dependency_removal_invalidates_dependent_actor() {
         // Verifies removing a referenced view also removes its constraint-like dependent Actor.
-        let tree = ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
-        let dependency = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
-        let dependent = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let tree = ActorTree::new(native::alloc_init(zpd_objc::class!("NSObject")));
+        let dependency = tree.insert_root(native::alloc_init(zpd_objc::class!("NSObject")));
+        let dependent = tree.insert_root(native::alloc_init(zpd_objc::class!("NSObject")));
         tree.add_dependency(&dependent, &dependency).unwrap();
         dependency.remove();
         assert_eq!(dependent.with(|_| ()), Err(ActorError::Dropped));

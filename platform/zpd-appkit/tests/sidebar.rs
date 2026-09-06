@@ -2,23 +2,24 @@
 #[path = "../src/native.rs"]
 mod native;
 
-use native::sel;
 use zpd_appkit::runloop::Application;
 use zpd_appkit::ui::{Sidebar, SidebarItem, SidebarSection};
 
 struct SidebarChecks;
 
 impl SidebarChecks {
-    fn with_window(operation: impl FnOnce(native::Id)) {
+    fn with_window(operation: impl FnOnce(zpd_objc::Id)) {
         // SAFETY: This isolated main-thread test creates exactly one NSWindow.
         unsafe {
-            let app = native::send_id(
-                native::class(b"NSApplication\0"),
-                sel(b"sharedApplication\0"),
+            let app = zpd_objc::msg_send!(zpd_objc::class!("NSApplication"), zpd_objc::sel!("sharedApplication"), () => zpd_objc::Id);
+            let windows = zpd_objc::msg_send!(app, zpd_objc::sel!("windows"), () => zpd_objc::Id);
+            assert_eq!(
+                zpd_objc::msg_send!(windows, zpd_objc::sel!("count"), () => u64),
+                1
             );
-            let windows = native::send_id(app, sel(b"windows\0"));
-            assert_eq!(native::send_u64(windows, sel(b"count\0")), 1);
-            operation(native::send_id_u64(windows, sel(b"objectAtIndex:\0"), 0));
+            operation(
+                zpd_objc::msg_send!(windows, zpd_objc::sel!("objectAtIndex:"), ((0): u64) => zpd_objc::Id),
+            );
         }
     }
 
@@ -43,30 +44,33 @@ impl SidebarChecks {
         }
     }
 
-    fn item(window: native::Id) -> native::Id {
+    fn item(window: zpd_objc::Id) -> zpd_objc::Id {
         // SAFETY: Called while the window owns an installed NSSplitViewController.
         unsafe {
-            let split = native::send_id(window, sel(b"contentViewController\0"));
-            let items = native::send_id(split, sel(b"splitViewItems\0"));
-            native::send_id_u64(items, sel(b"objectAtIndex:\0"), 0)
+            let split = zpd_objc::msg_send!(window, zpd_objc::sel!("contentViewController"), () => zpd_objc::Id);
+            let items =
+                zpd_objc::msg_send!(split, zpd_objc::sel!("splitViewItems"), () => zpd_objc::Id);
+            zpd_objc::msg_send!(items, zpd_objc::sel!("objectAtIndex:"), ((0): u64) => zpd_objc::Id)
         }
     }
 
-    fn table(window: native::Id) -> native::Id {
+    fn table(window: zpd_objc::Id) -> zpd_objc::Id {
         // SAFETY: The installed sidebar controller owns a scroll view and table.
         unsafe {
-            let controller = native::send_id(Self::item(window), sel(b"viewController\0"));
-            let scroll = native::send_id(controller, sel(b"view\0"));
-            native::send_id(scroll, sel(b"documentView\0"))
+            let controller = zpd_objc::msg_send!(Self::item(window), zpd_objc::sel!("viewController"), () => zpd_objc::Id);
+            let scroll =
+                zpd_objc::msg_send!(controller, zpd_objc::sel!("view"), () => zpd_objc::Id);
+            zpd_objc::msg_send!(scroll, zpd_objc::sel!("documentView"), () => zpd_objc::Id)
         }
     }
 
-    fn toolbar_items(window: native::Id) -> native::Id {
+    fn toolbar_items(window: zpd_objc::Id) -> zpd_objc::Id {
         // SAFETY: The live window has an NSToolbar whose items are retained by it.
         unsafe {
-            let toolbar = native::send_id(window, sel(b"toolbar\0"));
+            let toolbar =
+                zpd_objc::msg_send!(window, zpd_objc::sel!("toolbar"), () => zpd_objc::Id);
             assert!(!toolbar.is_null());
-            native::send_id(toolbar, sel(b"items\0"))
+            zpd_objc::msg_send!(toolbar, zpd_objc::sel!("items"), () => zpd_objc::Id)
         }
     }
 }
@@ -96,125 +100,106 @@ fn main() {
         // SAFETY: These AppKit objects are owned by the live window on the main thread.
         unsafe {
             let item = SidebarChecks::item(window);
-            let controller = native::send_id(item, sel(b"viewController\0"));
-            let scroll = native::send_id(controller, sel(b"view\0"));
-            let table = native::send_id(scroll, sel(b"documentView\0"));
+            let controller =
+                zpd_objc::msg_send!(item, zpd_objc::sel!("viewController"), () => zpd_objc::Id);
+            let scroll =
+                zpd_objc::msg_send!(controller, zpd_objc::sel!("view"), () => zpd_objc::Id);
+            let table =
+                zpd_objc::msg_send!(scroll, zpd_objc::sel!("documentView"), () => zpd_objc::Id);
             // Verifies a scrollable source-list table with fixed-height, headerless rows.
-            assert!(native::send_bool(scroll, sel(b"hasVerticalScroller\0")));
-            assert_eq!(native::send_i64(table, sel(b"numberOfRows\0")), 3);
-            assert_eq!(native::send_i64(table, sel(b"style\0")), 3);
-            assert_eq!(native::send_f64(table, sel(b"rowHeight\0")), 32.0);
-            assert!(native::send_id(table, sel(b"headerView\0")).is_null());
-            assert_eq!(native::send_i64(table, sel(b"selectedRow\0")), 1);
+            assert!(zpd_objc::msg_send!(scroll, zpd_objc::sel!("hasVerticalScroller"), () => bool));
+            assert_eq!(
+                zpd_objc::msg_send!(table, zpd_objc::sel!("numberOfRows"), () => i64),
+                3
+            );
+            assert_eq!(
+                zpd_objc::msg_send!(table, zpd_objc::sel!("style"), () => i64),
+                3
+            );
+            assert_eq!(
+                zpd_objc::msg_send!(table, zpd_objc::sel!("rowHeight"), () => f64),
+                32.0
+            );
+            assert!(
+                zpd_objc::msg_send!(table, zpd_objc::sel!("headerView"), () => zpd_objc::Id)
+                    .is_null()
+            );
+            assert_eq!(
+                zpd_objc::msg_send!(table, zpd_objc::sel!("selectedRow"), () => i64),
+                1
+            );
             assert!(clicked.borrow().is_empty());
             assert!(events.borrow().is_empty());
             // Verifies native cells contain the title and symbol, with no button rows.
-            let cell = native::send_id_i64_i64_bool(
-                table,
-                sel(b"viewAtColumn:row:makeIfNecessary:\0"),
-                0,
-                1,
-                true,
-            );
+            let cell = zpd_objc::msg_send!(table, zpd_objc::sel!("viewAtColumn:row:makeIfNecessary:"), ((0): i64, (1): i64, (true): bool) => zpd_objc::Id);
             assert!(!cell.is_null());
-            assert!(native::send_bool_id(
-                cell,
-                sel(b"isKindOfClass:\0"),
-                native::class(b"NSTableCellView\0")
-            ));
-            let text = native::send_id(cell, sel(b"textField\0"));
+            assert!(
+                zpd_objc::msg_send!(cell, zpd_objc::sel!("isKindOfClass:"), ((zpd_objc::class!("NSTableCellView")): zpd_objc::Id) => bool)
+            );
+            let text = zpd_objc::msg_send!(cell, zpd_objc::sel!("textField"), () => zpd_objc::Id);
             assert_eq!(
-                native::rust_string(native::send_id(text, sel(b"stringValue\0"))),
+                native::rust_string(
+                    zpd_objc::msg_send!(text, zpd_objc::sel!("stringValue"), () => zpd_objc::Id)
+                ),
                 "Home"
             );
-            let image = native::send_id(cell, sel(b"imageView\0"));
-            assert!(!native::send_id(image, sel(b"image\0")).is_null());
-            let delegate = native::send_id(table, sel(b"delegate\0"));
+            let image = zpd_objc::msg_send!(cell, zpd_objc::sel!("imageView"), () => zpd_objc::Id);
+            assert!(
+                !zpd_objc::msg_send!(image, zpd_objc::sel!("image"), () => zpd_objc::Id).is_null()
+            );
+            let delegate =
+                zpd_objc::msg_send!(table, zpd_objc::sel!("delegate"), () => zpd_objc::Id);
             // Verifies group headings cannot be selected through normal table interaction.
-            assert!(!native::send_bool_id_i64(
-                delegate,
-                sel(b"tableView:shouldSelectRow:\0"),
-                table,
-                0
-            ));
-            assert!(native::send_bool_id_i64(
-                delegate,
-                sel(b"tableView:isGroupRow:\0"),
-                table,
-                0
-            ));
-            assert!(native::send_bool_id_i64(
-                delegate,
-                sel(b"tableView:shouldSelectRow:\0"),
-                table,
-                2
-            ));
+            assert!(
+                !zpd_objc::msg_send!(delegate, zpd_objc::sel!("tableView:shouldSelectRow:"), ((table): zpd_objc::Id, (0): i64) => bool)
+            );
+            assert!(
+                zpd_objc::msg_send!(delegate, zpd_objc::sel!("tableView:isGroupRow:"), ((table): zpd_objc::Id, (0): i64) => bool)
+            );
+            assert!(
+                zpd_objc::msg_send!(delegate, zpd_objc::sel!("tableView:shouldSelectRow:"), ((table): zpd_objc::Id, (2): i64) => bool)
+            );
             // Verifies table selection notifications deliver stable item IDs.
-            let indexes = native::send_id_u64(
-                native::class(b"NSIndexSet\0"),
-                sel(b"indexSetWithIndex:\0"),
-                2,
-            );
-            native::send_void_id_bool(
-                table,
-                sel(b"selectRowIndexes:byExtendingSelection:\0"),
-                indexes,
-                false,
-            );
+            let indexes = zpd_objc::msg_send!(zpd_objc::class!("NSIndexSet"), zpd_objc::sel!("indexSetWithIndex:"), ((2): u64) => zpd_objc::Id);
+            zpd_objc::msg_send!(table, zpd_objc::sel!("selectRowIndexes:byExtendingSelection:"), ((indexes): zpd_objc::Id, (false): bool) => ());
             assert_eq!(&*clicked.borrow(), "settings");
             // Verifies forced group selection and deselection do not emit invalid IDs.
-            let heading = native::send_id_u64(
-                native::class(b"NSIndexSet\0"),
-                sel(b"indexSetWithIndex:\0"),
-                0,
-            );
-            native::send_void_id_bool(
-                table,
-                sel(b"selectRowIndexes:byExtendingSelection:\0"),
-                heading,
-                false,
-            );
-            native::send_void_id(table, sel(b"deselectAll:\0"), native::NIL);
+            let heading = zpd_objc::msg_send!(zpd_objc::class!("NSIndexSet"), zpd_objc::sel!("indexSetWithIndex:"), ((0): u64) => zpd_objc::Id);
+            zpd_objc::msg_send!(table, zpd_objc::sel!("selectRowIndexes:byExtendingSelection:"), ((heading): zpd_objc::Id, (false): bool) => ());
+            zpd_objc::msg_send!(table, zpd_objc::sel!("deselectAll:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
             assert_eq!(&*clicked.borrow(), "settings");
             assert_eq!(&*events.borrow(), &["settings"]);
             // Verifies the automatically installed item uses AppKit's sidebar action.
             let toolbar_items = SidebarChecks::toolbar_items(window);
-            assert_eq!(native::send_u64(toolbar_items, sel(b"count\0")), 1);
-            let toggle = native::send_id_u64(toolbar_items, sel(b"objectAtIndex:\0"), 0);
             assert_eq!(
-                native::send_id(toggle, sel(b"action\0")),
-                sel(b"toggleSidebar:\0")
+                zpd_objc::msg_send!(toolbar_items, zpd_objc::sel!("count"), () => u64),
+                1
+            );
+            let toggle = zpd_objc::msg_send!(toolbar_items, zpd_objc::sel!("objectAtIndex:"), ((0): u64) => zpd_objc::Id);
+            assert_eq!(
+                zpd_objc::msg_send!(toggle, zpd_objc::sel!("action"), () => zpd_objc::Id),
+                zpd_objc::sel!("toggleSidebar:")
             );
             // Verifies the first toolbar item is placed in the window's leading navigation area.
-            assert!(native::send_bool(toggle, sel(b"isNavigational\0")));
-            assert!(native::send_bool(item, sel(b"canCollapse\0")));
+            assert!(zpd_objc::msg_send!(toggle, zpd_objc::sel!("isNavigational"), () => bool));
+            assert!(zpd_objc::msg_send!(item, zpd_objc::sel!("canCollapse"), () => bool));
             // Verifies the actual toolbar action resolves through the responder chain.
-            let app = native::send_id(
-                native::class(b"NSApplication\0"),
-                sel(b"sharedApplication\0"),
+            let app = zpd_objc::msg_send!(zpd_objc::class!("NSApplication"), zpd_objc::sel!("sharedApplication"), () => zpd_objc::Id);
+            let content =
+                zpd_objc::msg_send!(window, zpd_objc::sel!("contentView"), () => zpd_objc::Id);
+            zpd_objc::msg_send!(window, zpd_objc::sel!("makeFirstResponder:"), ((content): zpd_objc::Id) => bool);
+            let action = zpd_objc::msg_send!(toggle, zpd_objc::sel!("action"), () => zpd_objc::Id);
+            let target = zpd_objc::msg_send!(toggle, zpd_objc::sel!("target"), () => zpd_objc::Id);
+            assert!(
+                zpd_objc::msg_send!(app, zpd_objc::sel!("sendAction:to:from:"), ((action): zpd_objc::Id, (target): zpd_objc::Id, (toggle): zpd_objc::Id) => bool)
             );
-            let content = native::send_id(window, sel(b"contentView\0"));
-            native::send_bool_id(window, sel(b"makeFirstResponder:\0"), content);
-            let action = native::send_id(toggle, sel(b"action\0"));
-            let target = native::send_id(toggle, sel(b"target\0"));
-            assert!(native::send_bool_id_id_id(
-                app,
-                sel(b"sendAction:to:from:\0"),
-                action,
-                target,
-                toggle
-            ));
-            assert!(native::send_bool(item, sel(b"isCollapsed\0")));
+            assert!(zpd_objc::msg_send!(item, zpd_objc::sel!("isCollapsed"), () => bool));
             // Verifies the same toolbar action can reopen the sidebar.
-            assert!(native::send_bool_id_id_id(
-                app,
-                sel(b"sendAction:to:from:\0"),
-                action,
-                target,
-                toggle
-            ));
-            assert!(!native::send_bool(item, sel(b"isCollapsed\0")));
-            native::send_void_bool(item, sel(b"setCollapsed:\0"), true);
+            assert!(
+                zpd_objc::msg_send!(app, zpd_objc::sel!("sendAction:to:from:"), ((action): zpd_objc::Id, (target): zpd_objc::Id, (toggle): zpd_objc::Id) => bool)
+            );
+            assert!(!zpd_objc::msg_send!(item, zpd_objc::sel!("isCollapsed"), () => bool));
+            zpd_objc::msg_send!(item, zpd_objc::sel!("setCollapsed:"), ((true): bool) => ());
         }
     });
     // Verifies reactive sidebar replacement preserves collapse state and avoids duplicate toggles.
@@ -224,12 +209,11 @@ fn main() {
     SidebarChecks::with_window(|window| {
         // SAFETY: Both the split item and toolbar belong to the live window.
         unsafe {
-            assert!(native::send_bool(
-                SidebarChecks::item(window),
-                sel(b"isCollapsed\0")
-            ));
+            assert!(
+                zpd_objc::msg_send!(SidebarChecks::item(window), zpd_objc::sel!("isCollapsed"), () => bool)
+            );
             assert_eq!(
-                native::send_u64(SidebarChecks::toolbar_items(window), sel(b"count\0")),
+                zpd_objc::msg_send!(SidebarChecks::toolbar_items(window), zpd_objc::sel!("count"), () => u64),
                 1
             );
         }
@@ -238,7 +222,7 @@ fn main() {
         // SAFETY: A replacement sidebar owns a new live NSTableView.
         unsafe {
             assert_eq!(
-                native::send_i64(SidebarChecks::table(window), sel(b"selectedRow\0")),
+                zpd_objc::msg_send!(SidebarChecks::table(window), zpd_objc::sel!("selectedRow"), () => i64),
                 2
             );
         }
@@ -256,11 +240,19 @@ fn main() {
     SidebarChecks::with_window(|window| {
         // SAFETY: The split item and table belong to the live test window.
         unsafe {
-            native::send_void_bool(SidebarChecks::item(window), sel(b"setCollapsed:\0"), false);
+            zpd_objc::msg_send!(SidebarChecks::item(window), zpd_objc::sel!("setCollapsed:"), ((false): bool) => ());
             let table = SidebarChecks::table(window);
-            assert_eq!(native::send_i64(table, sel(b"numberOfRows\0")), 103);
-            native::send_void_i64(table, sel(b"scrollRowToVisible:\0"), 102);
-            assert!(native::send_rect(table, sel(b"visibleRect\0")).origin.y > 0.0);
+            assert_eq!(
+                zpd_objc::msg_send!(table, zpd_objc::sel!("numberOfRows"), () => i64),
+                103
+            );
+            zpd_objc::msg_send!(table, zpd_objc::sel!("scrollRowToVisible:"), ((102): i64) => ());
+            assert!(
+                zpd_objc::msg_send!(table, zpd_objc::sel!("visibleRect"), () => native::Rect)
+                    .origin
+                    .y
+                    > 0.0
+            );
         }
     });
     // Verifies an empty sidebar has no selected row and emits no initialization callback.
@@ -273,8 +265,14 @@ fn main() {
         // SAFETY: The empty table remains owned by the installed sidebar.
         unsafe {
             let table = SidebarChecks::table(window);
-            assert_eq!(native::send_i64(table, sel(b"numberOfRows\0")), 0);
-            assert_eq!(native::send_i64(table, sel(b"selectedRow\0")), -1);
+            assert_eq!(
+                zpd_objc::msg_send!(table, zpd_objc::sel!("numberOfRows"), () => i64),
+                0
+            );
+            assert_eq!(
+                zpd_objc::msg_send!(table, zpd_objc::sel!("selectedRow"), () => i64),
+                -1
+            );
         }
     });
     // Verifies clearing the delegate releases its captured Rust callback state.
@@ -293,21 +291,19 @@ fn main() {
     SidebarChecks::with_window(|window| {
         // SAFETY: The window remains live after sidebar removal.
         unsafe {
-            assert!(native::send_id(window, sel(b"toolbar\0")).is_null());
+            assert!(
+                zpd_objc::msg_send!(window, zpd_objc::sel!("toolbar"), () => zpd_objc::Id)
+                    .is_null()
+            );
         }
     });
     // Verifies an existing toolbar and its unrelated items survive sidebar installation/removal.
-    let toolbar = native::alloc_init(b"NSToolbar\0");
+    let toolbar = native::alloc_init(zpd_objc::class!("NSToolbar"));
     SidebarChecks::with_window(|window| {
         // SAFETY: toolbar is retained for the lifetime of these native checks.
         unsafe {
-            native::send_void_id(window, sel(b"setToolbar:\0"), toolbar.as_ptr());
-            native::send_void_id_i64(
-                toolbar.as_ptr(),
-                sel(b"insertItemWithItemIdentifier:atIndex:\0"),
-                native::nsstring("NSToolbarFlexibleSpaceItem").as_ptr(),
-                0,
-            );
+            zpd_objc::msg_send!(window, zpd_objc::sel!("setToolbar:"), ((toolbar.as_ptr()): zpd_objc::Id) => ());
+            zpd_objc::msg_send!(toolbar.as_ptr(), zpd_objc::sel!("insertItemWithItemIdentifier:atIndex:"), ((native::nsstring("NSToolbarFlexibleSpaceItem").as_ptr()): zpd_objc::Id, (0): i64) => ());
         }
     });
     window
@@ -317,9 +313,12 @@ fn main() {
     SidebarChecks::with_window(|window| {
         // SAFETY: The original toolbar is retained by both the window and this test.
         unsafe {
-            assert_eq!(native::send_id(window, sel(b"toolbar\0")), toolbar.as_ptr());
             assert_eq!(
-                native::send_u64(SidebarChecks::toolbar_items(window), sel(b"count\0")),
+                zpd_objc::msg_send!(window, zpd_objc::sel!("toolbar"), () => zpd_objc::Id),
+                toolbar.as_ptr()
+            );
+            assert_eq!(
+                zpd_objc::msg_send!(SidebarChecks::toolbar_items(window), zpd_objc::sel!("count"), () => u64),
                 1
             );
         }

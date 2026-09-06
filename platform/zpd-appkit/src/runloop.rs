@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::actor::{ActorRef, ActorTree, ApplicationMessage, EventRouteToken, WindowEvent};
-use crate::native::{self, CFRunLoopSourceContext, Id, Strong};
+use crate::native::{self, CFRunLoopSourceContext};
 use crate::ui::{CommandError, CommandSet, Window, WindowError};
+use zpd_objc::{Id, Strong};
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -325,26 +326,22 @@ unsafe fn release_state<D>(raw: *const c_void) {
     unsafe { drop(Rc::from_raw(raw.cast::<DelegateState<D>>())) };
 }
 unsafe fn callbacks(object: Id) -> *mut AppCallbacks {
-    unsafe { native::get_pointer_ivar(object, c"_zpdCallbacks".as_ptr()) }
+    unsafe { zpd_objc::get_pointer_ivar(object, c"_zpdCallbacks".as_ptr()) }
 }
-unsafe extern "C" fn did_launch(object: Id, _: native::Sel, _: Id) {
+unsafe extern "C" fn did_launch(object: Id, _: zpd_objc::Sel, _: Id) {
     if let Some(cb) = unsafe { callbacks(object).as_ref() } {
         unsafe { (cb.launch)(cb.state) }
     }
 }
-unsafe extern "C" fn will_terminate(object: Id, _: native::Sel, _: Id) {
+unsafe extern "C" fn will_terminate(object: Id, _: zpd_objc::Sel, _: Id) {
     if let Some(cb) = unsafe { callbacks(object).as_ref() } {
         unsafe { (cb.terminate)(cb.state) }
     }
 }
-unsafe extern "C" fn delegate_dealloc(object: Id, _: native::Sel) {
+unsafe extern "C" fn delegate_dealloc(object: Id, _: zpd_objc::Sel) {
     unsafe { release_callbacks(object) };
     unsafe {
-        native::send_super_void(
-            object,
-            native::class(b"NSObject\0"),
-            native::sel(b"dealloc\0"),
-        )
+        zpd_objc::msg_send_super!(object, zpd_objc::class!("NSObject"), zpd_objc::sel!("dealloc"), () => ())
     };
 }
 
@@ -353,7 +350,7 @@ unsafe fn release_callbacks(object: Id) {
     if !cb.is_null() {
         // SAFETY: Clearing the ivar transfers the sole callback table allocation to Rust.
         unsafe {
-            native::set_pointer_ivar(
+            zpd_objc::set_pointer_ivar(
                 object,
                 c"_zpdCallbacks".as_ptr(),
                 std::ptr::null_mut::<AppCallbacks>(),
@@ -364,44 +361,19 @@ unsafe fn release_callbacks(object: Id) {
         unsafe { (cb.release)(cb.state) };
     }
 }
-fn delegate_class() -> native::Class {
+fn delegate_class() -> zpd_objc::Class {
     use std::sync::OnceLock;
     static CLASS: OnceLock<usize> = OnceLock::new();
-    *CLASS.get_or_init(|| unsafe {
-        let class = native::objc_allocateClassPair(
-            native::class(b"NSObject\0"),
-            c"ZpdRustApplicationDelegate".as_ptr(),
-            0,
-        );
-        assert!(!class.is_null());
-        assert!(native::class_addIvar(
-            class,
-            c"_zpdCallbacks".as_ptr(),
-            std::mem::size_of::<Id>(),
-            3,
-            c"^v".as_ptr()
-        ));
-        native::add_method(
-            class,
-            b"applicationDidFinishLaunching:\0",
-            did_launch as unsafe extern "C" fn(_, _, _),
-            b"v@:@\0",
-        );
-        native::add_method(
-            class,
-            b"applicationWillTerminate:\0",
-            will_terminate as unsafe extern "C" fn(_, _, _),
-            b"v@:@\0",
-        );
-        native::add_method(
-            class,
-            b"dealloc\0",
-            delegate_dealloc as unsafe extern "C" fn(_, _),
-            b"v@:\0",
-        );
-        native::objc_registerClassPair(class);
-        class as usize
-    }) as native::Class
+    *CLASS.get_or_init(|| {
+        zpd_objc::decl!(ZpdRustApplicationDelegate: [zpd_objc::class!("NSObject")] {
+            fields { _zpdCallbacks: ptr }
+            methods {
+                "applicationDidFinishLaunching:": "v@:@" => did_launch,
+                "applicationWillTerminate:": "v@:@" => will_terminate,
+                "dealloc": "v@:" => delegate_dealloc,
+            }
+        }) as usize
+    }) as zpd_objc::Class
 }
 
 struct ActiveState {
@@ -428,10 +400,7 @@ impl RunLoopScheduler {
 }
 fn shared_application() -> Id {
     unsafe {
-        native::send_id(
-            native::class(b"NSApplication\0"),
-            native::sel(b"sharedApplication\0"),
-        )
+        zpd_objc::msg_send!(zpd_objc::class!("NSApplication"), zpd_objc::sel!("sharedApplication"), () => zpd_objc::Id)
     }
 }
 
@@ -472,7 +441,7 @@ impl<D: ApplicationDelegate> Application<D> {
             let app = unsafe { Strong::retain(shared_application()) }
                 .ok_or(ApplicationError::NativeCreationFailed)?;
             unsafe {
-                native::send_void_i64(app.as_ptr(), native::sel(b"setActivationPolicy:\0"), 0)
+                zpd_objc::msg_send!(app.as_ptr(), zpd_objc::sel!("setActivationPolicy:"), ((0): i64) => ())
             };
             let tree = root_tree(&app);
             let actor = tree.root();
@@ -487,11 +456,8 @@ impl<D: ApplicationDelegate> Application<D> {
             });
             let class = delegate_class();
             let native_delegate = unsafe {
-                let object = native::send_id(
-                    native::send_id(class, native::sel(b"alloc\0")),
-                    native::sel(b"init\0"),
-                );
-                native::set_pointer_ivar(
+                let object = zpd_objc::msg_send!(zpd_objc::msg_send!(class, zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("init"), () => zpd_objc::Id);
+                zpd_objc::set_pointer_ivar(
                     object,
                     c"_zpdCallbacks".as_ptr(),
                     Box::into_raw(callback_table),
@@ -499,13 +465,9 @@ impl<D: ApplicationDelegate> Application<D> {
                 Strong::from_retained(object).ok_or(ApplicationError::NativeCreationFailed)?
             };
             unsafe {
-                native::send_void_id(
-                    actor
+                zpd_objc::msg_send!(actor
                         .with(|id| id)
-                        .map_err(|_| ApplicationError::NotActive)?,
-                    native::sel(b"setDelegate:\0"),
-                    native_delegate.as_ptr(),
-                )
+                        .map_err(|_| ApplicationError::NotActive)?, zpd_objc::sel!("setDelegate:"), ((native_delegate.as_ptr()): zpd_objc::Id) => ())
             };
             let delegate_actor = tree
                 .insert_child(&actor, native_delegate)
@@ -634,10 +596,10 @@ impl<D: ApplicationDelegate> Drop for Application<D> {
         unsafe {
             let _ = self
                 .actor
-                .with(|app| native::send_void_id(app, native::sel(b"setMainMenu:\0"), native::NIL));
+                .with(|app| zpd_objc::msg_send!(app, zpd_objc::sel!("setMainMenu:"), ((zpd_objc::NIL): zpd_objc::Id) => ()));
         }
         let _ = self.actor.with(|app| unsafe {
-            native::send_void_id(app, native::sel(b"setDelegate:\0"), native::NIL)
+            zpd_objc::msg_send!(app, zpd_objc::sel!("setDelegate:"), ((zpd_objc::NIL): zpd_objc::Id) => ())
         });
         self.delegate.remove();
         // SAFETY: Application owns the delegate binding, CF source, and callback allocation.
@@ -663,22 +625,14 @@ pub(crate) fn send_application_message(
     actor.with(|app| unsafe {
         match message {
             ApplicationMessage::Run => {
-                native::send_void_i64(app, native::sel(b"activateIgnoringOtherApps:\0"), 1);
-                native::send_void(app, native::sel(b"run\0"));
+                zpd_objc::msg_send!(app, zpd_objc::sel!("activateIgnoringOtherApps:"), ((1): i64) => ());
+                zpd_objc::msg_send!(app, zpd_objc::sel!("run"), () => ());
             }
             ApplicationMessage::Stop => {
-                native::send_void_id(app, native::sel(b"stop:\0"), native::NIL);
-                let event = native::send_application_event(
-                    native::class(b"NSEvent\0"),
-                    native::sel(b"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:\0"),
-                );
+                zpd_objc::msg_send!(app, zpd_objc::sel!("stop:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
+                let event = zpd_objc::msg_send!(zpd_objc::class!("NSEvent"), zpd_objc::sel!("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"), ((15): u64, (native::Point::default()): native::Point, (0): u64, (0.0): f64, (0): i64, (zpd_objc::NIL): zpd_objc::Id, (0): i16, (0): i64, (0): i64) => zpd_objc::Id);
                 if !event.is_null() {
-                    native::send_void_id_bool(
-                        app,
-                        native::sel(b"postEvent:atStart:\0"),
-                        event,
-                        false,
-                    );
+                    zpd_objc::msg_send!(app, zpd_objc::sel!("postEvent:atStart:"), ((event): zpd_objc::Id, (false): bool) => ());
                 }
                 native::CFRunLoopStop(native::CFRunLoopGetMain());
                 native::CFRunLoopWakeUp(native::CFRunLoopGetMain());

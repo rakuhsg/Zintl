@@ -1,6 +1,7 @@
 use crate::actor::WindowEventKind;
-use crate::native::{self, Strong};
+use crate::native;
 use crate::runloop::{Application, ApplicationDelegate};
+use zpd_objc::Strong;
 
 use super::callback;
 use super::view::{AsView, ViewActor, ViewError, ViewRef};
@@ -16,12 +17,9 @@ impl Button {
         let title = native::nsstring(title);
         // SAFETY: NSButton's title constructor returns an autoreleased live object, retained here.
         let native = unsafe {
-            let value = native::send_id(
-                native::send_id(native::class(b"NSButton\0"), native::sel(b"alloc\0")),
-                native::sel(b"init\0"),
-            );
+            let value = zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSButton"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("init"), () => zpd_objc::Id);
             let value = Strong::from_retained(value).ok_or(ViewError::NativeCreationFailed)?;
-            native::send_void_id(value.as_ptr(), native::sel(b"setTitle:\0"), title.as_ptr());
+            zpd_objc::msg_send!(value.as_ptr(), zpd_objc::sel!("setTitle:"), ((title.as_ptr()): zpd_objc::Id) => ());
             value
         };
         let view = ViewActor::new(application, native);
@@ -39,19 +37,15 @@ impl Button {
             .map_err(ViewError::from)?;
         view.as_view().with(|button| {
             target.with(|target| unsafe {
-                native::send_void_id(button, native::sel(b"setTarget:\0"), target);
-                native::send_void_id(
-                    button,
-                    native::sel(b"setAction:\0"),
-                    native::sel(b"invoke:\0"),
-                );
+                zpd_objc::msg_send!(button, zpd_objc::sel!("setTarget:"), ((target): zpd_objc::Id) => ());
+                zpd_objc::msg_send!(button, zpd_objc::sel!("setAction:"), ((zpd_objc::sel!("invoke:")): zpd_objc::Id) => ());
             })
         })??;
         application
             .tree()
             .add_teardown(view.actor(), |button| unsafe {
-                native::send_void_id(button, native::sel(b"setTarget:\0"), native::NIL);
-                native::send_void_id(button, native::sel(b"setAction:\0"), native::NIL);
+                zpd_objc::msg_send!(button, zpd_objc::sel!("setTarget:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
+                zpd_objc::msg_send!(button, zpd_objc::sel!("setAction:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
             })
             .map_err(ViewError::from)?;
         Ok(Self { view })
@@ -59,7 +53,7 @@ impl Button {
     pub fn set_title(&self, title: &str) -> Result<(), ViewError> {
         let title = native::nsstring(title);
         self.view.as_view().with(|button| unsafe {
-            native::send_void_id(button, native::sel(b"setTitle:\0"), title.as_ptr())
+            zpd_objc::msg_send!(button, zpd_objc::sel!("setTitle:"), ((title.as_ptr()): zpd_objc::Id) => ())
         })
     }
 }

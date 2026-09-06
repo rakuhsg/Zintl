@@ -1,10 +1,11 @@
 use super::{SidebarError, WindowError};
 use crate::actor::ActorRef;
-use crate::native::{self, Strong};
+use crate::native;
+use zpd_objc::Strong;
 
 #[link(name = "AppKit", kind = "framework")]
 unsafe extern "C" {
-    static NSToolbarToggleSidebarItemIdentifier: native::Id;
+    static NSToolbarToggleSidebarItemIdentifier: zpd_objc::Id;
 }
 
 /// Owns only the toolbar or item added for the sidebar.
@@ -20,49 +21,28 @@ impl SidebarToolbar {
             .with(|window| {
                 // SAFETY: The window is live; AppKit toolbar selectors use the declared ABI.
                 unsafe {
-                    let existing = native::send_id(window, native::sel(b"toolbar\0"));
+                    let existing = zpd_objc::msg_send!(window, zpd_objc::sel!("toolbar"), () => zpd_objc::Id);
                     let created = existing.is_null();
                     let toolbar = if created {
                         let identifier = native::nsstring("zintl.sidebar");
-                        Strong::from_retained(native::send_id_id(
-                            native::send_id(native::class(b"NSToolbar\0"), native::sel(b"alloc\0")),
-                            native::sel(b"initWithIdentifier:\0"),
-                            identifier.as_ptr(),
-                        ))
+                        Strong::from_retained(zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSToolbar"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("initWithIdentifier:"), ((identifier.as_ptr()): zpd_objc::Id) => zpd_objc::Id))
                     } else {
                         Strong::retain(existing)
                     }
                     .ok_or(SidebarError::NativeCreationFailed)?;
                     let inserted = Self::toggle_index(&toolbar).is_none();
                     if created {
-                        native::send_void_i64(
-                            toolbar.as_ptr(),
-                            native::sel(b"setDisplayMode:\0"),
-                            2,
-                        );
-                        native::send_void_id(
-                            window,
-                            native::sel(b"setToolbar:\0"),
-                            toolbar.as_ptr(),
-                        );
+                        zpd_objc::msg_send!(toolbar.as_ptr(), zpd_objc::sel!("setDisplayMode:"), ((2): i64) => ());
+                        zpd_objc::msg_send!(window, zpd_objc::sel!("setToolbar:"), ((toolbar.as_ptr()): zpd_objc::Id) => ());
                     }
                     if inserted {
-                        native::send_void_id_i64(
-                            toolbar.as_ptr(),
-                            native::sel(b"insertItemWithItemIdentifier:atIndex:\0"),
-                            NSToolbarToggleSidebarItemIdentifier,
-                            0,
-                        );
+                        zpd_objc::msg_send!(toolbar.as_ptr(), zpd_objc::sel!("insertItemWithItemIdentifier:atIndex:"), ((NSToolbarToggleSidebarItemIdentifier): zpd_objc::Id, (0): i64) => ());
                     }
                     if let Some(index) = Self::toggle_index(&toolbar) {
-                        let items = native::send_id(toolbar.as_ptr(), native::sel(b"items\0"));
-                        let toggle = native::send_id_u64(
-                            items,
-                            native::sel(b"objectAtIndex:\0"),
-                            index as u64,
-                        );
+                        let items = zpd_objc::msg_send!(toolbar.as_ptr(), zpd_objc::sel!("items"), () => zpd_objc::Id);
+                        let toggle = zpd_objc::msg_send!(items, zpd_objc::sel!("objectAtIndex:"), ((index as u64): u64) => zpd_objc::Id);
                         // Navigation items occupy the leading side of the window toolbar.
-                        native::send_void_bool(toggle, native::sel(b"setNavigational:\0"), true);
+                        zpd_objc::msg_send!(toggle, zpd_objc::sel!("setNavigational:"), ((true): bool) => ());
                     }
                     Ok(Self {
                         toolbar,
@@ -77,15 +57,12 @@ impl SidebarToolbar {
     fn toggle_index(toolbar: &Strong) -> Option<i64> {
         // SAFETY: NSToolbar owns its items, whose identifiers are NSString objects.
         unsafe {
-            let items = native::send_id(toolbar.as_ptr(), native::sel(b"items\0"));
-            (0..native::send_u64(items, native::sel(b"count\0"))).find_map(|index| {
-                let item = native::send_id_u64(items, native::sel(b"objectAtIndex:\0"), index);
-                let identifier = native::send_id(item, native::sel(b"itemIdentifier\0"));
-                native::send_bool_id(
-                    identifier,
-                    native::sel(b"isEqualToString:\0"),
-                    NSToolbarToggleSidebarItemIdentifier,
-                )
+            let items =
+                zpd_objc::msg_send!(toolbar.as_ptr(), zpd_objc::sel!("items"), () => zpd_objc::Id);
+            (0..zpd_objc::msg_send!(items, zpd_objc::sel!("count"), () => u64)).find_map(|index| {
+                let item = zpd_objc::msg_send!(items, zpd_objc::sel!("objectAtIndex:"), ((index): u64) => zpd_objc::Id);
+                let identifier = zpd_objc::msg_send!(item, zpd_objc::sel!("itemIdentifier"), () => zpd_objc::Id);
+                zpd_objc::msg_send!(identifier, zpd_objc::sel!("isEqualToString:"), ((NSToolbarToggleSidebarItemIdentifier): zpd_objc::Id) => bool)
                 .then_some(index as i64)
             })
         }
@@ -99,17 +76,13 @@ impl SidebarToolbar {
                     if self.inserted
                         && let Some(index) = Self::toggle_index(&self.toolbar)
                     {
-                        native::send_void_i64(
-                            self.toolbar.as_ptr(),
-                            native::sel(b"removeItemAtIndex:\0"),
-                            index,
-                        );
+                        zpd_objc::msg_send!(self.toolbar.as_ptr(), zpd_objc::sel!("removeItemAtIndex:"), ((index): i64) => ());
                     }
                     if self.created
-                        && native::send_id(window, native::sel(b"toolbar\0"))
+                        && zpd_objc::msg_send!(window, zpd_objc::sel!("toolbar"), () => zpd_objc::Id)
                             == self.toolbar.as_ptr()
                     {
-                        native::send_void_id(window, native::sel(b"setToolbar:\0"), native::NIL);
+                        zpd_objc::msg_send!(window, zpd_objc::sel!("setToolbar:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
                     }
                 }
             })

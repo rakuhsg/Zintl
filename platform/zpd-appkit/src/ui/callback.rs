@@ -2,17 +2,17 @@ use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
 
-use crate::native::{self, Id, Strong};
+use zpd_objc::{Id, Strong};
 
 struct Callback {
     invoke: RefCell<Box<dyn FnMut(Id)>>,
 }
 
 unsafe fn callback(object: Id) -> *mut Callback {
-    unsafe { native::get_pointer_ivar(object, c"_zpdCallback".as_ptr()) }
+    unsafe { zpd_objc::get_pointer_ivar(object, c"_zpdCallback".as_ptr()) }
 }
 
-unsafe extern "C" fn invoke(object: Id, _: native::Sel, sender: Id) {
+unsafe extern "C" fn invoke(object: Id, _: zpd_objc::Sel, sender: Id) {
     let callback = unsafe { callback(object).as_ref() };
     let Some(callback) = callback else { return };
     if catch_unwind(AssertUnwindSafe(|| {
@@ -27,14 +27,10 @@ unsafe extern "C" fn invoke(object: Id, _: native::Sel, sender: Id) {
     }
 }
 
-unsafe extern "C" fn dealloc(object: Id, _: native::Sel) {
+unsafe extern "C" fn dealloc(object: Id, _: zpd_objc::Sel) {
     unsafe { release(object) };
     unsafe {
-        native::send_super_void(
-            object,
-            native::class(b"NSObject\0"),
-            native::sel(b"dealloc\0"),
-        )
+        zpd_objc::msg_send_super!(object, zpd_objc::class!("NSObject"), zpd_objc::sel!("dealloc"), () => ())
     };
 }
 
@@ -43,7 +39,7 @@ pub(crate) unsafe fn release(object: Id) {
     if !callback.is_null() {
         // SAFETY: Clearing the ivar transfers the sole allocation back to Rust.
         unsafe {
-            native::set_pointer_ivar(
+            zpd_objc::set_pointer_ivar(
                 object,
                 c"_zpdCallback".as_ptr(),
                 std::ptr::null_mut::<Callback>(),
@@ -54,54 +50,26 @@ pub(crate) unsafe fn release(object: Id) {
     }
 }
 
-fn target_class() -> native::Class {
+fn target_class() -> zpd_objc::Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
-    *CLASS.get_or_init(|| unsafe {
-        let class = native::objc_allocateClassPair(
-            native::class(b"NSObject\0"),
-            c"ZpdRustActionTarget".as_ptr(),
-            0,
-        );
-        assert!(!class.is_null());
-        assert!(native::class_addIvar(
-            class,
-            c"_zpdCallback".as_ptr(),
-            std::mem::size_of::<Id>(),
-            3,
-            c"^v".as_ptr()
-        ));
-        native::add_method(
-            class,
-            b"invoke:\0",
-            invoke as unsafe extern "C" fn(_, _, _),
-            b"v@:@\0",
-        );
-        native::add_method(
-            class,
-            b"controlTextDidChange:\0",
-            invoke as unsafe extern "C" fn(_, _, _),
-            b"v@:@\0",
-        );
-        native::add_method(
-            class,
-            b"dealloc\0",
-            dealloc as unsafe extern "C" fn(_, _),
-            b"v@:\0",
-        );
-        native::objc_registerClassPair(class);
-        class as usize
-    }) as native::Class
+    *CLASS.get_or_init(|| {
+        zpd_objc::decl!(ZpdRustActionTarget: [zpd_objc::class!("NSObject")] {
+            fields { _zpdCallback: ptr }
+            methods {
+                "invoke:": "v@:@" => invoke,
+                "controlTextDidChange:": "v@:@" => invoke,
+                "dealloc": "v@:" => dealloc,
+            }
+        }) as usize
+    }) as zpd_objc::Class
 }
 
 pub(crate) fn target(callback: impl FnMut(Id) + 'static) -> Strong {
     let class = target_class();
     // SAFETY: The registered target class owns the installed callback pointer.
     unsafe {
-        let object = native::send_id(
-            native::send_id(class, native::sel(b"alloc\0")),
-            native::sel(b"init\0"),
-        );
-        native::set_pointer_ivar(
+        let object = zpd_objc::msg_send!(zpd_objc::msg_send!(class, zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("init"), () => zpd_objc::Id);
+        zpd_objc::set_pointer_ivar(
             object,
             c"_zpdCallback".as_ptr(),
             Box::into_raw(Box::new(Callback {
@@ -116,6 +84,8 @@ pub(crate) fn target(callback: impl FnMut(Id) + 'static) -> Strong {
 mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
+
+    use crate::native;
 
     struct DropProbe(Rc<Cell<usize>>);
     impl Drop for DropProbe {
@@ -139,8 +109,8 @@ mod tests {
     #[test]
     fn actor_owned_target_replacement_releases_each_callback_once() {
         // Verifies Actor attachment replacement drops old and current callback state once each.
-        let tree = crate::actor::ActorTree::new(crate::native::alloc_init(b"NSObject\0"));
-        let owner = tree.insert_root(crate::native::alloc_init(b"NSObject\0"));
+        let tree = crate::actor::ActorTree::new(native::alloc_init(zpd_objc::class!("NSObject")));
+        let owner = tree.insert_root(native::alloc_init(zpd_objc::class!("NSObject")));
         let drops = Rc::new(Cell::new(0));
         let first = DropProbe(drops.clone());
         tree.replace_owned(

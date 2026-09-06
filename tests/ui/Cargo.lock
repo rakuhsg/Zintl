@@ -158,3 +158,10 @@ dependencies = [
 [[package]]
 name = "zpd-appkit"
 version = "0.1.0"
+dependencies = [
+ "zpd-objc",
+]
+
+[[package]]
+name = "zpd-objc"
+version = "0.1.0"

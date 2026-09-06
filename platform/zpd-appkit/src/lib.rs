@@ -11,24 +11,18 @@ pub mod ui;
 
 /// Runs an operation inside an Objective-C autorelease pool.
 pub fn with_autorelease_pool<R>(operation: impl FnOnce() -> R) -> R {
-    struct Pool(native::Id);
+    struct Pool(zpd_objc::Id);
 
     impl Drop for Pool {
         fn drop(&mut self) {
             // SAFETY: The pool was returned by NSAutoreleasePool init and is drained once.
-            unsafe { native::send_void(self.0, native::sel(b"drain\0")) };
+            unsafe { zpd_objc::msg_send!(self.0, zpd_objc::sel!("drain"), () => ()) };
         }
     }
 
     // SAFETY: NSAutoreleasePool implements the parameterless alloc/init methods.
     let pool = unsafe {
-        native::send_id(
-            native::send_id(
-                native::class(b"NSAutoreleasePool\0"),
-                native::sel(b"alloc\0"),
-            ),
-            native::sel(b"init\0"),
-        )
+        zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSAutoreleasePool"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("init"), () => zpd_objc::Id)
     };
     assert!(!pool.is_null(), "NSAutoreleasePool initialization failed");
     let _pool = Pool(pool);

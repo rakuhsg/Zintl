@@ -6,6 +6,9 @@ license.workspace = true
 [features]
 wgpu = []
 
+[dependencies]
+zpd-objc = { path = "../zpd-objc" }
+
 [[test]]
 name = "native"
 path = "tests/native.rs"
