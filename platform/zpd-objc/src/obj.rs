@@ -1,3 +1,43 @@
+use std::ffi::c_void;
+use std::ptr::NonNull;
+
+use crate::ffi::*;
+
+pub struct Strong(NonNull<c_void>);
+
+impl Strong {
+    pub unsafe fn from_retained(raw: Id) -> Option<Self> {
+        NonNull::new(raw).map(Self)
+    }
+
+    pub unsafe fn retain(raw: Id) -> Option<Self> {
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: The caller supplied a live Objective-C object.
+        let raw = unsafe { objc_retain(raw) };
+        unsafe { Self::from_retained(raw) }
+    }
+
+    pub fn as_ptr(&self) -> Id {
+        self.0.as_ptr()
+    }
+}
+
+impl Clone for Strong {
+    fn clone(&self) -> Self {
+        // SAFETY: self owns a live +1 reference.
+        unsafe { Self::retain(self.as_ptr()).expect("retaining a live object cannot return nil") }
+    }
+}
+
+impl Drop for Strong {
+    fn drop(&mut self) {
+        // SAFETY: This consumes exactly one owned Objective-C reference.
+        unsafe { objc_release(self.as_ptr()) };
+    }
+}
+
 #[macro_export]
 macro_rules! decl {
     (
@@ -102,10 +142,33 @@ macro_rules! decl {
     };
 }
 
+#[macro_export]
+macro_rules! invoke {
+    (
+        $class:expr,
+        $receiver:expr,
+        $selector:expr,
+        ( $( $argument:ident : $type:ty ),* $(,)? ) => $return_type:ty
+    ) => {{
+        let class: $crate::ffi::Class = $class;
+        let receiver: $crate::ffi::Id = $receiver;
+        let selector: $crate::ffi::Sel = $selector;
+        let method = $crate::ffi::class_getInstanceMethod(class, selector);
+        assert!(!method.is_null(), "Objective-C instance method not found");
+        let implementation = $crate::ffi::method_getImplementation(method);
+        let implementation: unsafe extern "C" fn(
+            $crate::ffi::Id,
+            $crate::ffi::Sel,
+            $( $type ),*
+        ) -> $return_type = ::std::mem::transmute(implementation);
+        implementation(receiver, selector, $( $argument ),*)
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use crate::ffi;
-    use std::ffi::{c_char, c_long, c_void};
+    use std::ffi::{c_char, c_long};
 
     unsafe extern "C" fn inherited_value(_: ffi::Id, _: ffi::Sel) -> c_long {
         1
@@ -150,21 +213,24 @@ mod tests {
         // SAFETY: The classes and selector were registered above.
         unsafe {
             let selector = ffi::sel_registerName(c"value".as_ptr());
-            assert_eq!(invoke_long_method(inherited_class, selector), 1);
-            assert_eq!(invoke_long_method(overridden_class, selector), 2);
+            assert_eq!(
+                invoke!(
+                    inherited_class,
+                    std::ptr::null_mut(),
+                    selector,
+                    () => c_long
+                ),
+                1
+            );
+            assert_eq!(
+                invoke!(
+                    overridden_class,
+                    std::ptr::null_mut(),
+                    selector,
+                    () => c_long
+                ),
+                2
+            );
         }
-    }
-
-    unsafe fn invoke_long_method(class: ffi::Class, selector: ffi::Sel) -> c_long {
-        // SAFETY: The caller provides a class containing a no-argument, long-returning method.
-        let method = unsafe { ffi::class_getInstanceMethod(class, selector) };
-        assert!(!method.is_null());
-        // SAFETY: The method is non-null and its encoding is q@:.
-        let implementation = unsafe { ffi::method_getImplementation(method) };
-        // SAFETY: The method encoding matches this concrete function pointer type.
-        let implementation: unsafe extern "C" fn(ffi::Id, ffi::Sel) -> c_long =
-            unsafe { std::mem::transmute(implementation) };
-        // SAFETY: The test implementations do not dereference the receiver.
-        unsafe { implementation(std::ptr::null_mut::<c_void>(), selector) }
     }
 }
