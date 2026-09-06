@@ -58,6 +58,7 @@ pub enum WindowEventKind {
     DidClose,
     ButtonClicked,
     TextChanged { value: String },
+    SidebarSelectionChanged { id: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

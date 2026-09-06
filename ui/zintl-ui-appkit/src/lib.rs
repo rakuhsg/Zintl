@@ -1,5 +1,8 @@
 //! AppKit renderer for Zintl UI trees.
 
+mod sidebar;
+pub use sidebar::{Sidebar, SidebarItem, SidebarSection};
+
 use zintl_ui::renderer::RenderNode;
 use zintl_ui_layout::LayoutStyle;
 pub use zpd_appkit::actor::WindowEventKind as AppKitEvent;
@@ -37,6 +40,7 @@ pub enum ViewKind {
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
     Window {
+        sidebar: Option<Sidebar>,
         bounds: Rect,
         title: String,
         id: Option<String>,
@@ -88,6 +92,7 @@ mod backend {
         Application(ApplicationError),
         Command(CommandError),
         Window(WindowError),
+        Sidebar(zpd_appkit::ui::SidebarError),
         View(ViewError),
         Layout(LayoutError),
         MessageLoop(MessageLoopError),
@@ -101,6 +106,7 @@ mod backend {
                 Self::Application(error) => error.fmt(formatter),
                 Self::Command(error) => error.fmt(formatter),
                 Self::Window(error) => error.fmt(formatter),
+                Self::Sidebar(error) => error.fmt(formatter),
                 Self::View(error) => error.fmt(formatter),
                 Self::Layout(error) => error.fmt(formatter),
                 Self::MessageLoop(error) => error.fmt(formatter),
@@ -118,6 +124,7 @@ mod backend {
                 Self::Application(error) => Some(error),
                 Self::Command(error) => Some(error),
                 Self::Window(error) => Some(error),
+                Self::Sidebar(error) => Some(error),
                 Self::View(error) => Some(error),
                 Self::Layout(error) => Some(error),
                 Self::MessageLoop(error) => Some(error),
@@ -151,6 +158,7 @@ mod backend {
         native_window: Option<ActorId>,
         window_layout: Option<Rc<RefCell<WindowLayout>>>,
         applied_window_bounds: Option<Rect>,
+        applied_sidebar: Option<super::Sidebar>,
         event_route: Option<EventRouteId>,
     }
 
@@ -179,6 +187,7 @@ mod backend {
                     native_window: None,
                     window_layout: None,
                     applied_window_bounds: None,
+                    applied_sidebar: None,
                     event_route: None,
                 })],
                 retired_windows: Vec::new(),
@@ -292,7 +301,13 @@ mod backend {
                     .value(window_id)
                     .expect("window nodes have values")
                     .appkit_node();
-                let NodeKind::Window { bounds, title, id } = description else {
+                let NodeKind::Window {
+                    bounds,
+                    title,
+                    id,
+                    sidebar,
+                } = description
+                else {
                     continue;
                 };
 
@@ -348,6 +363,20 @@ mod backend {
                 .ok_or(AppError::Window(WindowError::Closed))??;
                 if apply_bounds {
                     self.node_mut(window_id).applied_window_bounds = Some(bounds);
+                }
+
+                if new_window || self.node(window_id).applied_sidebar != sidebar {
+                    cx.with_window(native_id, |window| -> Result<(), AppError> {
+                        if let Some(sidebar) = &sidebar {
+                            window
+                                .set_sidebar(&sidebar.native(), |_| {})
+                                .map_err(AppError::Sidebar)
+                        } else {
+                            window.clear_sidebar().map_err(AppError::Window)
+                        }
+                    })
+                    .ok_or(AppError::Window(WindowError::Closed))??;
+                    self.node_mut(window_id).applied_sidebar = sidebar;
                 }
 
                 self.materialize_children(application, window_id)?;
@@ -589,6 +618,7 @@ mod backend {
                 native_window: None,
                 window_layout: None,
                 applied_window_bounds: None,
+                applied_sidebar: None,
                 event_route,
             }));
             self.structure_dirty = true;

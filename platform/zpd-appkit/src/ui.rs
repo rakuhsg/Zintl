@@ -3,6 +3,8 @@ mod callback;
 pub(crate) mod commands;
 mod layout;
 mod sidebar;
+mod sidebar_table;
+mod sidebar_toolbar;
 mod text_field;
 mod view;
 mod window;

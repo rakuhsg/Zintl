@@ -1,3 +1,6 @@
+mod sidebar;
+pub use sidebar::{Sidebar, SidebarItem, SidebarSection, SidebarState};
+
 use std::rc::Rc;
 use zintl_ui::composer::Composer;
 pub use zintl_ui::element::{Element, IntoElement};
@@ -24,6 +27,7 @@ pub struct Rect {
 pub enum EventKind {
     Activated,
     TextChanged,
+    SidebarSelectionChanged,
     WindowCreated,
     WindowDidResize,
     WindowWillClose,
@@ -35,6 +39,7 @@ pub enum EventKind {
 pub enum Event {
     Activated,
     TextChanged { value: String },
+    SidebarSelectionChanged { id: String },
     WindowCreated,
     WindowDidResize,
     WindowWillClose,
@@ -48,6 +53,7 @@ impl EventTrait for Event {
         match self {
             Self::Activated => EventKind::Activated,
             Self::TextChanged { .. } => EventKind::TextChanged,
+            Self::SidebarSelectionChanged { .. } => EventKind::SidebarSelectionChanged,
             Self::WindowCreated => EventKind::WindowCreated,
             Self::WindowDidResize => EventKind::WindowDidResize,
             Self::WindowWillClose => EventKind::WindowWillClose,
@@ -90,6 +96,7 @@ pub enum RenderNode {
         id: Option<String>,
     },
     Window {
+        sidebar: Option<SidebarState>,
         bounds: Rect,
         title: String,
         id: Option<String>,
@@ -149,7 +156,13 @@ impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
                 layout: *layout,
                 id: id.clone(),
             },
-            Self::Window { bounds, title, id } => NodeKind::Window {
+            Self::Window {
+                bounds,
+                title,
+                id,
+                sidebar,
+            } => NodeKind::Window {
+                sidebar: sidebar.as_ref().map(SidebarState::appkit),
                 bounds: zintl_ui_appkit::Rect::new(bounds.x, bounds.y, bounds.width, bounds.height),
                 title: title.clone(),
                 id: id.clone(),
@@ -159,6 +172,9 @@ impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
 
     fn appkit_event(event: zintl_ui_appkit::AppKitEvent) -> Self::Event {
         match event {
+            zintl_ui_appkit::AppKitEvent::SidebarSelectionChanged { id } => {
+                Event::SidebarSelectionChanged { id }
+            }
             zintl_ui_appkit::AppKitEvent::Created => Event::WindowCreated,
             zintl_ui_appkit::AppKitEvent::DidResize => Event::WindowDidResize,
             zintl_ui_appkit::AppKitEvent::WillClose => Event::WindowWillClose,
@@ -205,6 +221,7 @@ impl_children_tuple!(A:a, B:b, C:c, D:d, E:e, F:f);
 
 #[derive(Clone)]
 pub struct Window<C = Empty> {
+    sidebar: Option<Sidebar>,
     bounds: Rect,
     title: String,
     id: Option<String>,
@@ -214,6 +231,7 @@ pub struct Window<C = Empty> {
 impl Window<Empty> {
     pub fn new(bounds: Rect, title: impl Into<String>) -> Self {
         Self {
+            sidebar: None,
             bounds,
             title: title.into(),
             id: None,
@@ -223,6 +241,12 @@ impl Window<Empty> {
 }
 
 impl<C> Window<C> {
+    /// Attaches a native sidebar (currently supported by AppKit only).
+    pub fn sidebar(mut self, sidebar: Sidebar) -> Self {
+        self.sidebar = Some(sidebar);
+        self
+    }
+
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
@@ -230,6 +254,7 @@ impl<C> Window<C> {
 
     pub fn content<V>(self, content: V) -> Window<(V,)> {
         Window {
+            sidebar: self.sidebar,
             bounds: self.bounds,
             title: self.title,
             id: self.id,
@@ -241,13 +266,19 @@ impl<C> Window<C> {
 impl<C: Children> View for Window<C> {
     type Output = RenderNode;
 
-    fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        Element::node(RenderNode::Window {
+    fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        let element = Element::node(RenderNode::Window {
+            sidebar: self.sidebar.as_ref().map(|sidebar| sidebar.state(cx)),
             bounds: self.bounds,
             title: self.title.clone(),
             id: self.id.clone(),
         })
-        .with_children(self.children.elements())
+        .with_children(self.children.elements());
+        if let Some(sidebar) = &self.sidebar {
+            sidebar.route(element)
+        } else {
+            element
+        }
     }
 }
 
@@ -801,6 +832,7 @@ mod tests {
         assert_eq!(
             app.render(),
             RenderNode::Window {
+                sidebar: None,
                 bounds,
                 title: "Zintl".into(),
                 id: None,

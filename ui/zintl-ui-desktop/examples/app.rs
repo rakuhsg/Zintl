@@ -3,6 +3,7 @@ use zintl_ui_desktop::*;
 #[derive(Default)]
 pub struct MainView {
     name: Store<String>,
+    selection: Store<Option<String>>,
     count: Store<i32>,
 }
 
@@ -10,6 +11,7 @@ impl View for MainView {
     type Output = RenderNode;
 
     fn init(&mut self, cx: &mut Context<'_>) {
+        self.selection = cx.store(Some("home".into()));
         self.name = cx.store(String::new());
         self.count = cx.store(0);
     }
@@ -18,27 +20,42 @@ impl View for MainView {
         let name = self.name;
         let count = self.count;
 
-        Window::new(Rect::new(100.0, 100.0, 640.0, 400.0), "Zintl").content(
-            VStack::new((
-                Text::new("Welcome to Zintl"),
-                TextField::new().placeholder("Your Name").bind(name),
-                cx.watch(name, |name| Text::new(format!("Stored value: {name:?}"))),
-                HStack::new((Button::new("Continue"), Button::new("Cancel")))
-                    .spacing(12.0)
-                    .fill_width()
-                    .equal_width_children(),
-                cx.watch(count, move |c| {
-                    Button::new(format!("Counter: {c}")).on_click(move |cx| {
-                        cx.update(count, |value| *value += 1);
-                    })
-                }),
-                Button::new("Counter-counter").on_click(move |cx| {
-                    cx.update(count, |value| *value -= 1);
-                }),
-            ))
-            .fill_width()
-            .spacing(26.0),
-        )
+        Window::new(Rect::new(100.0, 100.0, 640.0, 400.0), "Zintl")
+            .sidebar(
+                Sidebar::new([SidebarSection::new([
+                    SidebarItem::new("home", "Home").system_image("house"),
+                    SidebarItem::new("settings", "Settings").system_image("gearshape"),
+                ])
+                .title("Navigation")])
+                .bind(self.selection)
+                .on_select(|_cx, id| println!("Selected sidebar item: {id}")),
+            )
+            .content(
+                VStack::new((
+                    cx.watch(self.selection, |selection| {
+                        Text::new(format!(
+                            "Selected: {}",
+                            selection.as_deref().unwrap_or("none")
+                        ))
+                    }),
+                    TextField::new().placeholder("Your Name").bind(name),
+                    cx.watch(name, |name| Text::new(format!("Stored value: {name:?}"))),
+                    HStack::new((Button::new("Continue"), Button::new("Cancel")))
+                        .spacing(12.0)
+                        .fill_width()
+                        .equal_width_children(),
+                    cx.watch(count, move |c| {
+                        Button::new(format!("Counter: {c}")).on_click(move |cx| {
+                            cx.update(count, |value| *value += 1);
+                        })
+                    }),
+                    Button::new("Counter-counter").on_click(move |cx| {
+                        cx.update(count, |value| *value -= 1);
+                    }),
+                ))
+                .fill_width()
+                .spacing(26.0),
+            )
     }
 }
 
