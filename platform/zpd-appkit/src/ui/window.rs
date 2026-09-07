@@ -202,9 +202,14 @@ impl<'application> Window<'application> {
                 height: 300.0,
             },
         };
+        let style_mask = native::NS_WINDOW_STYLE_MASK_TITLED
+            | native::NS_WINDOW_STYLE_MASK_CLOSABLE
+            | native::NS_WINDOW_STYLE_MASK_MINIATURIZABLE
+            | native::NS_WINDOW_STYLE_MASK_RESIZABLE
+            | native::NS_WINDOW_STYLE_MASK_FULL_SIZE_CONTENT_VIEW;
         // SAFETY: This is NSWindow's arm64 designated initializer signature.
         let native_window = unsafe {
-            Strong::from_retained(zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSWindow"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("initWithContentRect:styleMask:backing:defer:"), ((frame): native::Rect, ((1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 15)): u64, (2): u64, (false): bool) => zpd_objc::Id))
+            Strong::from_retained(zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSWindow"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("initWithContentRect:styleMask:backing:defer:"), ((frame): native::Rect, (style_mask): u64, (native::NS_BACKING_STORE_BUFFERED): u64, (false): bool) => zpd_objc::Id))
         }
         .ok_or(WindowError::NativeCreationFailed)?;
         unsafe {

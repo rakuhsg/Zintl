@@ -208,7 +208,7 @@ impl<D: ApplicationDelegate> Application<D> {
             let app = unsafe { Strong::retain(shared_application()) }
                 .ok_or(ApplicationError::NativeCreationFailed)?;
             unsafe {
-                zpd_objc::msg_send!(app.as_ptr(), zpd_objc::sel!("setActivationPolicy:"), ((0): i64) => ())
+                zpd_objc::msg_send!(app.as_ptr(), zpd_objc::sel!("setActivationPolicy:"), ((native::NS_APPLICATION_ACTIVATION_POLICY_REGULAR): i64) => ())
             };
             let tree = root_tree(&app);
             let actor = tree.root();
@@ -365,12 +365,12 @@ pub(crate) fn send_application_message(
     actor.with(|app| unsafe {
         match message {
             ApplicationMessage::Run => {
-                zpd_objc::msg_send!(app, zpd_objc::sel!("activateIgnoringOtherApps:"), ((1): i64) => ());
+                zpd_objc::msg_send!(app, zpd_objc::sel!("activateIgnoringOtherApps:"), ((true): bool) => ());
                 zpd_objc::msg_send!(app, zpd_objc::sel!("run"), () => ());
             }
             ApplicationMessage::Stop => {
                 zpd_objc::msg_send!(app, zpd_objc::sel!("stop:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
-                let event = zpd_objc::msg_send!(zpd_objc::class!("NSEvent"), zpd_objc::sel!("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"), ((15): u64, (native::Point::default()): native::Point, (0): u64, (0.0): f64, (0): i64, (zpd_objc::NIL): zpd_objc::Id, (0): i16, (0): i64, (0): i64) => zpd_objc::Id);
+                let event = zpd_objc::msg_send!(zpd_objc::class!("NSEvent"), zpd_objc::sel!("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"), ((native::NS_EVENT_TYPE_APPLICATION_DEFINED): i64, (native::Point::default()): native::Point, (0): u64, (0.0): f64, (0): i64, (zpd_objc::NIL): zpd_objc::Id, (0): i16, (0): i64, (0): i64) => zpd_objc::Id);
                 if !event.is_null() {
                     zpd_objc::msg_send!(app, zpd_objc::sel!("postEvent:atStart:"), ((event): zpd_objc::Id, (false): bool) => ());
                 }
