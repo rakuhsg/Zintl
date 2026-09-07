@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 messageloop-core = { path = "../messageloop-core" }
 zpd-appkit = { path = "../../../platform/zpd-appkit" }
+zpd-corefoundation = { path = "../../../platform/zpd-corefoundation" }
 
 [[test]]
 name = "appkit"
