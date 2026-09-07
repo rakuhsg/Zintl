@@ -3,12 +3,13 @@ use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use crate::actor::{ActorRef, ActorTree, ApplicationMessage, EventRouteToken, WindowEvent};
-use crate::native::{self, CFRunLoopSourceContext};
+use crate::native;
 use crate::ui::{CommandError, CommandSet, Window, WindowError};
+use zpd_corefoundation::{RunLoop, RunLoopSource, RunLoopSourceSignaler};
 use zpd_objc::{Id, Strong};
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -56,234 +57,6 @@ pub struct WindowEventRegistration<'application> {
 impl Drop for WindowEventRegistration<'_> {
     fn drop(&mut self) {
         self.tree.clear_event_handler(self.id);
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunLoopSourceError {
-    NotCurrent,
-    NativeCreationFailed,
-}
-impl std::fmt::Display for RunLoopSourceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::NotCurrent => "run-loop sources must be created on their run loop",
-            Self::NativeCreationFailed => "AppKit failed to create a run-loop source",
-        })
-    }
-}
-impl std::error::Error for RunLoopSourceError {}
-
-struct SourceCallback<'a> {
-    callback: RefCell<Box<dyn FnMut() + 'a>>,
-}
-
-unsafe extern "C" fn source_perform(info: *mut c_void) {
-    if info.is_null() {
-        return;
-    }
-    if catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: The source owner keeps this allocation alive during callbacks.
-        let state = unsafe { &*info.cast::<SourceCallback<'_>>() };
-        let Ok(mut callback) = state.callback.try_borrow_mut() else {
-            std::process::abort();
-        };
-        callback();
-    }))
-    .is_err()
-    {
-        std::process::abort();
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct RunLoop<'application> {
-    raw: *mut c_void,
-    _application: PhantomData<&'application ()>,
-    _main_thread: PhantomData<Rc<()>>,
-}
-impl<'application> RunLoop<'application> {
-    pub fn is_current(self) -> bool {
-        // SAFETY: Core Foundation returns borrowed process run-loop pointers.
-        self.raw == unsafe { native::CFRunLoopGetCurrent() }
-    }
-    pub fn stop(self) {
-        // SAFETY: raw is live for the Application borrow.
-        unsafe { native::CFRunLoopStop(self.raw) };
-    }
-    pub fn create_source(
-        self,
-        callback: impl FnMut() + 'application,
-    ) -> Result<RunLoopSource<'application>, RunLoopSourceError> {
-        if !self.is_current() {
-            return Err(RunLoopSourceError::NotCurrent);
-        }
-        let callback = Box::new(SourceCallback {
-            callback: RefCell::new(Box::new(callback)),
-        });
-        let mut context = CFRunLoopSourceContext {
-            info: std::ptr::from_ref(callback.as_ref()).cast_mut().cast(),
-            perform: Some(source_perform),
-            ..Default::default()
-        };
-        // SAFETY: callback remains stable until the source is invalidated.
-        let source = unsafe { native::CFRunLoopSourceCreate(std::ptr::null(), 0, &mut context) };
-        if source.is_null() {
-            return Err(RunLoopSourceError::NativeCreationFailed);
-        }
-        // SAFETY: Both handles are live and owned/borrowed here.
-        unsafe { native::CFRunLoopAddSource(self.raw, source, native::kCFRunLoopCommonModes) };
-        Ok(RunLoopSource {
-            state: Arc::new(Mutex::new(SourceState {
-                run_loop: self.raw as usize,
-                source: Some(source as usize),
-            })),
-            _callback: callback,
-            _application: PhantomData,
-            _main_thread: PhantomData,
-        })
-    }
-}
-
-struct SourceState {
-    run_loop: usize,
-    source: Option<usize>,
-}
-#[derive(Clone)]
-pub struct RunLoopSourceSignaler {
-    state: Arc<Mutex<SourceState>>,
-}
-impl RunLoopSourceSignaler {
-    pub fn signal(&self) -> bool {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(source) = state.source else {
-            return false;
-        };
-        // SAFETY: Destruction clears source while holding the same lock.
-        unsafe {
-            native::CFRunLoopSourceSignal(source as *mut c_void);
-            native::CFRunLoopWakeUp(state.run_loop as *mut c_void);
-        }
-        true
-    }
-}
-pub struct RunLoopSource<'application> {
-    state: Arc<Mutex<SourceState>>,
-    _callback: Box<SourceCallback<'application>>,
-    _application: PhantomData<&'application ()>,
-    _main_thread: PhantomData<Rc<()>>,
-}
-
-struct ContextSourceCallback<C> {
-    context: C,
-    perform: fn(&C),
-}
-
-unsafe extern "C" fn context_source_perform<C>(info: *mut c_void) {
-    if info.is_null() {
-        return;
-    }
-    if catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: ContextRunLoopSource owns this stable allocation while its source is installed.
-        let callback = unsafe { &*info.cast::<ContextSourceCallback<C>>() };
-        (callback.perform)(&callback.context);
-    }))
-    .is_err()
-    {
-        std::process::abort();
-    }
-}
-
-/// A safe Core Foundation run-loop source owning a concrete callback context.
-pub struct ContextRunLoopSource<C> {
-    state: Arc<Mutex<SourceState>>,
-    _callback: Box<ContextSourceCallback<C>>,
-    _main_thread: PhantomData<Rc<()>>,
-}
-
-impl<C> ContextRunLoopSource<C> {
-    pub fn signaler(&self) -> RunLoopSourceSignaler {
-        RunLoopSourceSignaler {
-            state: self.state.clone(),
-        }
-    }
-}
-
-impl<C> Drop for ContextRunLoopSource<C> {
-    fn drop(&mut self) {
-        remove_source(&self.state);
-    }
-}
-
-impl RunLoop<'_> {
-    /// Creates a source that owns a concrete context and invokes it on this run loop.
-    ///
-    /// # Errors
-    /// Returns an error off the current run loop or when Core Foundation creation fails.
-    pub fn create_context_source<C>(
-        self,
-        context: C,
-        perform: fn(&C),
-    ) -> Result<ContextRunLoopSource<C>, RunLoopSourceError> {
-        if !self.is_current() {
-            return Err(RunLoopSourceError::NotCurrent);
-        }
-        let callback = Box::new(ContextSourceCallback { context, perform });
-        let mut context = CFRunLoopSourceContext {
-            info: std::ptr::from_ref(callback.as_ref()).cast_mut().cast(),
-            perform: Some(context_source_perform::<C>),
-            ..Default::default()
-        };
-        // SAFETY: callback remains stable until the source is removed and invalidated.
-        let source =
-            unsafe { native::CFRunLoopSourceCreate(std::ptr::null(), 0, &raw mut context) };
-        if source.is_null() {
-            return Err(RunLoopSourceError::NativeCreationFailed);
-        }
-        // SAFETY: Both handles are live and owned/borrowed here.
-        unsafe { native::CFRunLoopAddSource(self.raw, source, native::kCFRunLoopCommonModes) };
-        Ok(ContextRunLoopSource {
-            state: Arc::new(Mutex::new(SourceState {
-                run_loop: self.raw as usize,
-                source: Some(source as usize),
-            })),
-            _callback: callback,
-            _main_thread: PhantomData,
-        })
-    }
-}
-
-fn remove_source(state: &Mutex<SourceState>) {
-    let mut state = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(source) = state.source.take() else {
-        return;
-    };
-    // SAFETY: Source owners are main-thread-only and own the installed Core Foundation source.
-    unsafe {
-        native::CFRunLoopRemoveSource(
-            state.run_loop as *mut c_void,
-            source as *mut c_void,
-            native::kCFRunLoopCommonModes,
-        );
-        native::CFRunLoopSourceInvalidate(source as *mut c_void);
-        native::CFRelease(source as *const c_void);
-    }
-}
-impl RunLoopSource<'_> {
-    pub fn signaler(&self) -> RunLoopSourceSignaler {
-        RunLoopSourceSignaler {
-            state: self.state.clone(),
-        }
-    }
-}
-impl Drop for RunLoopSource<'_> {
-    fn drop(&mut self) {
-        remove_source(&self.state);
     }
 }
 
@@ -378,8 +151,7 @@ fn delegate_class() -> zpd_objc::Class {
 
 struct ActiveState {
     active: AtomicBool,
-    run_loop: usize,
-    source: usize,
+    signaler: RunLoopSourceSignaler,
 }
 #[derive(Clone)]
 pub struct RunLoopScheduler {
@@ -390,12 +162,7 @@ impl RunLoopScheduler {
         if !self.state.active.load(Ordering::Acquire) {
             return false;
         }
-        // SAFETY: Source signaling and waking are thread-safe Core Foundation operations.
-        unsafe {
-            native::CFRunLoopSourceSignal(self.state.source as *mut c_void);
-            native::CFRunLoopWakeUp(self.state.run_loop as *mut c_void);
-        }
-        true
+        self.state.signaler.signal()
     }
 }
 fn shared_application() -> Id {
@@ -419,8 +186,8 @@ fn root_tree(app: &Strong) -> ActorTree {
 pub struct Application<D: ApplicationDelegate> {
     _delegate_type: PhantomData<D>,
     scheduler_state: Arc<ActiveState>,
-    source: *mut c_void,
-    callback: *mut SourceCallback<'static>,
+    run_loop: RunLoop<'static>,
+    source: Option<RunLoopSource<'static>>,
     delegate: ActorRef,
     actor: ActorRef,
     tree: ActorTree,
@@ -441,7 +208,7 @@ impl<D: ApplicationDelegate> Application<D> {
             let app = unsafe { Strong::retain(shared_application()) }
                 .ok_or(ApplicationError::NativeCreationFailed)?;
             unsafe {
-                zpd_objc::msg_send!(app.as_ptr(), zpd_objc::sel!("setActivationPolicy:"), ((0): i64) => ())
+                zpd_objc::msg_send!(app.as_ptr(), zpd_objc::sel!("setActivationPolicy:"), ((native::NS_APPLICATION_ACTIVATION_POLICY_REGULAR): i64) => ())
             };
             let tree = root_tree(&app);
             let actor = tree.root();
@@ -476,35 +243,22 @@ impl<D: ApplicationDelegate> Application<D> {
                 release_callbacks(delegate)
             })
             .map_err(|_| ApplicationError::NativeCreationFailed)?;
-            let callback: Box<SourceCallback<'static>> = Box::new(SourceCallback {
-                callback: RefCell::new(Box::new({
+            let run_loop = RunLoop::current();
+            let source = run_loop
+                .create_source_with_order(1, {
                     let state = state.clone();
                     move || invoke(&state, ApplicationDelegate::perform)
-                })),
-            });
-            let callback = Box::into_raw(callback);
-            let mut context = CFRunLoopSourceContext {
-                info: callback.cast(),
-                perform: Some(source_perform),
-                ..Default::default()
-            };
-            let source =
-                unsafe { native::CFRunLoopSourceCreate(std::ptr::null(), 1, &mut context) };
-            if source.is_null() {
-                unsafe { drop(Box::from_raw(callback)) };
-                return Err(ApplicationError::NativeCreationFailed);
-            }
-            let run_loop = unsafe { native::CFRunLoopGetCurrent() };
-            unsafe { native::CFRunLoopAddSource(run_loop, source, native::kCFRunLoopCommonModes) };
+                })
+                .map_err(|_| ApplicationError::NativeCreationFailed)?;
+            let signaler = source.signaler();
             Ok(Self {
                 _delegate_type: PhantomData,
                 scheduler_state: Arc::new(ActiveState {
                     active: AtomicBool::new(true),
-                    run_loop: run_loop as usize,
-                    source: source as usize,
+                    signaler,
                 }),
-                source,
-                callback,
+                run_loop,
+                source: Some(source),
                 delegate: delegate_actor,
                 actor,
                 tree,
@@ -522,11 +276,7 @@ impl<D: ApplicationDelegate> Application<D> {
         }
     }
     pub fn run_loop(&self) -> RunLoop<'_> {
-        RunLoop {
-            raw: self.scheduler_state.run_loop as *mut c_void,
-            _application: PhantomData,
-            _main_thread: PhantomData,
-        }
+        self.run_loop
     }
     pub fn schedule(&self) {
         debug_assert!(self.scheduler().schedule())
@@ -602,17 +352,7 @@ impl<D: ApplicationDelegate> Drop for Application<D> {
             zpd_objc::msg_send!(app, zpd_objc::sel!("setDelegate:"), ((zpd_objc::NIL): zpd_objc::Id) => ())
         });
         self.delegate.remove();
-        // SAFETY: Application owns the delegate binding, CF source, and callback allocation.
-        unsafe {
-            native::CFRunLoopRemoveSource(
-                self.scheduler_state.run_loop as *mut c_void,
-                self.source,
-                native::kCFRunLoopCommonModes,
-            );
-            native::CFRunLoopSourceInvalidate(self.source);
-            native::CFRelease(self.source);
-            drop(Box::from_raw(self.callback));
-        }
+        drop(self.source.take());
         self.tree.end_session();
         INITIALIZED.store(false, Ordering::Release);
     }
@@ -625,17 +365,17 @@ pub(crate) fn send_application_message(
     actor.with(|app| unsafe {
         match message {
             ApplicationMessage::Run => {
-                zpd_objc::msg_send!(app, zpd_objc::sel!("activateIgnoringOtherApps:"), ((1): i64) => ());
+                zpd_objc::msg_send!(app, zpd_objc::sel!("activateIgnoringOtherApps:"), ((true): bool) => ());
                 zpd_objc::msg_send!(app, zpd_objc::sel!("run"), () => ());
             }
             ApplicationMessage::Stop => {
                 zpd_objc::msg_send!(app, zpd_objc::sel!("stop:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
-                let event = zpd_objc::msg_send!(zpd_objc::class!("NSEvent"), zpd_objc::sel!("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"), ((15): u64, (native::Point::default()): native::Point, (0): u64, (0.0): f64, (0): i64, (zpd_objc::NIL): zpd_objc::Id, (0): i16, (0): i64, (0): i64) => zpd_objc::Id);
+                let event = zpd_objc::msg_send!(zpd_objc::class!("NSEvent"), zpd_objc::sel!("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"), ((native::NS_EVENT_TYPE_APPLICATION_DEFINED): i64, (native::Point::default()): native::Point, (0): u64, (0.0): f64, (0): i64, (zpd_objc::NIL): zpd_objc::Id, (0): i16, (0): i64, (0): i64) => zpd_objc::Id);
                 if !event.is_null() {
                     zpd_objc::msg_send!(app, zpd_objc::sel!("postEvent:atStart:"), ((event): zpd_objc::Id, (false): bool) => ());
                 }
-                native::CFRunLoopStop(native::CFRunLoopGetMain());
-                native::CFRunLoopWakeUp(native::CFRunLoopGetMain());
+                RunLoop::main().stop();
+                RunLoop::main().wake();
             }
         }
     })
@@ -643,17 +383,12 @@ pub(crate) fn send_application_message(
 
 #[cfg(test)]
 mod tests {
-    use super::{RunLoopScheduler, RunLoopSourceSignaler};
+    use super::RunLoopScheduler;
+
     #[test]
     fn scheduler_can_cross_threads() {
         // Verifies the scheduler safely crosses the message-loop thread boundary.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<RunLoopScheduler>();
-    }
-    #[test]
-    fn signaler_can_cross_threads() {
-        // Verifies a run-loop source signaler is thread-safe.
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<RunLoopSourceSignaler>();
     }
 }

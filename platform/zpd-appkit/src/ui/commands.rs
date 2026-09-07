@@ -176,10 +176,10 @@ where
         });
         let modifiers = item.modifiers.iter().fold(0_u64, |mask, value| {
             mask | match value {
-                CommandModifier::Cmd => 1 << 20,
-                CommandModifier::Ctrl => 1 << 18,
-                CommandModifier::Alt => 1 << 19,
-                CommandModifier::Shift => 1 << 17,
+                CommandModifier::Cmd => native::NS_EVENT_MODIFIER_FLAG_COMMAND,
+                CommandModifier::Ctrl => native::NS_EVENT_MODIFIER_FLAG_CONTROL,
+                CommandModifier::Alt => native::NS_EVENT_MODIFIER_FLAG_OPTION,
+                CommandModifier::Shift => native::NS_EVENT_MODIFIER_FLAG_SHIFT,
             }
         });
         unsafe {

@@ -7,6 +7,7 @@ use super::{ViewError, ViewRef};
 
 #[derive(Clone, Copy)]
 #[repr(i64)]
+// Values mirror NSLayoutAttribute.
 pub(crate) enum LayoutAttribute {
     NotAnAttribute = 0,
     Left = 1,
@@ -24,7 +25,8 @@ pub(crate) enum LayoutAttribute {
 }
 #[derive(Clone, Copy)]
 #[repr(i64)]
-enum LayoutRelation {
+// Values mirror NSLayoutRelation.
+pub(crate) enum LayoutRelation {
     LessThanOrEqual = -1,
     Equal = 0,
     GreaterThanOrEqual = 1,

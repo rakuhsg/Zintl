@@ -3,6 +3,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+use super::layout::{LayoutAttribute, LayoutRelation};
 use super::{Sidebar, SidebarError};
 use crate::actor::ActorRef;
 use crate::native;
@@ -128,10 +129,16 @@ fn delegate_class() -> zpd_objc::Class {
     }) as zpd_objc::Class
 }
 
-fn constrain(first: Id, attribute: i64, second: Id, second_attribute: i64, constant: f64) {
+fn constrain(
+    first: Id,
+    attribute: LayoutAttribute,
+    second: Id,
+    second_attribute: LayoutAttribute,
+    constant: f64,
+) {
     // SAFETY: All views share a cell ancestor; attributes and constants describe equalities.
     unsafe {
-        let constraint = zpd_objc::msg_send!(zpd_objc::class!("NSLayoutConstraint"), zpd_objc::sel!("constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:"), ((first): zpd_objc::Id, (attribute): i64, (0): i64, (second): zpd_objc::Id, (second_attribute): i64, (1.0): f64, (constant): f64) => zpd_objc::Id);
+        let constraint = zpd_objc::msg_send!(zpd_objc::class!("NSLayoutConstraint"), zpd_objc::sel!("constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:"), ((first): zpd_objc::Id, (attribute as i64): i64, (LayoutRelation::Equal as i64): i64, (second): zpd_objc::Id, (second_attribute as i64): i64, (1.0): f64, (constant): f64) => zpd_objc::Id);
         zpd_objc::msg_send!(constraint, zpd_objc::sel!("setActive:"), ((true): bool) => ());
     }
 }
@@ -146,31 +153,79 @@ fn cell(title: &str, symbol: Option<&str>, group: bool) -> Strong {
         zpd_objc::msg_send!(text.as_ptr(), zpd_objc::sel!("setSelectable:"), ((false): bool) => ());
         zpd_objc::msg_send!(text.as_ptr(), zpd_objc::sel!("setBordered:"), ((false): bool) => ());
         zpd_objc::msg_send!(text.as_ptr(), zpd_objc::sel!("setDrawsBackground:"), ((false): bool) => ());
-        zpd_objc::msg_send!(text.as_ptr(), zpd_objc::sel!("setLineBreakMode:"), ((4): i64) => ());
+        zpd_objc::msg_send!(text.as_ptr(), zpd_objc::sel!("setLineBreakMode:"), ((native::NS_LINE_BREAK_BY_TRUNCATING_TAIL): u64) => ());
         zpd_objc::msg_send!(text.as_ptr(), zpd_objc::sel!("setTranslatesAutoresizingMaskIntoConstraints:"), ((false): bool) => ());
         zpd_objc::msg_send!(cell.as_ptr(), zpd_objc::sel!("addSubview:"), ((text.as_ptr()): zpd_objc::Id) => ());
         zpd_objc::msg_send!(cell.as_ptr(), zpd_objc::sel!("setTextField:"), ((text.as_ptr()): zpd_objc::Id) => ());
-        constrain(text.as_ptr(), 6, cell.as_ptr(), 6, -4.0);
-        constrain(text.as_ptr(), 10, cell.as_ptr(), 10, 0.0);
+        constrain(
+            text.as_ptr(),
+            LayoutAttribute::Trailing,
+            cell.as_ptr(),
+            LayoutAttribute::Trailing,
+            -4.0,
+        );
+        constrain(
+            text.as_ptr(),
+            LayoutAttribute::CenterY,
+            cell.as_ptr(),
+            LayoutAttribute::CenterY,
+            0.0,
+        );
         if group {
-            constrain(text.as_ptr(), 5, cell.as_ptr(), 5, 4.0);
+            constrain(
+                text.as_ptr(),
+                LayoutAttribute::Leading,
+                cell.as_ptr(),
+                LayoutAttribute::Leading,
+                4.0,
+            );
         } else {
             let image = native::alloc_init(zpd_objc::class!("NSImageView"));
             zpd_objc::msg_send!(image.as_ptr(), zpd_objc::sel!("setTranslatesAutoresizingMaskIntoConstraints:"), ((false): bool) => ());
             zpd_objc::msg_send!(cell.as_ptr(), zpd_objc::sel!("addSubview:"), ((image.as_ptr()): zpd_objc::Id) => ());
             zpd_objc::msg_send!(cell.as_ptr(), zpd_objc::sel!("setImageView:"), ((image.as_ptr()): zpd_objc::Id) => ());
-            let configuration = zpd_objc::msg_send!(zpd_objc::class!("NSImageSymbolConfiguration"), zpd_objc::sel!("configurationWithPointSize:weight:"), ((15.0): f64, (0.0): f64) => zpd_objc::Id);
+            let configuration = zpd_objc::msg_send!(zpd_objc::class!("NSImageSymbolConfiguration"), zpd_objc::sel!("configurationWithPointSize:weight:"), ((15.0): f64, (native::NSFontWeightRegular): f64) => zpd_objc::Id);
             zpd_objc::msg_send!(image.as_ptr(), zpd_objc::sel!("setSymbolConfiguration:"), ((configuration): zpd_objc::Id) => ());
             zpd_objc::msg_send!(image.as_ptr(), zpd_objc::sel!("setContentTintColor:"), ((zpd_objc::msg_send!(zpd_objc::class!("NSColor"), zpd_objc::sel!("labelColor"), () => zpd_objc::Id)): zpd_objc::Id) => ());
             if let Some(symbol) = symbol {
                 let icon = zpd_objc::msg_send!(zpd_objc::class!("NSImage"), zpd_objc::sel!("imageWithSystemSymbolName:accessibilityDescription:"), ((native::nsstring(symbol).as_ptr()): zpd_objc::Id, (native::nsstring(title).as_ptr()): zpd_objc::Id) => zpd_objc::Id);
                 zpd_objc::msg_send!(image.as_ptr(), zpd_objc::sel!("setImage:"), ((icon): zpd_objc::Id) => ());
             }
-            constrain(image.as_ptr(), 5, cell.as_ptr(), 5, 4.0);
-            constrain(image.as_ptr(), 10, cell.as_ptr(), 10, 0.0);
-            constrain(image.as_ptr(), 7, zpd_objc::NIL, 0, 18.0);
-            constrain(image.as_ptr(), 8, zpd_objc::NIL, 0, 18.0);
-            constrain(text.as_ptr(), 5, image.as_ptr(), 6, 8.0);
+            constrain(
+                image.as_ptr(),
+                LayoutAttribute::Leading,
+                cell.as_ptr(),
+                LayoutAttribute::Leading,
+                4.0,
+            );
+            constrain(
+                image.as_ptr(),
+                LayoutAttribute::CenterY,
+                cell.as_ptr(),
+                LayoutAttribute::CenterY,
+                0.0,
+            );
+            constrain(
+                image.as_ptr(),
+                LayoutAttribute::Width,
+                zpd_objc::NIL,
+                LayoutAttribute::NotAnAttribute,
+                18.0,
+            );
+            constrain(
+                image.as_ptr(),
+                LayoutAttribute::Height,
+                zpd_objc::NIL,
+                LayoutAttribute::NotAnAttribute,
+                18.0,
+            );
+            constrain(
+                text.as_ptr(),
+                LayoutAttribute::Leading,
+                image.as_ptr(),
+                LayoutAttribute::Trailing,
+                8.0,
+            );
         }
     }
     cell
@@ -244,11 +299,11 @@ pub(crate) fn install(
         zpd_objc::msg_send!(scroll.as_ptr(), zpd_objc::sel!("setAutohidesScrollers:"), ((true): bool) => ());
         let column = Strong::from_retained(zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSTableColumn"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("initWithIdentifier:"), ((native::nsstring("items").as_ptr()): zpd_objc::Id) => zpd_objc::Id))
         .ok_or(SidebarError::NativeCreationFailed)?;
-        zpd_objc::msg_send!(column.as_ptr(), zpd_objc::sel!("setResizingMask:"), ((1): u64) => ());
+        zpd_objc::msg_send!(column.as_ptr(), zpd_objc::sel!("setResizingMask:"), ((native::NS_TABLE_COLUMN_AUTORESIZING_MASK): u64) => ());
         zpd_objc::msg_send!(table.as_ptr(), zpd_objc::sel!("addTableColumn:"), ((column.as_ptr()): zpd_objc::Id) => ());
         zpd_objc::msg_send!(table.as_ptr(), zpd_objc::sel!("setHeaderView:"), ((zpd_objc::NIL): zpd_objc::Id) => ());
-        zpd_objc::msg_send!(table.as_ptr(), zpd_objc::sel!("setStyle:"), ((3): i64) => ());
-        zpd_objc::msg_send!(table.as_ptr(), zpd_objc::sel!("setRowSizeStyle:"), ((0): i64) => ());
+        zpd_objc::msg_send!(table.as_ptr(), zpd_objc::sel!("setStyle:"), ((native::NS_TABLE_VIEW_STYLE_SOURCE_LIST): i64) => ());
+        zpd_objc::msg_send!(table.as_ptr(), zpd_objc::sel!("setRowSizeStyle:"), ((native::NS_TABLE_VIEW_ROW_SIZE_STYLE_CUSTOM): i64) => ());
         zpd_objc::msg_send!(table.as_ptr(), zpd_objc::sel!("setBackgroundColor:"), ((zpd_objc::msg_send!(zpd_objc::class!("NSColor"), zpd_objc::sel!("clearColor"), () => zpd_objc::Id)): zpd_objc::Id) => ());
         zpd_objc::msg_send!(table.as_ptr(), zpd_objc::sel!("setRowHeight:"), ((32.0): f64) => ());
 

@@ -32,7 +32,7 @@ impl SidebarToolbar {
                     .ok_or(SidebarError::NativeCreationFailed)?;
                     let inserted = Self::toggle_index(&toolbar).is_none();
                     if created {
-                        zpd_objc::msg_send!(toolbar.as_ptr(), zpd_objc::sel!("setDisplayMode:"), ((2): i64) => ());
+                        zpd_objc::msg_send!(toolbar.as_ptr(), zpd_objc::sel!("setDisplayMode:"), ((native::NS_TOOLBAR_DISPLAY_MODE_ICON_ONLY): u64) => ());
                         zpd_objc::msg_send!(window, zpd_objc::sel!("setToolbar:"), ((toolbar.as_ptr()): zpd_objc::Id) => ());
                     }
                     if inserted {

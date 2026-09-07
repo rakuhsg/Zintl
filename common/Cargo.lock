@@ -20,6 +20,7 @@ version = "0.1.0"
 dependencies = [
  "messageloop-core",
  "zpd-appkit",
+ "zpd-corefoundation",
 ]
 
 [[package]]
@@ -84,6 +85,18 @@ dependencies = [
 
 [[package]]
 name = "zpd-appkit"
+version = "0.1.0"
+dependencies = [
+ "zpd-corefoundation",
+ "zpd-objc",
+]
+
+[[package]]
+name = "zpd-corefoundation"
+version = "0.1.0"
+
+[[package]]
+name = "zpd-objc"
 version = "0.1.0"
 
 [[package]]

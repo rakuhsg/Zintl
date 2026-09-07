@@ -7,6 +7,7 @@ license.workspace = true
 wgpu = []
 
 [dependencies]
+zpd-corefoundation = { path = "../zpd-corefoundation" }
 zpd-objc = { path = "../zpd-objc" }
 
 [[test]]
