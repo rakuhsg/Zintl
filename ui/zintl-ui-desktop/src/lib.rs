@@ -156,6 +156,11 @@ impl TextField {
         self
     }
 
+    pub fn multiline(mut self) -> Self {
+        self.inner = self.inner.multiline();
+        self
+    }
+
     pub fn minimum_size(mut self, size: Size) -> Self {
         self.inner = self.inner.minimum_size(size);
         self
@@ -574,6 +579,28 @@ mod tests {
             RenderNode::NSTextField {
                 editable: true,
                 bordered: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn text_field_multiline_is_opt_in() {
+        // Verifies the desktop wrapper keeps one line by default and forwards multiline mode.
+        let single_line = App::new(TextField::new()).render();
+        let multiline = App::new(TextField::new().multiline()).render();
+
+        assert!(matches!(
+            single_line,
+            RenderNode::NSTextField {
+                multiline: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            multiline,
+            RenderNode::NSTextField {
+                multiline: true,
                 ..
             }
         ));

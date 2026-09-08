@@ -47,6 +47,7 @@ pub enum RenderNode {
         selectable: bool,
         bordered: bool,
         draws_background: bool,
+        multiline: bool,
         layout: LayoutStyle,
         id: Option<String>,
     },
@@ -107,6 +108,7 @@ impl zintl_ui_appkit_backend::AppKitRenderNode for RenderNode {
                 selectable,
                 bordered,
                 draws_background,
+                multiline,
                 layout,
                 id,
             } => NodeKind::View {
@@ -117,6 +119,7 @@ impl zintl_ui_appkit_backend::AppKitRenderNode for RenderNode {
                     selectable: *selectable,
                     bordered: *bordered,
                     draws_background: *draws_background,
+                    multiline: *multiline,
                 },
                 layout: *layout,
                 id: id.clone(),

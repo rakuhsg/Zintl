@@ -117,6 +117,7 @@ mod tests {
                 selectable: true,
                 bordered: true,
                 draws_background: true,
+                multiline: false,
                 layout: LayoutStyle::leaf(Size::new(160.0, 28.0)),
                 id: Some("name".into()),
             },
@@ -145,6 +146,40 @@ mod tests {
                 id: Some(id),
                 ..
             } if id == "name"
+        ));
+    }
+
+    #[test]
+    fn text_field_multiline_is_opt_in() {
+        // Verifies text fields are single-line by default and opt into multiline rendering.
+        let single_line = composer(TextField::new());
+        let multiline = composer(TextField::new().multiline());
+        let single_line = single_line.backend().value(root_id(&single_line)).unwrap();
+        let multiline = multiline.backend().value(root_id(&multiline)).unwrap();
+
+        assert!(matches!(
+            single_line,
+            RenderNode::NSTextField {
+                multiline: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            multiline,
+            RenderNode::NSTextField {
+                multiline: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            multiline.appkit_node(),
+            zintl_ui_appkit_backend::NodeKind::View {
+                kind: zintl_ui_appkit_backend::ViewKind::TextField {
+                    multiline: true,
+                    ..
+                },
+                ..
+            }
         ));
     }
 

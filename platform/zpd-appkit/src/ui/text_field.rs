@@ -113,6 +113,24 @@ impl TextField {
             zpd_objc::msg_send!(field, zpd_objc::sel!("setDrawsBackground:"), ((draws_background): bool) => ())
         })
     }
+    pub fn set_multiline(&self, multiline: bool) -> Result<(), ViewError> {
+        self.view.as_view().with(|field| {
+            // SAFETY: The live view is an NSTextField whose cell accepts text layout selectors.
+            unsafe {
+                let cell = zpd_objc::msg_send!(field, zpd_objc::sel!("cell"), () => zpd_objc::Id);
+                let line_break_mode = if multiline {
+                    native::NS_LINE_BREAK_BY_WORD_WRAPPING
+                } else {
+                    native::NS_LINE_BREAK_BY_CLIPPING
+                };
+                zpd_objc::msg_send!(field, zpd_objc::sel!("setUsesSingleLineMode:"), ((!multiline): bool) => ());
+                zpd_objc::msg_send!(field, zpd_objc::sel!("setLineBreakMode:"), ((line_break_mode): u64) => ());
+                zpd_objc::msg_send!(cell, zpd_objc::sel!("setScrollable:"), ((!multiline): bool) => ());
+                zpd_objc::msg_send!(cell, zpd_objc::sel!("setWraps:"), ((multiline): bool) => ());
+                zpd_objc::msg_send!(field, zpd_objc::sel!("setMaximumNumberOfLines:"), ((if multiline { 0 } else { 1 }): isize) => ());
+            }
+        })
+    }
 }
 impl AsView for TextField {
     fn as_view(&self) -> ViewRef<'_> {

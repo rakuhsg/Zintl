@@ -14,6 +14,7 @@ pub struct TextField {
     selectable: bool,
     bordered: bool,
     draws_background: bool,
+    multiline: bool,
     layout: LayoutStyle,
     id: Option<String>,
 }
@@ -32,6 +33,7 @@ impl TextField {
             selectable: true,
             bordered: true,
             draws_background: true,
+            multiline: false,
             layout: LayoutStyle::leaf(Size::new(160.0, 28.0)),
             id: None,
         }
@@ -48,6 +50,7 @@ impl TextField {
             selectable: false,
             bordered: false,
             draws_background: false,
+            multiline: false,
             layout: LayoutStyle::leaf(Size::new(minimum_width, 20.0)),
             id: None,
         }
@@ -65,6 +68,11 @@ impl TextField {
 
     pub fn bind(mut self, store: Store<String>) -> Self {
         self.binding = Some(store);
+        self
+    }
+
+    pub fn multiline(mut self) -> Self {
+        self.multiline = true;
         self
     }
 
@@ -95,6 +103,7 @@ impl View for TextField {
             selectable: self.selectable,
             bordered: self.bordered,
             draws_background: self.draws_background,
+            multiline: self.multiline,
             layout: self.layout,
             id: self.id.clone(),
         });

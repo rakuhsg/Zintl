@@ -37,6 +37,7 @@ pub enum ViewKind {
         selectable: bool,
         bordered: bool,
         draws_background: bool,
+        multiline: bool,
     },
 }
 
@@ -495,6 +496,7 @@ mod backend {
                     selectable,
                     bordered,
                     draws_background,
+                    multiline,
                 } => {
                     let field =
                         NativeTextField::with_string(application, value).map_err(AppError::View)?;
@@ -507,6 +509,7 @@ mod backend {
                     field
                         .set_draws_background(*draws_background)
                         .map_err(AppError::View)?;
+                    field.set_multiline(*multiline).map_err(AppError::View)?;
                     NativeNode::TextField(field)
                 }
             };
@@ -612,6 +615,7 @@ mod backend {
                                 selectable,
                                 bordered,
                                 draws_background,
+                                multiline,
                             },
                         ..
                     },
@@ -628,6 +632,7 @@ mod backend {
                     field
                         .set_draws_background(*draws_background)
                         .map_err(AppError::View)?;
+                    field.set_multiline(*multiline).map_err(AppError::View)?;
                 }
                 _ => {}
             }
