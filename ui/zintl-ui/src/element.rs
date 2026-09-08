@@ -142,6 +142,17 @@ impl<R: RenderNode> IntoElement for ElementFactory<R> {
     }
 }
 
+/// A dynamic list of type-erased element factories.
+pub type ListFactory<R> = Vec<ElementFactory<R>>;
+
+impl<R: RenderNode> IntoElement for ListFactory<R> {
+    type Output = R;
+
+    fn into_element(self) -> Element<Self::Output> {
+        Element::fragment(self.into_iter().map(IntoElement::into_element))
+    }
+}
+
 impl<R: RenderNode> IntoElement for Element<R> {
     type Output = R;
 
@@ -175,7 +186,7 @@ impl<T: IntoElement> IntoElement for Keyed<T> {
     }
 }
 
-/// Creates an extensible vector of type-erased [`IntoElement`] factories.
+/// Creates an extensible [`ListFactory`](crate::element::ListFactory).
 #[macro_export]
 macro_rules! list {
     ($($element:expr),* $(,)?) => {
@@ -238,7 +249,7 @@ mod tests {
     #[test]
     fn list_erases_types_without_limiting_length() {
         // Verifies heterogeneous lists preserve order beyond the former tuple limit.
-        let factories: Vec<ElementFactory<TestNode>> = crate::list![
+        let factories: ListFactory<TestNode> = crate::list![
             Text("one"),
             Number(2),
             Text("three"),
@@ -248,9 +259,12 @@ mod tests {
             Text("seven"),
             Number(8),
         ];
-        let values = factories
+        let Element::Fragment(elements) = factories.into_element() else {
+            panic!("a list factory must produce a fragment");
+        };
+        let values = elements
             .into_iter()
-            .map(|factory| match factory.into_element() {
+            .map(|element| match element {
                 Element::Node { value, .. } => value,
                 _ => panic!("a test factory must produce a node"),
             })
@@ -276,7 +290,7 @@ mod tests {
         // Verifies list expressions run once while factories can materialize repeatedly.
         let evaluations = Rc::new(Cell::new(0));
         let received = evaluations.clone();
-        let factories: Vec<ElementFactory<TestNode>> = crate::list![{
+        let factories: ListFactory<TestNode> = crate::list![{
             received.set(received.get() + 1);
             Text("reusable")
         }];
@@ -303,8 +317,8 @@ mod tests {
     #[test]
     fn list_supports_empty_and_keyed_elements() {
         // Verifies empty, keyed, and dynamically extended lists use the public API.
-        let empty: Vec<ElementFactory<TestNode>> = crate::list![];
-        let mut keyed: Vec<ElementFactory<TestNode>> = crate::list![Text("keyed").key("row"),];
+        let empty: ListFactory<TestNode> = crate::list![];
+        let mut keyed: ListFactory<TestNode> = crate::list![Text("keyed").key("row"),];
         keyed.push(ElementFactory::new(Number(2)));
         keyed.extend(crate::list![Text("extended")]);
 

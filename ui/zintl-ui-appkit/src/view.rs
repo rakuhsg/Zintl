@@ -1,18 +1,18 @@
-use zintl_ui::element::IntoElement;
+use zintl_ui::element::{IntoElement, ListFactory};
 use zintl_ui::view::{Context, View as ViewTrait};
 use zintl_ui_layout::LayoutStyle;
 
-use crate::{Children, Element, RenderNode};
+use crate::{Element, RenderNode};
 
 #[derive(Clone)]
-pub struct View<C> {
-    children: C,
+pub struct View {
+    children: ListFactory<RenderNode>,
     layout: LayoutStyle,
     id: Option<String>,
 }
 
-impl<C> View<C> {
-    pub fn new(layout: LayoutStyle, children: C) -> Self {
+impl View {
+    pub fn new(layout: LayoutStyle, children: ListFactory<RenderNode>) -> Self {
         Self {
             children,
             layout,
@@ -26,7 +26,7 @@ impl<C> View<C> {
     }
 }
 
-impl<C: Children> ViewTrait for View<C> {
+impl ViewTrait for View {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
@@ -34,6 +34,6 @@ impl<C: Children> ViewTrait for View<C> {
             layout: self.layout,
             id: self.id.clone(),
         })
-        .with_children(self.children.elements())
+        .with_children([self.children.clone().into_element()])
     }
 }
