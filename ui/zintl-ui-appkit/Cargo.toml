@@ -8,3 +8,6 @@ zintl-ui-layout = { path = "../zintl-ui-layout" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 zintl-ui-appkit-backend = { path = "../zintl-ui-appkit-backend" }
+
+[dev-dependencies]
+zintl-ui-desktop = { path = "../../ui/zintl-ui-desktop" }

@@ -129,6 +129,7 @@ version = "0.0.0"
 dependencies = [
  "zintl-ui",
  "zintl-ui-appkit-backend",
+ "zintl-ui-desktop",
  "zintl-ui-layout",
 ]
 
