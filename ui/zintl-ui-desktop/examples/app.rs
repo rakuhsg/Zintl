@@ -40,6 +40,15 @@ impl View for MainView {
                     }),
                     TextField::new().placeholder("Your Name").bind(name),
                     cx.watch(name, |name| Text::new(format!("Stored value: {name:?}"))),
+                    {
+                        cx.watch(name, |name| {
+                            if name.len() >= 8 {
+                                Text::new("name is too long")
+                            } else {
+                                Text::new("")
+                            }
+                        })
+                    },
                     HStack::new(list![Button::new("Continue"), Button::new("Cancel")])
                         .spacing(12.0)
                         .fill_width()
@@ -54,7 +63,7 @@ impl View for MainView {
                     }),
                 ])
                 .fill_width()
-                .spacing(26.0),
+                .spacing(32.0),
             )
             .extend_client_area()
     }
