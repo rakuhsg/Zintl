@@ -1,20 +1,20 @@
-use zintl_ui::element::{ElementFactory, IntoElement};
+use zintl_ui::element::{IntoElement, ListFactory};
 use zintl_ui::list;
 use zintl_ui::view::{Context, View};
 
-use crate::{Children, Element, Empty, Rect, RenderNode, Sidebar};
+use crate::{Element, Rect, RenderNode, Sidebar};
 
 #[derive(Clone)]
-pub struct Window<C = Empty> {
+pub struct Window {
     sidebar: Option<Sidebar>,
     bounds: Rect,
     title: String,
     full_size_content_view: bool,
     id: Option<String>,
-    children: C,
+    children: ListFactory<RenderNode>,
 }
 
-impl Window<Empty> {
+impl Window {
     pub fn new(bounds: Rect, title: impl Into<String>) -> Self {
         Self {
             sidebar: None,
@@ -22,12 +22,10 @@ impl Window<Empty> {
             title: title.into(),
             full_size_content_view: false,
             id: None,
-            children: Empty,
+            children: Vec::new(),
         }
     }
-}
 
-impl<C> Window<C> {
     pub fn sidebar(mut self, sidebar: Sidebar) -> Self {
         self.sidebar = Some(sidebar);
         self
@@ -43,11 +41,11 @@ impl<C> Window<C> {
         self
     }
 
-    pub fn content<V>(self, content: V) -> Window<Vec<ElementFactory<RenderNode>>>
+    pub fn content<V>(self, content: V) -> Self
     where
         V: Clone + IntoElement<Output = RenderNode> + 'static,
     {
-        Window {
+        Self {
             sidebar: self.sidebar,
             bounds: self.bounds,
             title: self.title,
@@ -58,7 +56,7 @@ impl<C> Window<C> {
     }
 }
 
-impl<C: Children> View for Window<C> {
+impl View for Window {
     type Output = RenderNode;
 
     fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
@@ -69,7 +67,7 @@ impl<C: Children> View for Window<C> {
             full_size_content_view: self.full_size_content_view,
             id: self.id.clone(),
         })
-        .with_children(self.children.elements());
+        .with_children([self.children.clone().into_element()]);
         if let Some(sidebar) = &self.sidebar {
             sidebar.route(element)
         } else {

@@ -6,27 +6,25 @@ use zintl_ui::renderer::RenderBackend;
 pub use zintl_ui::store::Store;
 pub use zintl_ui::view::{Context, View};
 pub use zintl_ui_appkit::{
-    Children, ElementFactory, Empty, Event, EventKind, Rect, RenderNode, Sidebar, SidebarItem,
-    SidebarSection, SidebarState, list,
+    Event, EventKind, ListFactory, Rect, RenderNode, Sidebar, SidebarItem, SidebarSection,
+    SidebarState, list,
 };
 pub use zintl_ui_layout::{
     Axis, ChildSizing, CrossAxisAlignment, LayoutDimension, LayoutStyle, MainAxisDistribution, Size,
 };
 
 #[derive(Clone)]
-pub struct Window<C = Empty> {
-    inner: zintl_ui_appkit::Window<C>,
+pub struct Window {
+    inner: zintl_ui_appkit::Window,
 }
 
-impl Window<Empty> {
+impl Window {
     pub fn new(bounds: Rect, title: impl Into<String>) -> Self {
         Self {
             inner: zintl_ui_appkit::Window::new(bounds, title),
         }
     }
-}
 
-impl<C> Window<C> {
     pub fn sidebar(mut self, sidebar: Sidebar) -> Self {
         self.inner = self.inner.sidebar(sidebar);
         self
@@ -47,7 +45,7 @@ impl<C> Window<C> {
         self
     }
 
-    pub fn content<V>(self, content: V) -> Window<Vec<ElementFactory<RenderNode>>>
+    pub fn content<V>(self, content: V) -> Self
     where
         V: Clone + IntoElement<Output = RenderNode> + 'static,
     {
@@ -57,7 +55,7 @@ impl<C> Window<C> {
     }
 }
 
-impl<C: Children> View for Window<C> {
+impl View for Window {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
@@ -185,14 +183,14 @@ impl View for TextField {
 }
 
 #[derive(Clone)]
-pub struct HStack<C> {
-    children: C,
+pub struct HStack {
+    children: ListFactory<RenderNode>,
     layout: LayoutStyle,
     id: Option<String>,
 }
 
-impl<C> HStack<C> {
-    pub fn new(children: C) -> Self {
+impl HStack {
+    pub fn new(children: ListFactory<RenderNode>) -> Self {
         Self {
             children,
             layout: LayoutStyle::stack(Axis::Horizontal, 8.0),
@@ -231,7 +229,7 @@ impl<C> HStack<C> {
     }
 }
 
-impl<C: Children> View for HStack<C> {
+impl View for HStack {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
@@ -244,14 +242,14 @@ impl<C: Children> View for HStack<C> {
 }
 
 #[derive(Clone)]
-pub struct VStack<C> {
-    children: C,
+pub struct VStack {
+    children: ListFactory<RenderNode>,
     layout: LayoutStyle,
     id: Option<String>,
 }
 
-impl<C> VStack<C> {
-    pub fn new(children: C) -> Self {
+impl VStack {
+    pub fn new(children: ListFactory<RenderNode>) -> Self {
         Self {
             children,
             layout: LayoutStyle::stack(Axis::Vertical, 8.0),
@@ -280,7 +278,7 @@ impl<C> VStack<C> {
     }
 }
 
-impl<C: Children> View for VStack<C> {
+impl View for VStack {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
@@ -559,8 +557,8 @@ mod tests {
         assert_view::<Text>();
         assert_view::<Button>();
         assert_view::<TextField>();
-        assert_view::<HStack<Vec<ElementFactory<RenderNode>>>>();
-        assert_view::<VStack<Vec<ElementFactory<RenderNode>>>>();
+        assert_view::<HStack>();
+        assert_view::<VStack>();
     }
 
     #[test]

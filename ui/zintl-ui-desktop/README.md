@@ -26,8 +26,8 @@ Window::new(Rect::new(100.0, 100.0, 640.0, 400.0), "Navigation")
 ## Child lists
 
 Use `list!` for heterogeneous stack children. The macro returns a
-`Vec<ElementFactory<RenderNode>>`, so the number of children is not limited by a
-tuple arity.
+`ListFactory<RenderNode>`, an alias for `Vec<ElementFactory<RenderNode>>`, so the
+number of children is not limited by a tuple arity.
 
 ```rust,ignore
 VStack::new(list![
@@ -47,7 +47,7 @@ The returned vector can also be extended at runtime.
 ```rust,ignore
 let mut actions = list![Button::new("Save")];
 if can_delete {
-    actions.push(ElementFactory::new(Button::new("Delete")));
+    actions.extend(list![Button::new("Delete")]);
 }
 actions.extend(list![Text::new("Ready"), Button::new("Close")]);
 

@@ -35,10 +35,11 @@ let children = list![
 ];
 
 Element::node(AppRenderNode::Form)
-    .with_children(children.into_iter().map(IntoElement::into_element))
+    .with_children([children.into_element()])
 ```
 
-`list!` has no arity limit and returns a `Vec<ElementFactory<_>>`. Use
+`list!` has no arity limit and returns a `ListFactory<_>`, which aliases
+`Vec<ElementFactory<_>>` and produces a fragment through `IntoElement`. Use
 `ElementFactory::new` with `push` or another `list!` with `extend` when children
 are assembled dynamically. Use keys when list identity must survive inserts,
 removals, or reordering.
@@ -46,9 +47,9 @@ removals, or reordering.
 ```rust,ignore
 let mut rows = list![Header::new("Tasks")];
 for task in &tasks {
-    rows.push(ElementFactory::new(TaskRow::new(task).key(task.id)));
+    rows.push(element::ElementFactory::new(TaskRow::new(task).key(task.id)));
 }
 
 Element::node(AppRenderNode::List)
-    .with_children(rows.into_iter().map(IntoElement::into_element))
+    .with_children([rows.into_element()])
 ```

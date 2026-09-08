@@ -1,7 +1,6 @@
 //! Declarative Zintl UI views that mirror AppKit widgets.
 
 mod button;
-mod children;
 mod event;
 mod render_node;
 mod sidebar;
@@ -10,17 +9,16 @@ mod view;
 mod window;
 
 pub use button::Button;
-pub use children::{Children, Empty};
 pub use event::{Event, EventKind};
 pub use render_node::{Rect, RenderNode};
 pub use sidebar::{Sidebar, SidebarItem, SidebarSection, SidebarState};
 pub use text_field::TextField;
 pub use view::View;
 pub use window::Window;
-pub use zintl_ui::element::{Element, IntoElement};
+pub use zintl_ui::element::{Element, IntoElement, ListFactory};
+pub use zintl_ui::list;
 pub use zintl_ui::store::Store;
 pub use zintl_ui::view::Context;
-pub use zintl_ui::{ElementFactory, list};
 pub use zintl_ui_layout::{LayoutStyle, Size};
 
 #[cfg(target_os = "macos")]
@@ -63,8 +61,8 @@ mod tests {
         // Verifies each AppKit-shaped widget participates in declarative composition.
         assert_view::<Button>();
         assert_view::<TextField>();
-        assert_view::<View<Vec<ElementFactory<RenderNode>>>>();
-        assert_view::<Window<Vec<ElementFactory<RenderNode>>>>();
+        assert_view::<View>();
+        assert_view::<Window>();
     }
 
     #[test]
