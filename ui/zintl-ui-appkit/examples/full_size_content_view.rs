@@ -1,7 +1,4 @@
-use zintl_ui_desktop::{
-    App, AppError, Button, Context, IntoElement, Rect, RenderNode, Size, Store, Text, VStack, View,
-    Window,
-};
+use zintl_ui_desktop::*;
 
 #[derive(Default)]
 struct FullSizeContentViewExample {
@@ -27,6 +24,7 @@ impl View for FullSizeContentViewExample {
             };
             let content = VStack::new((
                 Text::new(format!("Full-size content view is {status}.")),
+                Text::new(format!("Full-size content view is {status}.")),
                 Button::new(button_title)
                     .minimum_size(Size::new(240.0, 32.0))
                     .on_click(move |cx| {
@@ -34,11 +32,15 @@ impl View for FullSizeContentViewExample {
                     }),
             ))
             .minimum_size(Size::new(360.0, 120.0))
-            .spacing(16.0);
+            .spacing(24.0);
             let window = Window::new(
                 Rect::new(100.0, 100.0, 480.0, 300.0),
                 "Full-size Content View",
             )
+            .sidebar(Sidebar::new([SidebarSection::new([
+                SidebarItem::new("home", "Home").system_image("house"),
+                SidebarItem::new("settings", "Settings").system_image("gearshape"),
+            ])]))
             .content(content);
 
             if *enabled {
