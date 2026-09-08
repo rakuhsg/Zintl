@@ -42,6 +42,11 @@ impl<C> Window<C> {
         self
     }
 
+    pub fn extend_client_area(mut self) -> Self {
+        self.inner = self.inner.full_size_content_view();
+        self
+    }
+
     pub fn content<V>(self, content: V) -> Window<(V,)> {
         Window {
             inner: self.inner.content(content),
@@ -596,6 +601,21 @@ mod tests {
         // Verifies the desktop wrapper forwards the AppKit full-size content option.
         let bounds = Rect::new(10.0, 20.0, 640.0, 480.0);
         let app = App::new(Window::new(bounds, "Zintl").full_size_content_view());
+
+        assert!(matches!(
+            app.render(),
+            RenderNode::NSWindow {
+                full_size_content_view: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn window_extend_client_area_uses_appkit_full_size_content_view() {
+        // Verifies extending the client area enables AppKit full-size content.
+        let bounds = Rect::new(10.0, 20.0, 640.0, 480.0);
+        let app = App::new(Window::new(bounds, "Zintl").extend_client_area());
 
         assert!(matches!(
             app.render(),

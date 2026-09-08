@@ -56,6 +56,7 @@ impl View for MainView {
                 .fill_width()
                 .spacing(26.0),
             )
+            .extend_client_area()
     }
 }
 
