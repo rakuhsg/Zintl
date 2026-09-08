@@ -4,6 +4,7 @@ members = [
     "zintl-ui",
     "zintl-ui-test",
     "zintl-ui-layout",
+    "zintl-ui-appkit-backend",
     "zintl-ui-appkit",
     "zintl-ui-desktop",
 ]

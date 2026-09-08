@@ -42,10 +42,11 @@ removes its sidebar. SF Symbol names are interpreted by AppKit.
 
 ## Crate responsibilities
 
-- `zintl-ui-desktop` owns the public builders, Store binding, and semantic render data.
-- `zintl-ui-appkit` translates render data and synchronizes native sidebar state.
-- `zpd-appkit` owns AppKit controllers, native lifetime, and selection events.
-- `zintl-ui` and `zintl-ui-layout` remain independent of sidebar and AppKit details.
+- `zintl-ui-desktop` owns the cross-platform builders and wraps platform views.
+- `zintl-ui-appkit` owns AppKit-shaped views, render nodes, Store bindings, and events.
+- `zintl-ui-appkit-backend` translates render nodes and synchronizes native state.
+- `zpd-appkit` owns AppKit controllers, native lifetime, and native events.
+- `zintl-ui` and `zintl-ui-layout` provide composition and layout primitives.
 
 The non-macOS tree backend retains sidebar declarations for inspection; it does
 not provide a native sidebar implementation.
