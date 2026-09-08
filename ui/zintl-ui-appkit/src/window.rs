@@ -1,4 +1,5 @@
-use zintl_ui::element::IntoElement;
+use zintl_ui::element::{ElementFactory, IntoElement};
+use zintl_ui::list;
 use zintl_ui::view::{Context, View};
 
 use crate::{Children, Element, Empty, Rect, RenderNode, Sidebar};
@@ -42,14 +43,17 @@ impl<C> Window<C> {
         self
     }
 
-    pub fn content<V>(self, content: V) -> Window<(V,)> {
+    pub fn content<V>(self, content: V) -> Window<Vec<ElementFactory<RenderNode>>>
+    where
+        V: Clone + IntoElement<Output = RenderNode> + 'static,
+    {
         Window {
             sidebar: self.sidebar,
             bounds: self.bounds,
             title: self.title,
             full_size_content_view: self.full_size_content_view,
             id: self.id,
-            children: (content,),
+            children: list![content],
         }
     }
 }

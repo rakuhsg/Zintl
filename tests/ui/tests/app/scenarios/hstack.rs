@@ -12,12 +12,12 @@ impl View for MainView {
         )
         .id("main-window")
         .content(
-            HStack::new((
+            HStack::new(list![
                 TextField::new().id("leading-field").placeholder("Leading"),
                 TextField::new()
                     .id("trailing-field")
                     .placeholder("Trailing"),
-            ))
+            ])
             .id("field-row")
             .spacing(24.0),
         )

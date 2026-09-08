@@ -36,7 +36,7 @@ impl View for MainView {
         )
         .id("main-window")
         .content(
-            VStack::new((
+            VStack::new(list![
                 Text::new("Welcome to Zintl").id("welcome-text"),
                 TextField::new()
                     .id("text-input")
@@ -55,7 +55,7 @@ impl View for MainView {
                     Text::new(format!("Stored multiline value: {value:?}"))
                         .id("stored-multiline-value")
                 }),
-            ))
+            ])
             .spacing(18.0),
         )
     }

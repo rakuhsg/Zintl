@@ -22,7 +22,7 @@ impl View for FullSizeContentViewExample {
             } else {
                 "Enable full-size content view"
             };
-            let content = VStack::new((
+            let content = VStack::new(list![
                 Text::new(format!("Full-size content view is {status}.")),
                 Text::new(format!("Full-size content view is {status}.")),
                 Button::new(button_title)
@@ -30,7 +30,7 @@ impl View for FullSizeContentViewExample {
                     .on_click(move |cx| {
                         cx.update(full_size_content_view, |enabled| *enabled = !*enabled);
                     }),
-            ))
+            ])
             .minimum_size(Size::new(360.0, 120.0))
             .spacing(24.0);
             let window = Window::new(

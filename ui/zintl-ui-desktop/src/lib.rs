@@ -6,8 +6,8 @@ use zintl_ui::renderer::RenderBackend;
 pub use zintl_ui::store::Store;
 pub use zintl_ui::view::{Context, View};
 pub use zintl_ui_appkit::{
-    Children, Empty, Event, EventKind, Rect, RenderNode, Sidebar, SidebarItem, SidebarSection,
-    SidebarState,
+    Children, ElementFactory, Empty, Event, EventKind, Rect, RenderNode, Sidebar, SidebarItem,
+    SidebarSection, SidebarState, list,
 };
 pub use zintl_ui_layout::{
     Axis, ChildSizing, CrossAxisAlignment, LayoutDimension, LayoutStyle, MainAxisDistribution, Size,
@@ -47,7 +47,10 @@ impl<C> Window<C> {
         self
     }
 
-    pub fn content<V>(self, content: V) -> Window<(V,)> {
+    pub fn content<V>(self, content: V) -> Window<Vec<ElementFactory<RenderNode>>>
+    where
+        V: Clone + IntoElement<Output = RenderNode> + 'static,
+    {
         Window {
             inner: self.inner.content(content),
         }
@@ -525,10 +528,10 @@ mod tests {
             let store = self
                 .value
                 .expect("BoundTextView must be initialized before rendering");
-            VStack::new((
+            VStack::new(list![
                 TextField::new().bind(store),
                 cx.watch(store, |value| Text::new(format!("Stored value: {value}"))),
-            ))
+            ])
         }
     }
 
@@ -556,8 +559,8 @@ mod tests {
         assert_view::<Text>();
         assert_view::<Button>();
         assert_view::<TextField>();
-        assert_view::<HStack<(Text, Button)>>();
-        assert_view::<VStack<(TextField,)>>();
+        assert_view::<HStack<Vec<ElementFactory<RenderNode>>>>();
+        assert_view::<VStack<Vec<ElementFactory<RenderNode>>>>();
     }
 
     #[test]
@@ -658,7 +661,7 @@ mod tests {
         // Verifies stack wrappers preserve layout policy while using native render nodes.
         let app = App::new(
             Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Zintl")
-                .content(HStack::new((Button::new("Save"), TextField::new())).spacing(12.0)),
+                .content(HStack::new(list![Button::new("Save"), TextField::new()]).spacing(12.0)),
         );
         let tree = app.render_tree();
         let stack = &tree.children[0];
@@ -699,14 +702,49 @@ mod tests {
     }
 
     #[test]
+    fn stack_list_children_have_no_arity_limit() {
+        // Verifies desktop stacks render heterogeneous lists longer than six children.
+        let app = App::new(VStack::new(list![
+            Text::new("One"),
+            Button::new("Two"),
+            TextField::new(),
+            Text::new("Four"),
+            Button::new("Five"),
+            TextField::new(),
+            Text::new("Seven"),
+            Button::new("Eight"),
+        ]));
+        let tree = app.render_tree();
+
+        assert_eq!(tree.children.len(), 8);
+        assert!(matches!(
+            tree.children[0].value,
+            RenderNode::NSTextField {
+                editable: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            tree.children[1].value,
+            RenderNode::NSButton { .. }
+        ));
+        assert!(matches!(
+            tree.children[2].value,
+            RenderNode::NSTextField { editable: true, .. }
+        ));
+    }
+
+    #[test]
     fn stack_builders_preserve_width_and_child_distribution() {
         // Verifies desktop stack options reach the wrapped AppKit NSView layout.
         let app = App::new(
             Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Zintl").content(
-                VStack::new((HStack::new((Button::new("Save"), Button::new("Cancel")))
-                    .fill_width()
-                    .space_between()
-                    .equal_width_children(),))
+                VStack::new(list![
+                    HStack::new(list![Button::new("Save"), Button::new("Cancel")])
+                        .fill_width()
+                        .space_between()
+                        .equal_width_children()
+                ])
                 .fill_width(),
             ),
         );

@@ -20,6 +20,7 @@ pub use window::Window;
 pub use zintl_ui::element::{Element, IntoElement};
 pub use zintl_ui::store::Store;
 pub use zintl_ui::view::Context;
+pub use zintl_ui::{ElementFactory, list};
 pub use zintl_ui_layout::{LayoutStyle, Size};
 
 #[cfg(target_os = "macos")]
@@ -62,8 +63,32 @@ mod tests {
         // Verifies each AppKit-shaped widget participates in declarative composition.
         assert_view::<Button>();
         assert_view::<TextField>();
-        assert_view::<View<(Button,)>>();
-        assert_view::<Window<(TextField,)>>();
+        assert_view::<View<Vec<ElementFactory<RenderNode>>>>();
+        assert_view::<Window<Vec<ElementFactory<RenderNode>>>>();
+    }
+
+    #[test]
+    fn list_children_preserve_mixed_appkit_view_order() {
+        // Verifies AppKit containers accept ordered heterogeneous list children.
+        let composer = composer(View::new(
+            LayoutStyle::stack(Axis::Vertical, 8.0),
+            list![Button::new("First"), TextField::new(), Button::new("Last")],
+        ));
+        let children = composer.backend().children(root_id(&composer));
+
+        assert_eq!(children.len(), 3);
+        assert!(matches!(
+            composer.backend().value(children[0]),
+            Some(RenderNode::NSButton { title, .. }) if title == "First"
+        ));
+        assert!(matches!(
+            composer.backend().value(children[1]),
+            Some(RenderNode::NSTextField { .. })
+        ));
+        assert!(matches!(
+            composer.backend().value(children[2]),
+            Some(RenderNode::NSButton { title, .. }) if title == "Last"
+        ));
     }
 
     #[test]
@@ -232,10 +257,10 @@ mod tests {
         let received = changes.clone();
         composer.mount(View::new(
             LayoutStyle::stack(Axis::Vertical, 8.0),
-            (
+            list![
                 TextField::new().bind(value),
                 Button::new("Save").on_click(move |_| received.set(received.get() + 1)),
-            ),
+            ],
         ));
         let root = root_id(&composer);
         let field = composer.backend().children(root)[0];
