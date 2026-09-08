@@ -3,9 +3,10 @@ use crate::event::{EventHandlers, EventRouteId, EventRouter};
 use crate::hook::HookId;
 use crate::renderer::{RenderBackend, RenderNode};
 use crate::sequence::Arena;
-use crate::view::{Context, InitStores};
+use crate::view::{Context, InitStores, MainTask};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
+use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BoundId {
@@ -122,6 +123,7 @@ where
     root: Vec<MountedElement<R, B::NodeId>>,
     mounted: bool,
     event_router: EventRouter<R::Event>,
+    perform_main: Option<Arc<dyn Fn(MainTask) -> bool + Send + Sync>>,
 }
 
 impl<R, B> Composer<R, B>
@@ -140,6 +142,7 @@ where
             root: Vec::new(),
             mounted: false,
             event_router: EventRouter::new(),
+            perform_main: None,
         }
     }
 
@@ -150,8 +153,17 @@ where
             dirty_hooks: &mut self.dirty_hooks,
             dependencies: None,
             init_stores: None,
+            perform_main: self.perform_main.as_deref(),
         };
         operation(&mut context)
+    }
+
+    /// Installs the backend callback used by [`Context::perform_main`].
+    pub fn set_main_task_sender(
+        &mut self,
+        sender: impl Fn(MainTask) -> bool + Send + Sync + 'static,
+    ) {
+        self.perform_main = Some(Arc::new(sender));
     }
 
     pub fn mount<E>(&mut self, root: E)
@@ -214,6 +226,7 @@ where
                 dirty_hooks: &mut self.dirty_hooks,
                 dependencies: None,
                 init_stores: None,
+                perform_main: self.perform_main.as_deref(),
             };
             self.event_router.dispatch(route, &mut context, event)
         };
@@ -284,6 +297,7 @@ where
                 dirty_hooks: &mut self.dirty_hooks,
                 dependencies: Some(&dependencies),
                 init_stores: Some(&mut state.init_stores),
+                perform_main: self.perform_main.as_deref(),
             };
             state.builder.build_children(&mut context)
         };

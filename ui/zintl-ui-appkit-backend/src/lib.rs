@@ -73,11 +73,12 @@ mod backend {
     use std::rc::Rc;
 
     use messageloop_appkit::{
-        Context as MessageContext, MessageLoopAppkit, MessageLoopError, MessageLoopHandler,
+        Context as MessageContext, MessageLoopAppkit, MessageLoopError, MessageLoopHandler, Sender,
     };
     use zintl_ui::composer::Composer;
     use zintl_ui::event::EventRouteId;
     use zintl_ui::renderer::RenderBackend;
+    use zintl_ui::view::MainTask;
     use zintl_ui_layout::{
         CrossAxisAlignment, LayoutDimension, LayoutError, LayoutStyle, LayoutTree, Size,
     };
@@ -796,6 +797,19 @@ mod backend {
 
     enum Message {
         Window(WindowEvent),
+        PerformMain(MainTask),
+    }
+
+    impl Message {
+        fn into_window_event(self) -> Option<WindowEvent> {
+            match self {
+                Self::Window(event) => Some(event),
+                Self::PerformMain(task) => {
+                    task();
+                    None
+                }
+            }
+        }
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -853,26 +867,28 @@ mod backend {
         R: AppKitRenderNode,
     {
         fn init(&mut self, cx: &MessageContext<'_, '_, Message>) {
+            let sender = cx.sender();
+            self.composer
+                .set_main_task_sender(move |task| sender.send(Message::PerformMain(task)).is_ok());
             self.synchronize(cx);
         }
 
         fn on(&mut self, cx: &MessageContext<'_, '_, Message>, message: Message) {
-            match message {
-                Message::Window(event) => {
-                    let action = window_event_action(&event.kind);
-                    if let Some(route) = event.route {
-                        let route = EventRouteId::from_raw(route.get());
-                        self.composer
-                            .dispatch_event(route, R::appkit_event(event.kind));
-                    }
-                    match action {
-                        WindowEventAction::Synchronize => {
-                            self.synchronize(cx);
-                        }
-                        WindowEventAction::WaitForClose => {}
-                        WindowEventAction::Terminate => cx.request_termination(),
-                    }
+            let Some(event) = message.into_window_event() else {
+                return;
+            };
+            let action = window_event_action(&event.kind);
+            if let Some(route) = event.route {
+                let route = EventRouteId::from_raw(route.get());
+                self.composer
+                    .dispatch_event(route, R::appkit_event(event.kind));
+            }
+            match action {
+                WindowEventAction::Synchronize => {
+                    self.synchronize(cx);
                 }
+                WindowEventAction::WaitForClose => {}
+                WindowEventAction::Terminate => cx.request_termination(),
             }
         }
     }
@@ -947,6 +963,8 @@ mod backend {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use zintl_ui::renderer::RenderNode;
 
         #[derive(Clone, PartialEq)]
@@ -1034,6 +1052,19 @@ mod backend {
                 window_event_action(&WindowEventKind::DidResize),
                 WindowEventAction::Synchronize
             );
+        }
+
+        #[test]
+        fn perform_main_message_executes_queued_task() {
+            // Verifies the handler's task-message path runs the queued operation.
+            let performed = Arc::new(AtomicBool::new(false));
+            let received = performed.clone();
+            let message = Message::PerformMain(Box::new(move || {
+                received.store(true, Ordering::SeqCst);
+            }));
+
+            assert!(message.into_window_event().is_none());
+            assert!(performed.load(Ordering::SeqCst));
         }
 
         #[test]

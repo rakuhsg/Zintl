@@ -243,10 +243,45 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
     use zintl_ui::composer::Composer;
     use zintl_ui::element::{Element, IntoElement, KeyedElement};
     use zintl_ui::store::Store;
     use zintl_ui::view::{Context, View};
+
+    struct PerformMainView {
+        executions: Arc<AtomicUsize>,
+    }
+
+    impl View for PerformMainView {
+        type Output = TestRenderNode;
+
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+            let executions = self.executions.clone();
+            cx.perform_main(move || {
+                executions.fetch_add(1, Ordering::SeqCst);
+            });
+            Element::node(TestRenderNode::Text("queued".into()))
+        }
+    }
+
+    #[test]
+    fn view_context_queues_main_thread_tasks() {
+        // View rendering sends work without executing it before the receiver handles it.
+        let (sender, receiver) = mpsc::channel();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut composer = Composer::new(TestBackend::new());
+        composer.set_main_task_sender(move |task| sender.send(task).is_ok());
+
+        composer.mount(PerformMainView {
+            executions: executions.clone(),
+        });
+
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        receiver.recv().unwrap()();
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn store_can_be_declared_before_view_initialization() {

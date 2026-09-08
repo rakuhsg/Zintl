@@ -8,12 +8,16 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
+/// A thread-safe task that can be transferred to a platform main thread.
+pub type MainTask = Box<dyn FnOnce() + Send + 'static>;
+
 pub struct Context<'a> {
     pub(crate) stores: &'a mut Arena,
     pub(crate) next_hook_id: &'a mut u32,
     pub(crate) dirty_hooks: &'a mut BTreeSet<HookId>,
     pub(crate) dependencies: Option<&'a RefCell<Vec<HookId>>>,
     pub(crate) init_stores: Option<&'a mut InitStores>,
+    pub(crate) perform_main: Option<&'a (dyn Fn(MainTask) -> bool + Send + Sync)>,
 }
 
 pub(crate) struct StoreSlot {
@@ -42,6 +46,21 @@ impl InitStores {
 }
 
 impl Context<'_> {
+    /// Queues a task for execution on the platform main thread.
+    ///
+    /// # Panics
+    /// Panics when the active backend has no main-thread sender or its message
+    /// loop no longer accepts work.
+    pub fn perform_main(&self, task: impl FnOnce() + Send + 'static) {
+        let sender = self
+            .perform_main
+            .expect("the active backend does not provide a main-thread sender");
+        assert!(
+            sender(Box::new(task)),
+            "the main-thread message loop is closed"
+        );
+    }
+
     pub fn store<T: 'static>(&mut self, value: T) -> Store<T> {
         if let Some(init_stores) = &mut self.init_stores {
             let index = init_stores.next;
