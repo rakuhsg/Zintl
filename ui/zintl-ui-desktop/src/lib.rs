@@ -37,6 +37,11 @@ impl<C> Window<C> {
         self
     }
 
+    pub fn full_size_content_view(mut self) -> Self {
+        self.inner = self.inner.full_size_content_view();
+        self
+    }
+
     pub fn content<V>(self, content: V) -> Window<(V,)> {
         Window {
             inner: self.inner.content(content),
@@ -580,9 +585,25 @@ mod tests {
                 sidebar: None,
                 bounds,
                 title: "Zintl".into(),
+                full_size_content_view: false,
                 id: None,
             }
         );
+    }
+
+    #[test]
+    fn window_full_size_content_view_is_opt_in() {
+        // Verifies the desktop wrapper forwards the AppKit full-size content option.
+        let bounds = Rect::new(10.0, 20.0, 640.0, 480.0);
+        let app = App::new(Window::new(bounds, "Zintl").full_size_content_view());
+
+        assert!(matches!(
+            app.render(),
+            RenderNode::NSWindow {
+                full_size_content_view: true,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -149,6 +149,46 @@ mod tests {
     }
 
     #[test]
+    fn window_full_size_content_view_is_opt_in() {
+        // Verifies Window::new uses normal content unless the builder enables full-size content.
+        let normal = composer(Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Normal"));
+        let full_size = composer(
+            Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Full Size").full_size_content_view(),
+        );
+        let normal = normal.backend().value(root_id(&normal)).unwrap();
+        let full_size = full_size.backend().value(root_id(&full_size)).unwrap();
+
+        assert!(matches!(
+            normal,
+            RenderNode::NSWindow {
+                full_size_content_view: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            full_size,
+            RenderNode::NSWindow {
+                full_size_content_view: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            normal.appkit_node(),
+            zintl_ui_appkit_backend::NodeKind::Window {
+                full_size_content_view: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            full_size.appkit_node(),
+            zintl_ui_appkit_backend::NodeKind::Window {
+                full_size_content_view: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn text_binding_and_button_action_route_through_appkit_views() {
         // Verifies AppKit controls connect native events to Store updates and actions.
         let mut composer = Composer::new(AppKitBackend::new());

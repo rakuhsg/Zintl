@@ -46,6 +46,7 @@ pub enum NodeKind {
         sidebar: Option<Sidebar>,
         bounds: Rect,
         title: String,
+        full_size_content_view: bool,
         id: Option<String>,
     },
     View {
@@ -160,6 +161,7 @@ mod backend {
         native_window: Option<ActorId>,
         window_layout: Option<Rc<RefCell<WindowLayout>>>,
         applied_window_bounds: Option<Rect>,
+        applied_full_size_content_view: Option<bool>,
         applied_sidebar: Option<super::Sidebar>,
         event_route: Option<EventRouteId>,
     }
@@ -189,6 +191,7 @@ mod backend {
                     native_window: None,
                     window_layout: None,
                     applied_window_bounds: None,
+                    applied_full_size_content_view: None,
                     applied_sidebar: None,
                     event_route: None,
                 })],
@@ -305,6 +308,7 @@ mod backend {
                 let NodeKind::Window {
                     bounds,
                     title,
+                    full_size_content_view,
                     id,
                     sidebar,
                 } = description
@@ -338,20 +342,32 @@ mod backend {
                     node.native_window = Some(native_id);
                     node.window_layout = Some(layout);
                     node.applied_window_bounds = None;
+                    node.applied_full_size_content_view = None;
                 }
                 let native_id = self
                     .node(window_id)
                     .native_window
                     .expect("a synchronized window has a native Actor");
                 let event_route = self.node(window_id).event_route.map(route_token);
-                let apply_bounds =
-                    window_bounds_need_update(self.node(window_id).applied_window_bounds, bounds);
+                let apply_full_size_content_view =
+                    self.node(window_id).applied_full_size_content_view
+                        != Some(full_size_content_view);
+                let apply_bounds = apply_full_size_content_view
+                    || window_bounds_need_update(
+                        self.node(window_id).applied_window_bounds,
+                        bounds,
+                    );
                 cx.with_window(native_id, |window| -> Result<(), AppError> {
                     window
                         .actor_ref()
                         .set_event_route(event_route)
                         .map_err(WindowError::from)
                         .map_err(AppError::Window)?;
+                    if apply_full_size_content_view {
+                        window
+                            .set_full_size_content_view(full_size_content_view)
+                            .map_err(AppError::Window)?;
+                    }
                     if apply_bounds {
                         window
                             .set_bounds(native_rect(bounds))
@@ -365,6 +381,10 @@ mod backend {
                 .ok_or(AppError::Window(WindowError::Closed))??;
                 if apply_bounds {
                     self.node_mut(window_id).applied_window_bounds = Some(bounds);
+                }
+                if apply_full_size_content_view {
+                    self.node_mut(window_id).applied_full_size_content_view =
+                        Some(full_size_content_view);
                 }
 
                 if new_window || self.node(window_id).applied_sidebar != sidebar {
@@ -632,6 +652,7 @@ mod backend {
                 native_window: None,
                 window_layout: None,
                 applied_window_bounds: None,
+                applied_full_size_content_view: None,
                 applied_sidebar: None,
                 event_route,
             }));

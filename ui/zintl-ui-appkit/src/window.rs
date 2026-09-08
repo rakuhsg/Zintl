@@ -8,6 +8,7 @@ pub struct Window<C = Empty> {
     sidebar: Option<Sidebar>,
     bounds: Rect,
     title: String,
+    full_size_content_view: bool,
     id: Option<String>,
     children: C,
 }
@@ -18,6 +19,7 @@ impl Window<Empty> {
             sidebar: None,
             bounds,
             title: title.into(),
+            full_size_content_view: false,
             id: None,
             children: Empty,
         }
@@ -35,11 +37,17 @@ impl<C> Window<C> {
         self
     }
 
+    pub fn full_size_content_view(mut self) -> Self {
+        self.full_size_content_view = true;
+        self
+    }
+
     pub fn content<V>(self, content: V) -> Window<(V,)> {
         Window {
             sidebar: self.sidebar,
             bounds: self.bounds,
             title: self.title,
+            full_size_content_view: self.full_size_content_view,
             id: self.id,
             children: (content,),
         }
@@ -54,6 +62,7 @@ impl<C: Children> View for Window<C> {
             sidebar: self.sidebar.as_ref().map(|sidebar| sidebar.state(cx)),
             bounds: self.bounds,
             title: self.title.clone(),
+            full_size_content_view: self.full_size_content_view,
             id: self.id.clone(),
         })
         .with_children(self.children.elements());

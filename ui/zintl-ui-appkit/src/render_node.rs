@@ -28,6 +28,7 @@ pub enum RenderNode {
         sidebar: Option<SidebarState>,
         bounds: Rect,
         title: String,
+        full_size_content_view: bool,
         id: Option<String>,
     },
     NSView {
@@ -75,6 +76,7 @@ impl zintl_ui_appkit_backend::AppKitRenderNode for RenderNode {
                 sidebar,
                 bounds,
                 title,
+                full_size_content_view,
                 id,
             } => NodeKind::Window {
                 sidebar: sidebar.as_ref().map(SidebarState::backend),
@@ -85,6 +87,7 @@ impl zintl_ui_appkit_backend::AppKitRenderNode for RenderNode {
                     bounds.height,
                 ),
                 title: title.clone(),
+                full_size_content_view: *full_size_content_view,
                 id: id.clone(),
             },
             Self::NSView { layout, id } => NodeKind::View {

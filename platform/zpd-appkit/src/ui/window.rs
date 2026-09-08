@@ -205,8 +205,7 @@ impl<'application> Window<'application> {
         let style_mask = native::NS_WINDOW_STYLE_MASK_TITLED
             | native::NS_WINDOW_STYLE_MASK_CLOSABLE
             | native::NS_WINDOW_STYLE_MASK_MINIATURIZABLE
-            | native::NS_WINDOW_STYLE_MASK_RESIZABLE
-            | native::NS_WINDOW_STYLE_MASK_FULL_SIZE_CONTENT_VIEW;
+            | native::NS_WINDOW_STYLE_MASK_RESIZABLE;
         // SAFETY: This is NSWindow's arm64 designated initializer signature.
         let native_window = unsafe {
             Strong::from_retained(zpd_objc::msg_send!(zpd_objc::msg_send!(zpd_objc::class!("NSWindow"), zpd_objc::sel!("alloc"), () => zpd_objc::Id), zpd_objc::sel!("initWithContentRect:styleMask:backing:defer:"), ((frame): native::Rect, (style_mask): u64, (native::NS_BACKING_STORE_BUFFERED): u64, (false): bool) => zpd_objc::Id))
@@ -334,6 +333,29 @@ impl<'application> Window<'application> {
         self.actor
             .with(|window| unsafe {
                 zpd_objc::msg_send!(window, zpd_objc::sel!("setAccessibilityIdentifier:"), ((identifier.as_ref().map_or(zpd_objc::NIL, Strong::as_ptr)): zpd_objc::Id) => ())
+            })
+            .map_err(Into::into)
+    }
+    pub fn set_full_size_content_view(&self, enabled: bool) -> Result<(), WindowError> {
+        self.ensure_open()?;
+        self.actor
+            .with(|window| {
+                // SAFETY: The live actor is an NSWindow and both selectors use NSUInteger masks.
+                unsafe {
+                    let mut style_mask =
+                        zpd_objc::msg_send!(window, zpd_objc::sel!("styleMask"), () => u64);
+                    let is_enabled = style_mask
+                        & native::NS_WINDOW_STYLE_MASK_FULL_SIZE_CONTENT_VIEW
+                        != 0;
+                    if enabled != is_enabled {
+                        if enabled {
+                            style_mask |= native::NS_WINDOW_STYLE_MASK_FULL_SIZE_CONTENT_VIEW;
+                        } else {
+                            style_mask &= !native::NS_WINDOW_STYLE_MASK_FULL_SIZE_CONTENT_VIEW;
+                        }
+                        zpd_objc::msg_send!(window, zpd_objc::sel!("setStyleMask:"), ((style_mask): u64) => ())
+                    }
+                }
             })
             .map_err(Into::into)
     }
