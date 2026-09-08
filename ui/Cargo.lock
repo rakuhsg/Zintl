@@ -127,6 +127,16 @@ version = "0.0.0"
 name = "zintl-ui-appkit"
 version = "0.0.0"
 dependencies = [
+ "zintl-ui",
+ "zintl-ui-appkit-backend",
+ "zintl-ui-desktop",
+ "zintl-ui-layout",
+]
+
+[[package]]
+name = "zintl-ui-appkit-backend"
+version = "0.0.0"
+dependencies = [
  "messageloop-appkit",
  "zintl-ui",
  "zintl-ui-layout",

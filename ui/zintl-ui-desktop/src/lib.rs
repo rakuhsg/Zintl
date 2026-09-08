@@ -1,264 +1,50 @@
-mod sidebar;
-pub use sidebar::{Sidebar, SidebarItem, SidebarSection, SidebarState};
-
-use std::rc::Rc;
 use zintl_ui::composer::Composer;
 pub use zintl_ui::element::{Element, IntoElement};
-use zintl_ui::event::Event as EventTrait;
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 use zintl_ui::event::EventRouteId;
-use zintl_ui::renderer::{RenderBackend, RenderNode as RenderNodeTrait};
+use zintl_ui::renderer::RenderBackend;
 pub use zintl_ui::store::Store;
 pub use zintl_ui::view::{Context, View};
+pub use zintl_ui_appkit::{
+    Children, Empty, Event, EventKind, Rect, RenderNode, Sidebar, SidebarItem, SidebarSection,
+    SidebarState,
+};
 pub use zintl_ui_layout::{
     Axis, ChildSizing, CrossAxisAlignment, LayoutDimension, LayoutStyle, MainAxisDistribution, Size,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-/// Selects the semantic desktop event handled by an element route.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum EventKind {
-    Activated,
-    TextChanged,
-    SidebarSelectionChanged,
-    WindowCreated,
-    WindowDidResize,
-    WindowWillClose,
-    WindowDidClose,
-}
-
-/// A semantic event produced by a desktop backend.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
-    Activated,
-    TextChanged { value: String },
-    SidebarSelectionChanged { id: String },
-    WindowCreated,
-    WindowDidResize,
-    WindowWillClose,
-    WindowDidClose,
-}
-
-impl EventTrait for Event {
-    type Kind = EventKind;
-
-    fn kind(&self) -> Self::Kind {
-        match self {
-            Self::Activated => EventKind::Activated,
-            Self::TextChanged { .. } => EventKind::TextChanged,
-            Self::SidebarSelectionChanged { .. } => EventKind::SidebarSelectionChanged,
-            Self::WindowCreated => EventKind::WindowCreated,
-            Self::WindowDidResize => EventKind::WindowDidResize,
-            Self::WindowWillClose => EventKind::WindowWillClose,
-            Self::WindowDidClose => EventKind::WindowDidClose,
-        }
-    }
-}
-
-impl Rect {
-    pub const fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum RenderNode {
-    Text {
-        content: String,
-        layout: LayoutStyle,
-        id: Option<String>,
-    },
-    Button {
-        title: String,
-        layout: LayoutStyle,
-        id: Option<String>,
-    },
-    TextField {
-        value: String,
-        placeholder: Option<String>,
-        layout: LayoutStyle,
-        id: Option<String>,
-    },
-    Container {
-        layout: LayoutStyle,
-        id: Option<String>,
-    },
-    Window {
-        sidebar: Option<SidebarState>,
-        bounds: Rect,
-        title: String,
-        id: Option<String>,
-    },
-}
-
-impl RenderNodeTrait for RenderNode {
-    type Event = Event;
-
-    fn same_kind(&self, other: &Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Text { .. }, Self::Text { .. })
-                | (Self::Button { .. }, Self::Button { .. })
-                | (Self::TextField { .. }, Self::TextField { .. })
-                | (Self::Container { .. }, Self::Container { .. })
-                | (Self::Window { .. }, Self::Window { .. })
-        )
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl zintl_ui_appkit::AppKitRenderNode for RenderNode {
-    fn appkit_node(&self) -> zintl_ui_appkit::NodeKind {
-        use zintl_ui_appkit::{NodeKind, ViewKind};
-
-        match self {
-            Self::Text {
-                content,
-                layout,
-                id,
-            } => NodeKind::View {
-                kind: ViewKind::Label(content.clone()),
-                layout: *layout,
-                id: id.clone(),
-            },
-            Self::Button { title, layout, id } => NodeKind::View {
-                kind: ViewKind::Button(title.clone()),
-                layout: *layout,
-                id: id.clone(),
-            },
-            Self::TextField {
-                value,
-                placeholder,
-                layout,
-                id,
-            } => NodeKind::View {
-                kind: ViewKind::TextField {
-                    value: value.clone(),
-                    placeholder: placeholder.clone(),
-                },
-                layout: *layout,
-                id: id.clone(),
-            },
-            Self::Container { layout, id } => NodeKind::View {
-                kind: ViewKind::Container,
-                layout: *layout,
-                id: id.clone(),
-            },
-            Self::Window {
-                bounds,
-                title,
-                id,
-                sidebar,
-            } => NodeKind::Window {
-                sidebar: sidebar.as_ref().map(SidebarState::appkit),
-                bounds: zintl_ui_appkit::Rect::new(bounds.x, bounds.y, bounds.width, bounds.height),
-                title: title.clone(),
-                id: id.clone(),
-            },
-        }
-    }
-
-    fn appkit_event(event: zintl_ui_appkit::AppKitEvent) -> Self::Event {
-        match event {
-            zintl_ui_appkit::AppKitEvent::SidebarSelectionChanged { id } => {
-                Event::SidebarSelectionChanged { id }
-            }
-            zintl_ui_appkit::AppKitEvent::Created => Event::WindowCreated,
-            zintl_ui_appkit::AppKitEvent::DidResize => Event::WindowDidResize,
-            zintl_ui_appkit::AppKitEvent::WillClose => Event::WindowWillClose,
-            zintl_ui_appkit::AppKitEvent::DidClose => Event::WindowDidClose,
-            zintl_ui_appkit::AppKitEvent::ButtonClicked => Event::Activated,
-            zintl_ui_appkit::AppKitEvent::TextChanged { value } => Event::TextChanged { value },
-        }
-    }
-}
-
-pub trait Children: 'static {
-    fn elements(&self) -> Vec<Element<RenderNode>>;
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Empty;
-
-impl Children for Empty {
-    fn elements(&self) -> Vec<Element<RenderNode>> {
-        Vec::new()
-    }
-}
-
-macro_rules! impl_children_tuple {
-    ($($type:ident:$value:ident),+) => {
-        impl<$($type),+> Children for ($($type,)+)
-        where
-            $($type: Clone + IntoElement<Output = RenderNode> + 'static,)+
-        {
-            fn elements(&self) -> Vec<Element<RenderNode>> {
-                let ($($value,)+) = self;
-                vec![$($value.clone().into_element(),)+]
-            }
-        }
-    };
-}
-
-impl_children_tuple!(A:a);
-impl_children_tuple!(A:a, B:b);
-impl_children_tuple!(A:a, B:b, C:c);
-impl_children_tuple!(A:a, B:b, C:c, D:d);
-impl_children_tuple!(A:a, B:b, C:c, D:d, E:e);
-impl_children_tuple!(A:a, B:b, C:c, D:d, E:e, F:f);
-
 #[derive(Clone)]
 pub struct Window<C = Empty> {
-    sidebar: Option<Sidebar>,
-    bounds: Rect,
-    title: String,
-    id: Option<String>,
-    children: C,
+    inner: zintl_ui_appkit::Window<C>,
 }
 
 impl Window<Empty> {
     pub fn new(bounds: Rect, title: impl Into<String>) -> Self {
         Self {
-            sidebar: None,
-            bounds,
-            title: title.into(),
-            id: None,
-            children: Empty,
+            inner: zintl_ui_appkit::Window::new(bounds, title),
         }
     }
 }
 
 impl<C> Window<C> {
-    /// Attaches a native sidebar (currently supported by AppKit only).
     pub fn sidebar(mut self, sidebar: Sidebar) -> Self {
-        self.sidebar = Some(sidebar);
+        self.inner = self.inner.sidebar(sidebar);
         self
     }
 
     pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+        self.inner = self.inner.id(id);
+        self
+    }
+
+    pub fn full_size_content_view(mut self) -> Self {
+        self.inner = self.inner.full_size_content_view();
         self
     }
 
     pub fn content<V>(self, content: V) -> Window<(V,)> {
         Window {
-            sidebar: self.sidebar,
-            bounds: self.bounds,
-            title: self.title,
-            id: self.id,
-            children: (content,),
+            inner: self.inner.content(content),
         }
     }
 }
@@ -266,47 +52,30 @@ impl<C> Window<C> {
 impl<C: Children> View for Window<C> {
     type Output = RenderNode;
 
-    fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        let element = Element::node(RenderNode::Window {
-            sidebar: self.sidebar.as_ref().map(|sidebar| sidebar.state(cx)),
-            bounds: self.bounds,
-            title: self.title.clone(),
-            id: self.id.clone(),
-        })
-        .with_children(self.children.elements());
-        if let Some(sidebar) = &self.sidebar {
-            sidebar.route(element)
-        } else {
-            element
-        }
+    fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        self.inner.clone().into_element()
     }
 }
 
 #[derive(Clone)]
 pub struct Text {
-    content: String,
-    layout: LayoutStyle,
-    id: Option<String>,
+    inner: zintl_ui_appkit::TextField,
 }
 
 impl Text {
     pub fn new(content: impl Into<String>) -> Self {
-        let content = content.into();
-        let minimum_width = content.chars().count() as f32 * 7.0;
         Self {
-            content,
-            layout: LayoutStyle::leaf(Size::new(minimum_width, 20.0)),
-            id: None,
+            inner: zintl_ui_appkit::TextField::label_with_string(content),
         }
     }
 
     pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+        self.inner = self.inner.id(id);
         self
     }
 
     pub fn minimum_size(mut self, size: Size) -> Self {
-        self.layout.minimum_size = size;
+        self.inner = self.inner.minimum_size(size);
         self
     }
 }
@@ -315,45 +84,34 @@ impl View for Text {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        Element::node(RenderNode::Text {
-            content: self.content.clone(),
-            layout: self.layout,
-            id: self.id.clone(),
-        })
+        self.inner.clone().into_element()
     }
 }
 
 #[derive(Clone)]
 pub struct Button {
-    title: String,
-    layout: LayoutStyle,
-    id: Option<String>,
-    action: Option<Rc<dyn for<'a> Fn(&mut Context<'a>)>>,
+    inner: zintl_ui_appkit::Button,
 }
 
 impl Button {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
-            title: title.into(),
-            layout: LayoutStyle::leaf(Size::new(80.0, 32.0)),
-            id: None,
-            action: None,
+            inner: zintl_ui_appkit::Button::new(title),
         }
     }
 
     pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+        self.inner = self.inner.id(id);
         self
     }
 
     pub fn minimum_size(mut self, size: Size) -> Self {
-        self.layout.minimum_size = size;
+        self.inner = self.inner.minimum_size(size);
         self
     }
 
-    /// Schedules `action` when this Button is activated by the platform.
     pub fn on_click(mut self, action: impl for<'a> Fn(&mut Context<'a>) + 'static) -> Self {
-        self.action = Some(Rc::new(action));
+        self.inner = self.inner.on_click(action);
         self
     }
 }
@@ -362,85 +120,54 @@ impl View for Button {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        let element = Element::node(RenderNode::Button {
-            title: self.title.clone(),
-            layout: self.layout,
-            id: self.id.clone(),
-        });
-        if let Some(action) = self.action.clone() {
-            element.on_event(EventKind::Activated, move |cx, event| {
-                if event == Event::Activated {
-                    action(cx);
-                }
-            })
-        } else {
-            element
-        }
+        self.inner.clone().into_element()
     }
 }
 
 #[derive(Clone)]
 pub struct TextField {
-    binding: Option<Store<String>>,
-    placeholder: Option<String>,
-    layout: LayoutStyle,
-    id: Option<String>,
+    inner: zintl_ui_appkit::TextField,
 }
 
 impl TextField {
     pub fn new() -> Self {
         Self {
-            binding: None,
-            placeholder: None,
-            layout: LayoutStyle::leaf(Size::new(160.0, 28.0)),
-            id: None,
+            inner: zintl_ui_appkit::TextField::new(),
         }
     }
 
     pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+        self.inner = self.inner.id(id);
         self
     }
 
     pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
-        self.placeholder = Some(placeholder.into());
+        self.inner = self.inner.placeholder(placeholder);
         self
     }
 
     pub fn bind(mut self, store: Store<String>) -> Self {
-        self.binding = Some(store);
+        self.inner = self.inner.bind(store);
         self
     }
 
     pub fn minimum_size(mut self, size: Size) -> Self {
-        self.layout.minimum_size = size;
+        self.inner = self.inner.minimum_size(size);
         self
+    }
+}
+
+impl Default for TextField {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl View for TextField {
     type Output = RenderNode;
 
-    fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        let value = self
-            .binding
-            .map(|store| cx.get(store).clone())
-            .unwrap_or_default();
-        let element = Element::node(RenderNode::TextField {
-            value,
-            placeholder: self.placeholder.clone(),
-            layout: self.layout,
-            id: self.id.clone(),
-        });
-        if let Some(store) = self.binding {
-            element.on_event(EventKind::TextChanged, move |cx, event| {
-                if let Event::TextChanged { value } = event {
-                    cx.update(store, |current| *current = value);
-                }
-            })
-        } else {
-            element
-        }
+    fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+        self.inner.clone().into_element()
     }
 }
 
@@ -495,11 +222,11 @@ impl<C: Children> View for HStack<C> {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        Element::node(RenderNode::Container {
-            layout: self.layout,
-            id: self.id.clone(),
-        })
-        .with_children(self.children.elements())
+        let view = zintl_ui_appkit::View::new(self.layout, self.children.clone());
+        match &self.id {
+            Some(id) => view.id(id.clone()).into_element(),
+            None => view.into_element(),
+        }
     }
 }
 
@@ -544,11 +271,11 @@ impl<C: Children> View for VStack<C> {
     type Output = RenderNode;
 
     fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
-        Element::node(RenderNode::Container {
-            layout: self.layout,
-            id: self.id.clone(),
-        })
-        .with_children(self.children.elements())
+        let view = zintl_ui_appkit::View::new(self.layout, self.children.clone());
+        match &self.id {
+            Some(id) => view.id(id.clone()).into_element(),
+            None => view.into_element(),
+        }
     }
 }
 
@@ -701,9 +428,8 @@ impl App {
 
     #[cfg(test)]
     fn update_text_store(&mut self, store: Store<String>, value: String) {
-        self.composer.context(|cx| {
-            cx.update(store, |current| *current = value);
-        });
+        self.composer
+            .context(|cx| cx.update(store, |current| *current = value));
         self.composer.flush();
     }
 
@@ -716,14 +442,14 @@ impl App {
 }
 
 #[cfg(all(test, target_os = "macos"))]
-fn root_event_route(backend: &DesktopBackend) -> Option<zintl_ui::event::EventRouteId> {
+fn root_event_route(backend: &DesktopBackend) -> Option<EventRouteId> {
     let root = backend.root();
     let child = *backend.children(root).first()?;
     backend.event_route(child)
 }
 
 #[cfg(all(test, not(target_os = "macos")))]
-fn root_event_route(backend: &TreeBackend) -> Option<zintl_ui::event::EventRouteId> {
+fn root_event_route(backend: &TreeBackend) -> Option<EventRouteId> {
     let child = *backend.children(backend.root()).first()?;
     backend.node(child).event_route
 }
@@ -770,13 +496,13 @@ mod tests {
         captured: Rc<Cell<Option<Store<String>>>>,
     }
 
-    struct BoundLabelView {
+    struct BoundTextView {
         value: Option<Store<String>>,
         renders: Rc<Cell<usize>>,
         captured: Rc<Cell<Option<Store<String>>>>,
     }
 
-    impl View for BoundLabelView {
+    impl View for BoundTextView {
         type Output = RenderNode;
 
         fn init(&mut self, cx: &mut Context<'_>) {
@@ -788,7 +514,7 @@ mod tests {
             self.renders.set(self.renders.get() + 1);
             let store = self
                 .value
-                .expect("BoundLabelView must be initialized before rendering");
+                .expect("BoundTextView must be initialized before rendering");
             VStack::new((
                 TextField::new().bind(store),
                 cx.watch(store, |value| Text::new(format!("Stored value: {value}"))),
@@ -825,24 +551,64 @@ mod tests {
     }
 
     #[test]
+    fn text_and_text_field_share_the_native_render_kind() {
+        // Verifies desktop text wrappers both render through NSTextField configuration.
+        let label = App::new(Text::new("Label")).render();
+        let field = App::new(TextField::new()).render();
+
+        assert!(matches!(
+            label,
+            RenderNode::NSTextField {
+                editable: false,
+                bordered: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            field,
+            RenderNode::NSTextField {
+                editable: true,
+                bordered: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn window_element_preserves_bounds_and_title() {
-        // Verifies the Window view preserves its declarative bounds and title.
+        // Verifies the Window wrapper preserves its declarative bounds and title.
         let bounds = Rect::new(10.0, 20.0, 640.0, 480.0);
         let app = App::new(Window::new(bounds, "Zintl"));
         assert_eq!(
             app.render(),
-            RenderNode::Window {
+            RenderNode::NSWindow {
                 sidebar: None,
                 bounds,
                 title: "Zintl".into(),
+                full_size_content_view: false,
                 id: None,
             }
         );
     }
 
     #[test]
-    fn stack_render_tree_carries_direction_gap_and_control_sizes() {
-        // Verifies desktop layout decisions are retained for the platform backend.
+    fn window_full_size_content_view_is_opt_in() {
+        // Verifies the desktop wrapper forwards the AppKit full-size content option.
+        let bounds = Rect::new(10.0, 20.0, 640.0, 480.0);
+        let app = App::new(Window::new(bounds, "Zintl").full_size_content_view());
+
+        assert!(matches!(
+            app.render(),
+            RenderNode::NSWindow {
+                full_size_content_view: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stack_render_tree_carries_layout_and_control_sizes() {
+        // Verifies stack wrappers preserve layout policy while using native render nodes.
         let app = App::new(
             Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Zintl")
                 .content(HStack::new((Button::new("Save"), TextField::new())).spacing(12.0)),
@@ -852,14 +618,14 @@ mod tests {
 
         assert_eq!(
             stack.value,
-            RenderNode::Container {
+            RenderNode::NSView {
                 layout: LayoutStyle::stack(Axis::Horizontal, 12.0),
                 id: None,
             }
         );
         assert!(matches!(
             stack.children[0].value,
-            RenderNode::Button {
+            RenderNode::NSButton {
                 layout: LayoutStyle {
                     minimum_size: Size {
                         width: 80.0,
@@ -872,7 +638,7 @@ mod tests {
         ));
         assert!(matches!(
             stack.children[1].value,
-            RenderNode::TextField {
+            RenderNode::NSTextField {
                 layout: LayoutStyle {
                     minimum_size: Size {
                         width: 160.0,
@@ -887,7 +653,7 @@ mod tests {
 
     #[test]
     fn stack_builders_preserve_width_and_child_distribution() {
-        // Verifies stack builder APIs retain their Taffy-facing layout policies.
+        // Verifies desktop stack options reach the wrapped AppKit NSView layout.
         let app = App::new(
             Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Zintl").content(
                 VStack::new((HStack::new((Button::new("Save"), Button::new("Cancel")))
@@ -903,7 +669,7 @@ mod tests {
 
         assert!(matches!(
             column.value,
-            RenderNode::Container {
+            RenderNode::NSView {
                 layout: LayoutStyle {
                     width: LayoutDimension::Percent(1.0),
                     ..
@@ -913,7 +679,7 @@ mod tests {
         ));
         assert!(matches!(
             row.value,
-            RenderNode::Container {
+            RenderNode::NSView {
                 layout: LayoutStyle {
                     width: LayoutDimension::Percent(1.0),
                     main_axis_distribution: MainAxisDistribution::SpaceBetween,
@@ -927,13 +693,15 @@ mod tests {
 
     #[test]
     fn text_field_writes_native_input_to_its_store() {
-        // Verifies a bound TextField reads from its Store and rerenders after input updates it.
+        // Verifies a bound TextField reads native input into its Store and rerenders.
         let captured = Rc::new(Cell::new(None));
         let mut app = App::new(StoreTextFieldView {
             value: None,
             captured: captured.clone(),
         });
-        assert!(matches!(app.render(), RenderNode::TextField { value, .. } if value == "initial"));
+        assert!(
+            matches!(app.render(), RenderNode::NSTextField { value, .. } if value == "initial")
+        );
         let store = captured.get().expect("init must publish the test Store");
 
         assert!(app.dispatch_root_event(Event::TextChanged {
@@ -944,13 +712,13 @@ mod tests {
         assert_eq!(stored, "typed value");
         assert!(matches!(
             app.render(),
-            RenderNode::TextField { value, .. } if value == "typed value"
+            RenderNode::NSTextField { value, .. } if value == "typed value"
         ));
     }
 
     #[test]
     fn button_dispatches_its_registered_action() {
-        // Verifies Button activation reaches its Element-owned action without a backend node lookup.
+        // Verifies the desktop Button delegates activation to the AppKit view route.
         let activations = Rc::new(Cell::new(0));
         let received = activations.clone();
         let mut app = App::new(Button::new("Save").on_click(move |_| {
@@ -963,7 +731,7 @@ mod tests {
 
     #[test]
     fn view_ids_are_preserved_in_the_render_tree() {
-        // Verifies stable IDs survive declarative rendering for platform accessibility backends.
+        // Verifies wrapper IDs reach native render nodes for accessibility.
         let app = App::new(
             Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Zintl")
                 .id("main-window")
@@ -973,20 +741,20 @@ mod tests {
 
         assert!(matches!(
             &tree.value,
-            RenderNode::Window { id: Some(id), .. } if id == "main-window"
+            RenderNode::NSWindow { id: Some(id), .. } if id == "main-window"
         ));
         assert!(matches!(
             &tree.children[0].value,
-            RenderNode::TextField { id: Some(id), .. } if id == "name-input"
+            RenderNode::NSTextField { id: Some(id), .. } if id == "name-input"
         ));
     }
 
     #[test]
     fn store_watcher_rebuilds_only_its_dependent_element() {
-        // Verifies cx.watch updates its label without subscribing the enclosing view.
+        // Verifies wrappers preserve fine-grained Store watcher rebuilding.
         let renders = Rc::new(Cell::new(0));
         let captured = Rc::new(Cell::new(None));
-        let mut app = App::new(BoundLabelView {
+        let mut app = App::new(BoundTextView {
             value: None,
             renders: renders.clone(),
             captured: captured.clone(),
@@ -994,17 +762,65 @@ mod tests {
         let tree = app.render_tree();
         assert!(matches!(
             &tree.children[0].value,
-            RenderNode::TextField { .. }
+            RenderNode::NSTextField { .. }
         ));
         let store = captured.get().expect("init must publish the test Store");
 
-        app.update_text_store(store, "typed value".into());
+        app.update_text_store(store, "updated".into());
 
-        assert_eq!(renders.get(), 1);
         let tree = app.render_tree();
-        let RenderNode::Text { content, .. } = &tree.children[1].value else {
-            panic!("expected a bound Text, got {:?}", tree.children[1].value);
+        let RenderNode::NSTextField { value, .. } = &tree.children[1].value else {
+            panic!("the watched Text must remain an NSTextField")
         };
-        assert_eq!(content, "Stored value: typed value");
+        assert_eq!(value, "Stored value: updated");
+        assert_eq!(renders.get(), 1);
+    }
+
+    #[test]
+    fn sidebar_selection_round_trips_and_rejects_unknown_items() {
+        // Verifies the desktop Sidebar preserves AppKit Store selection behavior.
+        struct Navigation {
+            selection: Store<Option<String>>,
+            captured: Rc<Cell<Store<Option<String>>>>,
+        }
+
+        impl View for Navigation {
+            type Output = RenderNode;
+
+            fn init(&mut self, cx: &mut Context<'_>) {
+                self.selection = cx.store(Some("home".into()));
+                self.captured.set(self.selection);
+            }
+
+            fn render(&self, _cx: &mut Context<'_>) -> impl IntoElement<Output = RenderNode> {
+                Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Navigation").sidebar(
+                    Sidebar::new([SidebarSection::new([
+                        SidebarItem::new("home", "Home"),
+                        SidebarItem::new("settings", "Settings"),
+                    ])])
+                    .bind(self.selection),
+                )
+            }
+        }
+
+        let captured = Rc::new(Cell::new(Store::default()));
+        let mut app = App::new(Navigation {
+            selection: Store::default(),
+            captured: captured.clone(),
+        });
+        assert!(app.dispatch_root_event(Event::SidebarSelectionChanged {
+            id: "settings".into(),
+        }));
+        assert_eq!(
+            app.composer.context(|cx| cx.get(captured.get()).clone()),
+            Some("settings".into())
+        );
+        assert!(app.dispatch_root_event(Event::SidebarSelectionChanged {
+            id: "missing".into(),
+        }));
+        assert_eq!(
+            app.composer.context(|cx| cx.get(captured.get()).clone()),
+            Some("settings".into())
+        );
     }
 }

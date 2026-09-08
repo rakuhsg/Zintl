@@ -103,6 +103,16 @@ impl TextField {
             zpd_objc::msg_send!(field, zpd_objc::sel!("setSelectable:"), ((selectable): bool) => ())
         })
     }
+    pub fn set_bordered(&self, bordered: bool) -> Result<(), ViewError> {
+        self.view.as_view().with(|field| unsafe {
+            zpd_objc::msg_send!(field, zpd_objc::sel!("setBordered:"), ((bordered): bool) => ())
+        })
+    }
+    pub fn set_draws_background(&self, draws_background: bool) -> Result<(), ViewError> {
+        self.view.as_view().with(|field| unsafe {
+            zpd_objc::msg_send!(field, zpd_objc::sel!("setDrawsBackground:"), ((draws_background): bool) => ())
+        })
+    }
 }
 impl AsView for TextField {
     fn as_view(&self) -> ViewRef<'_> {

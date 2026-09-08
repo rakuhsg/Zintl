@@ -1,13 +1,11 @@
 [package]
-name = "zintl-ui-appkit"
+name = "zintl-ui-appkit-backend"
 edition = "2024"
 
 [dependencies]
 zintl-ui = { path = "../zintl-ui" }
 zintl-ui-layout = { path = "../zintl-ui-layout" }
+zpd-appkit = { path = "../../platform/zpd-appkit" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-zintl-ui-appkit-backend = { path = "../zintl-ui-appkit-backend" }
-
-[dev-dependencies]
-zintl-ui-desktop = { path = "../../ui/zintl-ui-desktop" }
+messageloop-appkit = { path = "../../common/messageloop/messageloop-appkit" }
