@@ -2,6 +2,7 @@ use crate::event::EventHandlers;
 use crate::renderer::RenderNode;
 use crate::view::Context;
 use std::any::TypeId;
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -115,6 +116,32 @@ pub trait IntoElement {
     fn into_element(self) -> Element<Self::Output>;
 }
 
+/// Rebuilds a cloneable [`IntoElement`] value after erasing its concrete type.
+#[derive(Clone)]
+pub struct ElementFactory<R: RenderNode> {
+    build: Rc<dyn Fn() -> Element<R>>,
+}
+
+impl<R: RenderNode> ElementFactory<R> {
+    /// Captures an element value that can be cloned for repeated rendering.
+    pub fn new<E>(element: E) -> Self
+    where
+        E: Clone + IntoElement<Output = R> + 'static,
+    {
+        Self {
+            build: Rc::new(move || element.clone().into_element()),
+        }
+    }
+}
+
+impl<R: RenderNode> IntoElement for ElementFactory<R> {
+    type Output = R;
+
+    fn into_element(self) -> Element<Self::Output> {
+        (self.build)()
+    }
+}
+
 impl<R: RenderNode> IntoElement for Element<R> {
     type Output = R;
 
@@ -134,6 +161,7 @@ pub trait KeyedElement: IntoElement + Sized {
 
 impl<T: IntoElement> KeyedElement for T {}
 
+#[derive(Clone)]
 pub struct Keyed<T> {
     inner: T,
     key: ElementKey,
@@ -144,5 +172,150 @@ impl<T: IntoElement> IntoElement for Keyed<T> {
 
     fn into_element(self) -> Element<Self::Output> {
         self.inner.into_element().with_key(self.key)
+    }
+}
+
+/// Creates an extensible vector of type-erased [`IntoElement`] factories.
+#[macro_export]
+macro_rules! list {
+    ($($element:expr),* $(,)?) => {
+        ::std::vec![$($crate::element::ElementFactory::new($element)),*]
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum TestNode {
+        Text(&'static str),
+        Number(u64),
+    }
+
+    #[derive(Clone)]
+    struct TestEvent;
+
+    impl crate::event::Event for TestEvent {
+        type Kind = ();
+
+        fn kind(&self) -> Self::Kind {}
+    }
+
+    impl RenderNode for TestNode {
+        type Event = TestEvent;
+
+        fn same_kind(&self, other: &Self) -> bool {
+            std::mem::discriminant(self) == std::mem::discriminant(other)
+        }
+    }
+
+    #[derive(Clone)]
+    struct Text(&'static str);
+
+    impl IntoElement for Text {
+        type Output = TestNode;
+
+        fn into_element(self) -> Element<Self::Output> {
+            Element::node(TestNode::Text(self.0))
+        }
+    }
+
+    #[derive(Clone)]
+    struct Number(u64);
+
+    impl IntoElement for Number {
+        type Output = TestNode;
+
+        fn into_element(self) -> Element<Self::Output> {
+            Element::node(TestNode::Number(self.0))
+        }
+    }
+
+    #[test]
+    fn list_erases_types_without_limiting_length() {
+        // Verifies heterogeneous lists preserve order beyond the former tuple limit.
+        let factories: Vec<ElementFactory<TestNode>> = crate::list![
+            Text("one"),
+            Number(2),
+            Text("three"),
+            Number(4),
+            Text("five"),
+            Number(6),
+            Text("seven"),
+            Number(8),
+        ];
+        let values = factories
+            .into_iter()
+            .map(|factory| match factory.into_element() {
+                Element::Node { value, .. } => value,
+                _ => panic!("a test factory must produce a node"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            values,
+            vec![
+                TestNode::Text("one"),
+                TestNode::Number(2),
+                TestNode::Text("three"),
+                TestNode::Number(4),
+                TestNode::Text("five"),
+                TestNode::Number(6),
+                TestNode::Text("seven"),
+                TestNode::Number(8),
+            ]
+        );
+    }
+
+    #[test]
+    fn element_factory_reuses_one_evaluated_element() {
+        // Verifies list expressions run once while factories can materialize repeatedly.
+        let evaluations = Rc::new(Cell::new(0));
+        let received = evaluations.clone();
+        let factories: Vec<ElementFactory<TestNode>> = crate::list![{
+            received.set(received.get() + 1);
+            Text("reusable")
+        }];
+        let first = factories[0].clone().into_element();
+        let second = factories[0].clone().into_element();
+
+        assert_eq!(evaluations.get(), 1);
+        assert!(matches!(
+            first,
+            Element::Node {
+                value: TestNode::Text("reusable"),
+                ..
+            }
+        ));
+        assert!(matches!(
+            second,
+            Element::Node {
+                value: TestNode::Text("reusable"),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn list_supports_empty_and_keyed_elements() {
+        // Verifies empty, keyed, and dynamically extended lists use the public API.
+        let empty: Vec<ElementFactory<TestNode>> = crate::list![];
+        let mut keyed: Vec<ElementFactory<TestNode>> = crate::list![Text("keyed").key("row"),];
+        keyed.push(ElementFactory::new(Number(2)));
+        keyed.extend(crate::list![Text("extended")]);
+
+        assert!(empty.is_empty());
+        assert_eq!(keyed.len(), 3);
+        assert!(matches!(
+            keyed[0].clone().into_element(),
+            Element::Node {
+                key: Some(ElementKey::String(key)),
+                ..
+            } if key.as_ref() == "row"
+        ));
     }
 }

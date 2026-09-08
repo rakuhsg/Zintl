@@ -23,6 +23,37 @@ Window::new(Rect::new(100.0, 100.0, 640.0, 400.0), "Navigation")
     }))
 ```
 
+## Child lists
+
+Use `list!` for heterogeneous stack children. The macro returns a
+`Vec<ElementFactory<RenderNode>>`, so the number of children is not limited by a
+tuple arity.
+
+```rust,ignore
+VStack::new(list![
+    Text::new("Profile"),
+    TextField::new().placeholder("Name"),
+    TextField::new().placeholder("Email"),
+    Text::new("Preferences"),
+    Button::new("Import"),
+    Button::new("Export"),
+    Button::new("Reset"),
+    Button::new("Save"),
+])
+```
+
+The returned vector can also be extended at runtime.
+
+```rust,ignore
+let mut actions = list![Button::new("Save")];
+if can_delete {
+    actions.push(ElementFactory::new(Button::new("Delete")));
+}
+actions.extend(list![Text::new("Ready"), Button::new("Close")]);
+
+HStack::new(actions)
+```
+
 AppKit uses a scrollable `NSTableView` with source-list styling and 32-point rows.
 Section titles are nonselectable group rows; item cells show a symbol and a
 truncating label. The sidebar width is limited to 180–320 points.

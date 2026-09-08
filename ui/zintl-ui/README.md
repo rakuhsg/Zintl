@@ -23,11 +23,32 @@ let mut composer = Composer::new(app_backend);
 composer.mount(Counter { count: None });
 ```
 
-Use keys for dynamic lists.
+Use `list!` to erase different `IntoElement` types into a reusable factory
+vector. Each expression is evaluated once; rendering clones the captured value
+and creates a fresh `Element`.
 
 ```rust,ignore
-let rows = tasks
-    .iter()
-    .map(|task| TaskRow::new(task).key(task.id).into_element());
-Element::node(AppRenderNode::List).with_children(rows)
+let children = list![
+    Text::new("Name"),
+    TextField::new(),
+    Button::new("Save"),
+];
+
+Element::node(AppRenderNode::Form)
+    .with_children(children.into_iter().map(IntoElement::into_element))
+```
+
+`list!` has no arity limit and returns a `Vec<ElementFactory<_>>`. Use
+`ElementFactory::new` with `push` or another `list!` with `extend` when children
+are assembled dynamically. Use keys when list identity must survive inserts,
+removals, or reordering.
+
+```rust,ignore
+let mut rows = list![Header::new("Tasks")];
+for task in &tasks {
+    rows.push(ElementFactory::new(TaskRow::new(task).key(task.id)));
+}
+
+Element::node(AppRenderNode::List)
+    .with_children(rows.into_iter().map(IntoElement::into_element))
 ```

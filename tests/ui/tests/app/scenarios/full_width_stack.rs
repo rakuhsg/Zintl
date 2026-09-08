@@ -12,26 +12,26 @@ impl View for MainView {
         )
         .id("main-window")
         .content(
-            VStack::new((
-                HStack::new((
+            VStack::new(list![
+                HStack::new(list![
                     TextField::new().id("space-leading").placeholder("Leading"),
                     TextField::new()
                         .id("space-trailing")
                         .placeholder("Trailing"),
-                ))
+                ])
                 .spacing(24.0)
                 .fill_width()
                 .space_between(),
-                HStack::new((
+                HStack::new(list![
                     TextField::new().id("equal-leading").placeholder("Leading"),
                     TextField::new()
                         .id("equal-trailing")
                         .placeholder("Trailing"),
-                ))
+                ])
                 .spacing(24.0)
                 .fill_width()
                 .equal_width_children(),
-            ))
+            ])
             .spacing(24.0)
             .fill_width(),
         )

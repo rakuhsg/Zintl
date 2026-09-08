@@ -31,7 +31,7 @@ impl View for MainView {
                 .on_select(|_cx, id| println!("Selected sidebar item: {id}")),
             )
             .content(
-                VStack::new((
+                VStack::new(list![
                     cx.watch(self.selection, |selection| {
                         Text::new(format!(
                             "Selected: {}",
@@ -40,7 +40,7 @@ impl View for MainView {
                     }),
                     TextField::new().placeholder("Your Name").bind(name),
                     cx.watch(name, |name| Text::new(format!("Stored value: {name:?}"))),
-                    HStack::new((Button::new("Continue"), Button::new("Cancel")))
+                    HStack::new(list![Button::new("Continue"), Button::new("Cancel")])
                         .spacing(12.0)
                         .fill_width()
                         .equal_width_children(),
@@ -52,10 +52,11 @@ impl View for MainView {
                     Button::new("Counter-counter").on_click(move |cx| {
                         cx.update(count, |value| *value -= 1);
                     }),
-                ))
+                ])
                 .fill_width()
                 .spacing(26.0),
             )
+            .extend_client_area()
     }
 }
 

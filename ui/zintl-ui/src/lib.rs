@@ -9,3 +9,5 @@ pub mod sequence;
 pub mod signal;
 pub mod store;
 pub mod view;
+
+pub use element::ElementFactory;
