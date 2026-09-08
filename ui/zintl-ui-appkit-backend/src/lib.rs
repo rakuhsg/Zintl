@@ -387,18 +387,23 @@ mod backend {
                         Some(full_size_content_view);
                 }
 
-                if new_window || self.node(window_id).applied_sidebar != sidebar {
+                let sidebar_changed = new_window || self.node(window_id).applied_sidebar != sidebar;
+                if sidebar_changed {
                     cx.with_window(native_id, |window| -> Result<(), AppError> {
                         if let Some(sidebar) = &sidebar {
                             window
                                 .set_sidebar(&sidebar.native(), |_| {})
-                                .map_err(AppError::Sidebar)
+                                .map_err(AppError::Sidebar)?;
                         } else {
-                            window.clear_sidebar().map_err(AppError::Window)
+                            window.clear_sidebar().map_err(AppError::Window)?;
                         }
+                        window
+                            .set_bounds(native_rect(bounds))
+                            .map_err(AppError::Window)
                     })
                     .ok_or(AppError::Window(WindowError::Closed))??;
                     self.node_mut(window_id).applied_sidebar = sidebar;
+                    self.node_mut(window_id).applied_window_bounds = Some(bounds);
                 }
 
                 self.materialize_children(application, window_id)?;
