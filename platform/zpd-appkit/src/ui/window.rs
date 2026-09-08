@@ -436,6 +436,13 @@ impl<'application> Window<'application> {
         F: FnMut(&str) + 'static,
     {
         self.ensure_open().map_err(|_| SidebarError::Closed)?;
+        let frame = self
+            .actor
+            .with(|window| {
+                // SAFETY: The live actor is an NSWindow and `frame` returns an NSRect by value.
+                unsafe { zpd_objc::msg_send!(window, zpd_objc::sel!("frame"), () => native::Rect) }
+            })
+            .map_err(|_| SidebarError::Closed)?;
         let actor = self.actor.clone();
         let collapsed = self
             .sidebar
@@ -457,6 +464,15 @@ impl<'application> Window<'application> {
                 callback(id);
             },
         )?;
+        self.actor
+            .with(|window| {
+                // SAFETY: Restoring the captured NSRect keeps controller replacement from
+                // changing the user's current window position or size.
+                unsafe {
+                    zpd_objc::msg_send!(window, zpd_objc::sel!("setFrame:display:"), ((frame): native::Rect, (true): bool) => ())
+                }
+            })
+            .map_err(|_| SidebarError::Closed)?;
         *self.sidebar.borrow_mut() = Some(native);
         if self.sidebar_toolbar.borrow().is_none() {
             *self.sidebar_toolbar.borrow_mut() = Some(
