@@ -1,9 +1,9 @@
 use zintl_ui::element::IntoElement;
 use zintl_ui::store::Store;
-use zintl_ui::view::{Context, View};
+use zintl_ui::view::View;
 use zintl_ui_layout::{LayoutStyle, Size};
 
-use crate::{Element, Event, EventKind, RenderNode};
+use crate::{Context, Element, Event, EventKind, RenderNode};
 
 #[derive(Clone)]
 pub struct TextField {

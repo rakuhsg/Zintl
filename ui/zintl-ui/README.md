@@ -7,14 +7,16 @@ struct Counter {
     count: Option<Store<i32>>,
 }
 
+type AppContext<'a> = <AppRenderNode as RenderNode>::Context<'a>;
+
 impl View for Counter {
     type Output = AppRenderNode;
 
-    fn init(&mut self, cx: &mut Context<'_>) {
+    fn init(&mut self, cx: &mut AppContext<'_>) {
         self.count = Some(cx.store(0));
     }
 
-    fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+    fn render(&self, cx: &mut AppContext<'_>) -> impl IntoElement<Output = Self::Output> {
         Text::new(cx.get(self.count.unwrap()).to_string())
     }
 }

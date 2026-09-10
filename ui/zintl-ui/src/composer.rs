@@ -3,10 +3,9 @@ use crate::event::{EventHandlers, EventRouteId, EventRouter};
 use crate::hook::HookId;
 use crate::renderer::{RenderBackend, RenderNode};
 use crate::sequence::Arena;
-use crate::view::{Context, InitStores, MainTask};
+use crate::view::{InitStores, StoreContext};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
-use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BoundId {
@@ -122,8 +121,7 @@ where
     bounds: BoundArena<R, B::NodeId>,
     root: Vec<MountedElement<R, B::NodeId>>,
     mounted: bool,
-    event_router: EventRouter<R::Event>,
-    perform_main: Option<Arc<dyn Fn(MainTask) -> bool + Send + Sync>>,
+    event_router: EventRouter<R>,
 }
 
 impl<R, B> Composer<R, B>
@@ -142,28 +140,19 @@ where
             root: Vec::new(),
             mounted: false,
             event_router: EventRouter::new(),
-            perform_main: None,
         }
     }
 
-    pub fn context<T>(&mut self, operation: impl FnOnce(&mut Context<'_>) -> T) -> T {
-        let mut context = Context {
+    pub fn context<T>(&mut self, operation: impl for<'a> FnOnce(&mut R::Context<'a>) -> T) -> T {
+        let store_context = StoreContext {
             stores: &mut self.stores,
             next_hook_id: &mut self.next_hook_id,
             dirty_hooks: &mut self.dirty_hooks,
             dependencies: None,
             init_stores: None,
-            perform_main: self.perform_main.as_deref(),
         };
+        let mut context = self.backend.create_context(store_context);
         operation(&mut context)
-    }
-
-    /// Installs the backend callback used by [`Context::perform_main`].
-    pub fn set_main_task_sender(
-        &mut self,
-        sender: impl Fn(MainTask) -> bool + Send + Sync + 'static,
-    ) {
-        self.perform_main = Some(Arc::new(sender));
     }
 
     pub fn mount<E>(&mut self, root: E)
@@ -220,14 +209,14 @@ where
     /// ignored. Updates scheduled by a handler are flushed before returning.
     pub fn dispatch_event(&mut self, route: EventRouteId, event: R::Event) -> bool {
         let handled = {
-            let mut context = Context {
+            let store_context = StoreContext {
                 stores: &mut self.stores,
                 next_hook_id: &mut self.next_hook_id,
                 dirty_hooks: &mut self.dirty_hooks,
                 dependencies: None,
                 init_stores: None,
-                perform_main: self.perform_main.as_deref(),
             };
+            let mut context = self.backend.create_context(store_context);
             self.event_router.dispatch(route, &mut context, event)
         };
         if handled {
@@ -291,14 +280,14 @@ where
 
         let dependencies = RefCell::new(Vec::new());
         let children = {
-            let mut context = Context {
+            let store_context = StoreContext {
                 stores: &mut self.stores,
                 next_hook_id: &mut self.next_hook_id,
                 dirty_hooks: &mut self.dirty_hooks,
                 dependencies: Some(&dependencies),
                 init_stores: Some(&mut state.init_stores),
-                perform_main: self.perform_main.as_deref(),
             };
+            let mut context = self.backend.create_context(store_context);
             state.builder.build_children(&mut context)
         };
         let new_dependencies = dependencies.into_inner();
@@ -580,14 +569,14 @@ where
         }
     }
 
-    fn mount_event_route(&mut self, events: EventHandlers<R::Event>) -> Option<EventRouteId> {
+    fn mount_event_route(&mut self, events: EventHandlers<R>) -> Option<EventRouteId> {
         (!events.is_empty()).then(|| self.event_router.insert(events))
     }
 
     fn reconcile_event_route(
         &mut self,
         current: Option<EventRouteId>,
-        events: EventHandlers<R::Event>,
+        events: EventHandlers<R>,
     ) -> Option<EventRouteId> {
         if events.is_empty() {
             if let Some(route) = current {

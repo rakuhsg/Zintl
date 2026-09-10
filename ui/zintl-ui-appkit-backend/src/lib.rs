@@ -4,8 +4,13 @@ mod sidebar;
 pub use sidebar::{Sidebar, SidebarItem, SidebarSection};
 
 use zintl_ui::renderer::RenderNode;
+use zintl_ui::view::StoreContext;
 use zintl_ui_layout::LayoutStyle;
 pub use zpd_appkit::actor::WindowEventKind as AppKitEvent;
+
+pub type MainTask = Box<dyn FnOnce() + Send + 'static>;
+
+pub type MainTaskSender = dyn Fn(MainTask) -> bool + Send + Sync;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -58,6 +63,10 @@ pub enum NodeKind {
 }
 
 pub trait AppKitRenderNode: RenderNode {
+    fn create_context<'a>(
+        store_context: StoreContext<'a>,
+        perform_main: Option<&'a MainTaskSender>,
+    ) -> Self::Context<'a>;
     fn appkit_node(&self) -> NodeKind;
     fn appkit_event(event: AppKitEvent) -> Self::Event;
 }
@@ -71,6 +80,7 @@ mod backend {
     use std::error::Error;
     use std::fmt;
     use std::rc::Rc;
+    use std::sync::Arc;
 
     use messageloop_appkit::{
         Context as MessageContext, MessageLoopAppkit, MessageLoopError, MessageLoopHandler, Sender,
@@ -78,7 +88,7 @@ mod backend {
     use zintl_ui::composer::Composer;
     use zintl_ui::event::EventRouteId;
     use zintl_ui::renderer::RenderBackend;
-    use zintl_ui::view::MainTask;
+    use zintl_ui::view::StoreContext;
     use zintl_ui_layout::{
         CrossAxisAlignment, LayoutDimension, LayoutError, LayoutStyle, LayoutTree, Size,
     };
@@ -91,7 +101,7 @@ mod backend {
         WindowAppMenu, WindowError,
     };
 
-    use super::{AppKitRenderNode, NodeId, NodeKind, Rect, ViewKind};
+    use super::{AppKitRenderNode, MainTask, MainTaskSender, NodeId, NodeKind, Rect, ViewKind};
 
     #[derive(Debug)]
     pub enum AppError {
@@ -174,6 +184,7 @@ mod backend {
         structure_dirty: bool,
         layout_dirty: bool,
         pending_error: Rc<RefCell<Option<AppError>>>,
+        perform_main: Option<Arc<MainTaskSender>>,
     }
 
     impl<R: AppKitRenderNode> Default for AppKitBackend<R> {
@@ -201,7 +212,15 @@ mod backend {
                 structure_dirty: true,
                 layout_dirty: true,
                 pending_error: Rc::new(RefCell::new(None)),
+                perform_main: None,
             }
+        }
+
+        fn set_main_task_sender(
+            &mut self,
+            sender: impl Fn(MainTask) -> bool + Send + Sync + 'static,
+        ) {
+            self.perform_main = Some(Arc::new(sender));
         }
 
         pub fn value(&self, id: NodeId) -> Option<&R> {
@@ -644,6 +663,10 @@ mod backend {
     impl<R: AppKitRenderNode> RenderBackend<R> for AppKitBackend<R> {
         type NodeId = NodeId;
 
+        fn create_context<'a>(&'a self, store_context: StoreContext<'a>) -> R::Context<'a> {
+            R::create_context(store_context, self.perform_main.as_deref())
+        }
+
         fn root(&self) -> Self::NodeId {
             NodeId(0)
         }
@@ -869,6 +892,7 @@ mod backend {
         fn init(&mut self, cx: &MessageContext<'_, '_, Message>) {
             let sender = cx.sender();
             self.composer
+                .backend_mut()
                 .set_main_task_sender(move |task| sender.send(Message::PerformMain(task)).is_ok());
             self.synchronize(cx);
         }
@@ -965,13 +989,40 @@ mod backend {
         use super::*;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        use zintl_ui::element::{Element, IntoElement};
         use zintl_ui::renderer::RenderNode;
+        use zintl_ui::view::{Context as ContextTrait, View};
 
         #[derive(Clone, PartialEq)]
         struct TestNode;
 
         #[derive(Clone)]
         struct TestEvent;
+
+        struct TestContext<'a> {
+            store_context: StoreContext<'a>,
+            perform_main: Option<&'a MainTaskSender>,
+        }
+
+        impl TestContext<'_> {
+            fn perform_main(&self, task: impl FnOnce() + Send + 'static) {
+                let sender = self
+                    .perform_main
+                    .expect("the test sender must be installed");
+                assert!(sender(Box::new(task)));
+            }
+        }
+
+        impl<'a> ContextTrait<'a> for TestContext<'a> {
+            fn store_context<'context>(&'context self) -> &'context StoreContext<'a> {
+                &self.store_context
+            }
+
+            fn store_context_mut<'context>(&'context mut self) -> &'context mut StoreContext<'a> {
+                &mut self.store_context
+            }
+        }
 
         impl zintl_ui::event::Event for TestEvent {
             type Kind = ();
@@ -981,6 +1032,7 @@ mod backend {
 
         impl RenderNode for TestNode {
             type Event = TestEvent;
+            type Context<'a> = TestContext<'a>;
 
             fn same_kind(&self, _other: &Self) -> bool {
                 true
@@ -988,6 +1040,16 @@ mod backend {
         }
 
         impl AppKitRenderNode for TestNode {
+            fn create_context<'a>(
+                store_context: StoreContext<'a>,
+                perform_main: Option<&'a MainTaskSender>,
+            ) -> Self::Context<'a> {
+                TestContext {
+                    store_context,
+                    perform_main,
+                }
+            }
+
             fn appkit_node(&self) -> NodeKind {
                 NodeKind::View {
                     kind: ViewKind::Container,
@@ -1065,6 +1127,33 @@ mod backend {
 
             assert!(message.into_window_event().is_none());
             assert!(performed.load(Ordering::SeqCst));
+        }
+
+        struct PerformMainView;
+
+        impl View for PerformMainView {
+            type Output = TestNode;
+
+            fn render<'a>(
+                &self,
+                cx: &mut <Self::Output as RenderNode>::Context<'a>,
+            ) -> impl IntoElement<Output = Self::Output> {
+                cx.perform_main(|| {});
+                Element::node(TestNode)
+            }
+        }
+
+        #[test]
+        fn backend_context_queues_main_thread_tasks() {
+            // The AppKit backend injects its sender into the RenderNode-associated Context.
+            let (sender, receiver) = mpsc::channel();
+            let mut backend = AppKitBackend::new();
+            backend.set_main_task_sender(move |task| sender.send(task).is_ok());
+            let mut composer = Composer::new(backend);
+
+            composer.mount(PerformMainView);
+
+            receiver.recv().unwrap()();
         }
 
         #[test]

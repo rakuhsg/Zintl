@@ -1,8 +1,8 @@
 use zintl_ui::element::{IntoElement, ListFactory};
-use zintl_ui::view::{Context, View as ViewTrait};
+use zintl_ui::view::View as ViewTrait;
 use zintl_ui_layout::LayoutStyle;
 
-use crate::{Element, RenderNode};
+use crate::{Context, Element, RenderNode};
 
 #[derive(Clone)]
 pub struct View {

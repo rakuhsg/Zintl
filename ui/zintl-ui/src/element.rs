@@ -1,6 +1,5 @@
 use crate::event::EventHandlers;
 use crate::renderer::RenderNode;
-use crate::view::Context;
 use std::any::TypeId;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -36,7 +35,7 @@ impl From<&str> for ElementKey {
 }
 
 pub trait BoundBuilder<R: RenderNode>: 'static {
-    fn build_children(&mut self, cx: &mut Context<'_>) -> Vec<Element<R>>;
+    fn build_children<'a>(&mut self, cx: &mut R::Context<'a>) -> Vec<Element<R>>;
     fn builder_type_id(&self) -> TypeId;
 }
 
@@ -51,7 +50,7 @@ pub enum Element<R: RenderNode> {
         key: Option<ElementKey>,
         children: Vec<Element<R>>,
         #[doc(hidden)]
-        events: EventHandlers<R::Event>,
+        events: EventHandlers<R>,
     },
     Fragment(Vec<Element<R>>),
     Bound(Bound<R>),
@@ -100,7 +99,7 @@ impl<R: RenderNode> Element<R> {
     pub fn on_event(
         mut self,
         kind: <R::Event as crate::event::Event>::Kind,
-        handler: impl for<'a> FnMut(&mut Context<'a>, R::Event) + 'static,
+        handler: impl for<'a> FnMut(&mut R::Context<'a>, R::Event) + 'static,
     ) -> Self {
         match &mut self {
             Self::Node { events, .. } => events.insert(kind, Box::new(handler)),
@@ -200,6 +199,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use crate::view::StoreContext;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum TestNode {
@@ -218,6 +218,7 @@ mod tests {
 
     impl RenderNode for TestNode {
         type Event = TestEvent;
+        type Context<'a> = StoreContext<'a>;
 
         fn same_kind(&self, other: &Self) -> bool {
             std::mem::discriminant(self) == std::mem::discriminant(other)

@@ -4,9 +4,9 @@ pub use zintl_ui::element::{Element, IntoElement};
 use zintl_ui::event::EventRouteId;
 use zintl_ui::renderer::RenderBackend;
 pub use zintl_ui::store::Store;
-pub use zintl_ui::view::{Context, View};
+pub use zintl_ui::view::View;
 pub use zintl_ui_appkit::{
-    Event, EventKind, ListFactory, Rect, RenderNode, Sidebar, SidebarItem, SidebarSection,
+    Context, Event, EventKind, ListFactory, Rect, RenderNode, Sidebar, SidebarItem, SidebarSection,
     SidebarState, list,
 };
 pub use zintl_ui_layout::{
@@ -342,6 +342,13 @@ impl TreeBackend {
 #[cfg(not(target_os = "macos"))]
 impl RenderBackend<RenderNode> for TreeBackend {
     type NodeId = usize;
+
+    fn create_context<'a>(
+        &'a self,
+        store_context: zintl_ui::view::StoreContext<'a>,
+    ) -> Context<'a> {
+        zintl_ui_appkit::AppKitContext::new(store_context, None)
+    }
 
     fn root(&self) -> Self::NodeId {
         0
