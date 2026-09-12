@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
-pub struct Context<'a> {
+pub struct StoreContext<'a> {
     pub(crate) stores: &'a mut Arena,
     pub(crate) next_hook_id: &'a mut u32,
     pub(crate) dirty_hooks: &'a mut BTreeSet<HookId>,
@@ -41,7 +41,7 @@ impl InitStores {
     }
 }
 
-impl Context<'_> {
+impl StoreContext<'_> {
     pub fn store<T: 'static>(&mut self, value: T) -> Store<T> {
         if let Some(init_stores) = &mut self.init_stores {
             let index = init_stores.next;
@@ -75,7 +75,7 @@ impl Context<'_> {
         Store::new(store_id, hook_id)
     }
 
-    pub fn get<T: 'static>(&self, store: Store<T>) -> &T {
+    pub fn get<'context, T: 'static>(&'context self, store: Store<T>) -> &'context T {
         let handle = store.handle();
         if let Some(dependencies) = self.dependencies {
             let mut dependencies = dependencies.borrow_mut();
@@ -83,7 +83,8 @@ impl Context<'_> {
                 dependencies.push(handle.hook_id);
             }
         }
-        self.stores
+        let stores: &Arena = self.stores;
+        stores
             .get(handle.id)
             .expect("store handle must belong to this composer")
     }
@@ -118,6 +119,46 @@ impl Context<'_> {
     }
 }
 
+pub trait Context<'a> {
+    fn store_context<'context>(&'context self) -> &'context StoreContext<'a>;
+
+    fn store_context_mut<'context>(&'context mut self) -> &'context mut StoreContext<'a>;
+
+    fn store<T: 'static>(&mut self, value: T) -> Store<T> {
+        self.store_context_mut().store(value)
+    }
+
+    fn get<'context, T: 'static>(&'context self, store: Store<T>) -> &'context T
+    where
+        'a: 'context,
+    {
+        self.store_context().get(store)
+    }
+
+    fn watch<T, F, E>(&self, store: Store<T>, render: F) -> StoreWatcher<T, F, E>
+    where
+        T: 'static,
+        F: Fn(&T) -> E + 'static,
+        E: IntoElement + 'static,
+    {
+        self.store_context().watch(store, render)
+    }
+
+    fn update<T: 'static, U>(&mut self, store: Store<T>, update: impl FnOnce(&mut T) -> U) -> U {
+        self.store_context_mut().update(store, update)
+    }
+}
+
+impl<'a> Context<'a> for StoreContext<'a> {
+    fn store_context<'context>(&'context self) -> &'context StoreContext<'a> {
+        self
+    }
+
+    fn store_context_mut<'context>(&'context mut self) -> &'context mut StoreContext<'a> {
+        self
+    }
+}
+
 pub struct StoreWatcher<T: 'static, F, E> {
     store: Store<T>,
     render: F,
@@ -146,7 +187,10 @@ where
     F: Fn(&T) -> E + 'static,
     E: IntoElement + 'static,
 {
-    fn build_children(&mut self, cx: &mut Context<'_>) -> Vec<Element<E::Output>> {
+    fn build_children<'a>(
+        &mut self,
+        cx: &mut <E::Output as RenderNode>::Context<'a>,
+    ) -> Vec<Element<E::Output>> {
         vec![(self.render)(cx.get(self.store)).into_element()]
     }
 
@@ -178,9 +222,12 @@ where
 pub trait View: 'static {
     type Output: RenderNode;
 
-    fn init(&mut self, _cx: &mut Context<'_>) {}
+    fn init<'a>(&mut self, _cx: &mut <Self::Output as RenderNode>::Context<'a>) {}
 
-    fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output>;
+    fn render<'a>(
+        &self,
+        cx: &mut <Self::Output as RenderNode>::Context<'a>,
+    ) -> impl IntoElement<Output = Self::Output>;
 }
 
 struct ViewBuilder<V> {
@@ -189,9 +236,12 @@ struct ViewBuilder<V> {
 }
 
 impl<V: View> BoundBuilder<V::Output> for ViewBuilder<V> {
-    fn build_children(&mut self, cx: &mut Context<'_>) -> Vec<Element<V::Output>> {
+    fn build_children<'a>(
+        &mut self,
+        cx: &mut <V::Output as RenderNode>::Context<'a>,
+    ) -> Vec<Element<V::Output>> {
         if !self.initialized {
-            if let Some(init_stores) = &mut cx.init_stores {
+            if let Some(init_stores) = &mut cx.store_context_mut().init_stores {
                 init_stores.begin();
             }
             self.view.init(cx);

@@ -1,8 +1,8 @@
 use zintl_ui::element::{IntoElement, ListFactory};
 use zintl_ui::list;
-use zintl_ui::view::{Context, View};
+use zintl_ui::view::View;
 
-use crate::{Element, Rect, RenderNode, Sidebar};
+use crate::{Context, Element, Rect, RenderNode, Sidebar};
 
 #[derive(Clone)]
 pub struct Window {

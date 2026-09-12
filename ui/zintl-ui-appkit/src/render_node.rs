@@ -55,6 +55,7 @@ pub enum RenderNode {
 
 impl RenderNodeTrait for RenderNode {
     type Event = Event;
+    type Context<'a> = crate::AppKitContext<'a>;
 
     fn same_kind(&self, other: &Self) -> bool {
         matches!(
@@ -69,6 +70,13 @@ impl RenderNodeTrait for RenderNode {
 
 #[cfg(target_os = "macos")]
 impl zintl_ui_appkit_backend::AppKitRenderNode for RenderNode {
+    fn create_context<'a>(
+        store_context: zintl_ui::view::StoreContext<'a>,
+        perform_main: Option<&'a zintl_ui_appkit_backend::MainTaskSender>,
+    ) -> Self::Context<'a> {
+        crate::AppKitContext::new(store_context, perform_main)
+    }
+
     fn appkit_node(&self) -> zintl_ui_appkit_backend::NodeKind {
         use zintl_ui_appkit_backend::{NodeKind, ViewKind};
 

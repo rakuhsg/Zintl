@@ -1,5 +1,8 @@
+use std::cell::Cell;
+
 use zintl_ui::event::EventRouteId;
 use zintl_ui::renderer::{RenderBackend, RenderNode};
+use zintl_ui::view::{Context as ContextTrait, StoreContext};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum EventKind {
@@ -30,6 +33,7 @@ pub enum TestRenderNode {
 
 impl RenderNode for TestRenderNode {
     type Event = Event;
+    type Context<'a> = TestContext<'a>;
 
     fn same_kind(&self, other: &Self) -> bool {
         matches!(
@@ -38,6 +42,27 @@ impl RenderNode for TestRenderNode {
                 | (Self::Text(_), Self::Text(_))
                 | (Self::Row(_), Self::Row(_))
         )
+    }
+}
+
+pub struct TestContext<'a> {
+    store_context: StoreContext<'a>,
+    uses: &'a Cell<usize>,
+}
+
+impl TestContext<'_> {
+    pub fn record_use(&self) {
+        self.uses.set(self.uses.get() + 1);
+    }
+}
+
+impl<'a> ContextTrait<'a> for TestContext<'a> {
+    fn store_context<'context>(&'context self) -> &'context StoreContext<'a> {
+        &self.store_context
+    }
+
+    fn store_context_mut<'context>(&'context mut self) -> &'context mut StoreContext<'a> {
+        &mut self.store_context
     }
 }
 
@@ -86,6 +111,7 @@ struct NativeNode {
 pub struct TestBackend {
     nodes: Vec<Option<NativeNode>>,
     operations: Vec<Operation>,
+    context_uses: Cell<usize>,
 }
 
 impl TestBackend {
@@ -98,6 +124,7 @@ impl TestBackend {
                 event_route: None,
             })],
             operations: Vec::new(),
+            context_uses: Cell::new(0),
         }
     }
 
@@ -107,6 +134,10 @@ impl TestBackend {
 
     pub fn clear_operations(&mut self) {
         self.operations.clear();
+    }
+
+    pub fn context_uses(&self) -> usize {
+        self.context_uses.get()
     }
 
     pub fn event_route(&self, node: usize) -> Option<EventRouteId> {
@@ -163,6 +194,13 @@ impl Default for TestBackend {
 
 impl RenderBackend<TestRenderNode> for TestBackend {
     type NodeId = usize;
+
+    fn create_context<'a>(&'a self, store_context: StoreContext<'a>) -> TestContext<'a> {
+        TestContext {
+            store_context,
+            uses: &self.context_uses,
+        }
+    }
 
     fn root(&self) -> Self::NodeId {
         0
@@ -246,7 +284,9 @@ mod tests {
     use zintl_ui::composer::Composer;
     use zintl_ui::element::{Element, IntoElement, KeyedElement};
     use zintl_ui::store::Store;
-    use zintl_ui::view::{Context, View};
+    use zintl_ui::view::View;
+
+    type Context<'a> = <TestRenderNode as RenderNode>::Context<'a>;
 
     #[test]
     fn store_can_be_declared_before_view_initialization() {
@@ -876,5 +916,34 @@ mod tests {
         composer.context(|cx| cx.update(observed, |value| *value += 1));
         composer.flush();
         assert_eq!(renders.get(), 1);
+    }
+
+    struct ContextUseView;
+
+    impl View for ContextUseView {
+        type Output = TestRenderNode;
+
+        fn init(&mut self, cx: &mut Context<'_>) {
+            cx.record_use();
+        }
+
+        fn render(&self, cx: &mut Context<'_>) -> impl IntoElement<Output = Self::Output> {
+            cx.record_use();
+            Element::node(TestRenderNode::Container("context"))
+                .on_event(EventKind::Activated, |cx, _| cx.record_use())
+        }
+    }
+
+    #[test]
+    fn backend_context_reaches_every_view_entry_point() {
+        // The backend-associated Context is shared by initialization, rendering, and events.
+        let mut composer = Composer::new(TestBackend::new());
+        composer.mount(ContextUseView);
+        let node = composer.backend().node(0).children[0];
+        let route = composer.backend().event_route(node).unwrap();
+
+        assert_eq!(composer.backend().context_uses(), 2);
+        assert!(composer.dispatch_event(route, Event::Activated));
+        assert_eq!(composer.backend().context_uses(), 3);
     }
 }

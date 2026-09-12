@@ -1,4 +1,4 @@
-use crate::view::Context;
+use crate::renderer::RenderNode;
 
 /// An event family supplied by a UI implementation.
 pub trait Event: Clone + 'static {
@@ -36,14 +36,15 @@ impl EventRouteId {
     }
 }
 
-type EventHandler<E> = Box<dyn for<'a> FnMut(&mut Context<'a>, E)>;
+type EventHandler<R> =
+    Box<dyn for<'a> FnMut(&mut <R as RenderNode>::Context<'a>, <R as RenderNode>::Event)>;
 
 #[doc(hidden)]
-pub struct EventHandlers<E: Event> {
-    handlers: Vec<(E::Kind, EventHandler<E>)>,
+pub struct EventHandlers<R: RenderNode> {
+    handlers: Vec<(<R::Event as Event>::Kind, EventHandler<R>)>,
 }
 
-impl<E: Event> EventHandlers<E> {
+impl<R: RenderNode> EventHandlers<R> {
     pub(crate) fn new() -> Self {
         Self {
             handlers: Vec::new(),
@@ -54,7 +55,7 @@ impl<E: Event> EventHandlers<E> {
         self.handlers.is_empty()
     }
 
-    pub(crate) fn insert(&mut self, kind: E::Kind, handler: EventHandler<E>) {
+    pub(crate) fn insert(&mut self, kind: <R::Event as Event>::Kind, handler: EventHandler<R>) {
         if let Some((_, current)) = self
             .handlers
             .iter_mut()
@@ -66,7 +67,7 @@ impl<E: Event> EventHandlers<E> {
         }
     }
 
-    fn dispatch(&mut self, cx: &mut Context<'_>, event: E) -> bool {
+    fn dispatch(&mut self, cx: &mut R::Context<'_>, event: R::Event) -> bool {
         let kind = event.kind();
         let Some((_, handler)) = self
             .handlers
@@ -80,17 +81,17 @@ impl<E: Event> EventHandlers<E> {
     }
 }
 
-struct EventRouteSlot<E: Event> {
+struct EventRouteSlot<R: RenderNode> {
     generation: u32,
-    handlers: Option<EventHandlers<E>>,
+    handlers: Option<EventHandlers<R>>,
 }
 
-pub(crate) struct EventRouter<E: Event> {
-    slots: Vec<EventRouteSlot<E>>,
+pub(crate) struct EventRouter<R: RenderNode> {
+    slots: Vec<EventRouteSlot<R>>,
     free: Vec<u32>,
 }
 
-impl<E: Event> EventRouter<E> {
+impl<R: RenderNode> EventRouter<R> {
     pub(crate) fn new() -> Self {
         Self {
             slots: Vec::new(),
@@ -98,7 +99,7 @@ impl<E: Event> EventRouter<E> {
         }
     }
 
-    pub(crate) fn insert(&mut self, handlers: EventHandlers<E>) -> EventRouteId {
+    pub(crate) fn insert(&mut self, handlers: EventHandlers<R>) -> EventRouteId {
         debug_assert!(!handlers.is_empty());
         if let Some(slot) = self.free.pop() {
             let entry = &mut self.slots[slot as usize];
@@ -121,7 +122,7 @@ impl<E: Event> EventRouter<E> {
         }
     }
 
-    pub(crate) fn replace(&mut self, id: EventRouteId, handlers: EventHandlers<E>) -> bool {
+    pub(crate) fn replace(&mut self, id: EventRouteId, handlers: EventHandlers<R>) -> bool {
         let Some(slot) = self.slots.get_mut(id.slot as usize) else {
             return false;
         };
@@ -144,7 +145,12 @@ impl<E: Event> EventRouter<E> {
         true
     }
 
-    pub(crate) fn dispatch(&mut self, id: EventRouteId, cx: &mut Context<'_>, event: E) -> bool {
+    pub(crate) fn dispatch(
+        &mut self,
+        id: EventRouteId,
+        cx: &mut R::Context<'_>,
+        event: R::Event,
+    ) -> bool {
         let Some(slot) = self.slots.get_mut(id.slot as usize) else {
             return false;
         };

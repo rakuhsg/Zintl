@@ -1,6 +1,7 @@
 //! Declarative Zintl UI views that mirror AppKit widgets.
 
 mod button;
+mod context;
 mod event;
 mod render_node;
 mod sidebar;
@@ -9,6 +10,8 @@ mod view;
 mod window;
 
 pub use button::Button;
+#[doc(hidden)]
+pub use context::AppKitContext;
 pub use event::{Event, EventKind};
 pub use render_node::{Rect, RenderNode};
 pub use sidebar::{Sidebar, SidebarItem, SidebarSection, SidebarState};
@@ -18,8 +21,9 @@ pub use window::Window;
 pub use zintl_ui::element::{Element, IntoElement, ListFactory};
 pub use zintl_ui::list;
 pub use zintl_ui::store::Store;
-pub use zintl_ui::view::Context;
 pub use zintl_ui_layout::{LayoutStyle, Size};
+
+pub type Context<'a> = <RenderNode as zintl_ui::renderer::RenderNode>::Context<'a>;
 
 #[cfg(target_os = "macos")]
 pub use zintl_ui_appkit_backend::{AppError, AppKitBackend, NodeId, run_composer};
@@ -250,7 +254,7 @@ mod tests {
     fn text_binding_and_button_action_route_through_appkit_views() {
         // Verifies AppKit controls connect native events to Store updates and actions.
         let mut composer = Composer::new(AppKitBackend::new());
-        let value = composer.context(|cx| cx.store(String::new()));
+        let value = composer.context(|cx: &mut Context<'_>| cx.store(String::new()));
         let changes = Rc::new(Cell::new(0));
         let received = changes.clone();
         composer.mount(View::new(
@@ -281,7 +285,7 @@ mod tests {
     fn sidebar_binding_filters_unknown_native_ids() {
         // Verifies AppKit sidebar selection updates only for declared items.
         let mut composer = Composer::new(AppKitBackend::new());
-        let selection = composer.context(|cx| cx.store(None::<String>));
+        let selection = composer.context(|cx: &mut Context<'_>| cx.store(None::<String>));
         composer.mount(
             Window::new(Rect::new(0.0, 0.0, 640.0, 480.0), "Navigation").sidebar(
                 Sidebar::new([SidebarSection::new([SidebarItem::new("home", "Home")])])

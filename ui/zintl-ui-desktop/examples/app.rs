@@ -20,6 +20,10 @@ impl View for MainView {
         let name = self.name;
         let count = self.count;
 
+        cx.perform_main(|| {
+            println!("hello");
+        });
+
         Window::new(Rect::new(100.0, 100.0, 640.0, 400.0), "Zintl")
             .sidebar(
                 Sidebar::new([SidebarSection::new([
